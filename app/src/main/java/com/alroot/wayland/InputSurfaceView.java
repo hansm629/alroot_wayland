@@ -1,10 +1,12 @@
 package com.alroot.wayland;
 
 import android.content.Context;
+import android.graphics.Bitmap;
 import android.graphics.RectF;
 import android.text.InputType;
 import android.view.KeyEvent;
 import android.view.MotionEvent;
+import android.view.PointerIcon;
 import android.view.SurfaceView;
 import android.view.View;
 import android.view.inputmethod.BaseInputConnection;
@@ -19,8 +21,12 @@ public final class InputSurfaceView extends SurfaceView {
     private boolean captured;
     private boolean primaryTouchDown;
     private float lastX, lastY;
+    private boolean pointerInitialized;
     private float pointerScaleX = 1, pointerScaleY = 1;
     private final RectF picture = new RectF();
+    private PointerIcon guestIcon;
+    private boolean guestCursorHidden;
+    private Runnable onCursorMove;
 
     public InputSurfaceView(Context context) {
         super(context);
@@ -31,6 +37,29 @@ public final class InputSurfaceView extends SurfaceView {
     }
 
     public boolean isCaptured() { return captured; }
+    public float pointerX() { return lastX; }
+    public float pointerY() { return lastY; }
+    public float cursorScaleX() { return 1f / pointerScaleX; }
+    public float cursorScaleY() { return 1f / pointerScaleY; }
+    public void setCursorMoveListener(Runnable listener) { onCursorMove = listener; }
+
+    public void setGuestCursor(Bitmap bitmap, int hotspotX, int hotspotY, boolean hidden) {
+        guestCursorHidden = hidden;
+        if (bitmap != null && !hidden) {
+            guestIcon = PointerIcon.create(bitmap,
+                    Math.max(0, Math.min(bitmap.getWidth() - 1, hotspotX)),
+                    Math.max(0, Math.min(bitmap.getHeight() - 1, hotspotY)));
+        } else {
+            guestIcon = null;
+        }
+        invalidate();
+    }
+
+    @Override public PointerIcon onResolvePointerIcon(MotionEvent event, int pointerIndex) {
+        if (captured || guestCursorHidden)
+            return PointerIcon.getSystemIcon(getContext(), PointerIcon.TYPE_NULL);
+        return guestIcon != null ? guestIcon : super.onResolvePointerIcon(event, pointerIndex);
+    }
 
     public void setCapture(boolean on) {
         if (on) {
@@ -45,7 +74,10 @@ public final class InputSurfaceView extends SurfaceView {
     @Override public void onPointerCaptureChange(boolean hasCapture) {
         super.onPointerCaptureChange(hasCapture);
         captured = hasCapture;
+        if (hasCapture && !pointerInitialized)
+            absolute(getWidth() / 2f, getHeight() / 2f);
         if (!hasCapture) releaseAllKeys();
+        if (onCursorMove != null) onCursorMove.run();
     }
 
     public void releaseAllKeys() {
@@ -103,6 +135,10 @@ public final class InputSurfaceView extends SurfaceView {
         }
         pointerScaleX = guestWidth / Math.max(1, picture.width());
         pointerScaleY = guestHeight / Math.max(1, picture.height());
+        if (pointerInitialized) {
+            lastX = Math.max(picture.left, Math.min(picture.right - 1, lastX));
+            lastY = Math.max(picture.top, Math.min(picture.bottom - 1, lastY));
+        }
     }
 
     private void absolute(float x, float y) {
@@ -112,14 +148,24 @@ public final class InputSurfaceView extends SurfaceView {
         int px = Math.min(w - 1, Math.max(0, Math.round((x - picture.left) * pointerScaleX)));
         int py = Math.min(h - 1, Math.max(0, Math.round((y - picture.top) * pointerScaleY)));
         WaylandCompositor.nativeSendSceneInput(2, px, py);
-        lastX = x;
-        lastY = y;
+        lastX = Math.max(picture.left, Math.min(picture.right - 1, x));
+        lastY = Math.max(picture.top, Math.min(picture.bottom - 1, y));
+        pointerInitialized = true;
+        if (onCursorMove != null) onCursorMove.run();
     }
 
     private void relative(float dx, float dy) {
+        if (!pointerInitialized) {
+            lastX = getWidth() / 2f;
+            lastY = getHeight() / 2f;
+            pointerInitialized = true;
+        }
+        lastX = Math.max(picture.left, Math.min(picture.right - 1, lastX + dx));
+        lastY = Math.max(picture.top, Math.min(picture.bottom - 1, lastY + dy));
         WaylandCompositor.nativeSendSceneInput(6,
                 Math.round(dx * pointerScaleX * 256f),
                 Math.round(dy * pointerScaleY * 256f));
+        if (onCursorMove != null) onCursorMove.run();
     }
 
     private static int evdevButton(int button) {
@@ -192,15 +238,20 @@ public final class InputSurfaceView extends SurfaceView {
         outAttrs.imeOptions = EditorInfo.IME_FLAG_NO_EXTRACT_UI;
         return new BaseInputConnection(this, false) {
             @Override public boolean commitText(CharSequence text, int newCursorPosition) {
-                WaylandCompositor.textInputCommit(text.toString());
+                if (ImeBridge.rootfulX11Active()) ImeBridge.commit(text.toString());
+                else WaylandCompositor.textInputCommit(text.toString());
                 return true;
             }
             @Override public boolean setComposingText(CharSequence text, int newCursorPosition) {
-                WaylandCompositor.textInputPreedit(text.toString(), text.length());
+                if (!ImeBridge.rootfulX11Active()) {
+                    WaylandCompositor.textInputPreedit(text.toString(), text.length());
+                }
+                // XTEST cannot transfer a preedit; insert only on commitText.
                 return true;
             }
             @Override public boolean deleteSurroundingText(int beforeLength, int afterLength) {
-                WaylandCompositor.textInputDelete(beforeLength, afterLength);
+                if (ImeBridge.rootfulX11Active()) ImeBridge.delete(beforeLength, afterLength);
+                else WaylandCompositor.textInputDelete(beforeLength, afterLength);
                 return true;
             }
         };

@@ -12,3 +12,8 @@ request are Alroot-specific modifications, not a compositor rewrite.
 Licenses in LICENSES/ and third-party notices retained. Corresponding source
 of imported third-party binary libraries requires audit before public binary
 redistribution.
+
+Additional private helper runtime: wlroots 0.18.2 from the commit frozen in
+upstream.lock and the scoped bionic shm patch under packages/patches. The build
+script installs into packages/prefix only, never Termux system wlroots.
+Termux Xwayland, labwc, xclip and xdotool remain separate runtime packages.

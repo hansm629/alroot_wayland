@@ -55,6 +55,7 @@ alive() {
         labwc) [[ "$cmd" == *"/labwc"* || "$cmd" == "labwc "* ]] ;;
         xwayland) [[ "$cmd" == *"/Xwayland"* || "$cmd" == "Xwayland "* ]] ;;
         xfce) [[ "$cmd" == *"dbus-run-session"* || "$cmd" == *"/xfce4-session"* ]] ;;
+        clipboard) [[ "$cmd" == *"/clipboard-broker.sh"* ]] ;;
         *) return 1 ;;
     esac
 }
@@ -130,6 +131,19 @@ xfce_start() {
     record_pid xfce "$!"
 }
 
+clipboard_start() {
+    if ! command -v xclip >/dev/null 2>&1 || ! command -v xdotool >/dev/null 2>&1; then
+        echo 'BLOCKED: xclip and xdotool are required for X11 text input' >&2
+        return 1
+    fi
+    (
+        export HOME PREFIX PATH="$PREFIX/bin:$PREFIX/bin/applets"
+        export XDG_RUNTIME_DIR="$RUNTIME"
+        exec "$PREFIX/bin/bash" "$HOME/alroot_wayland/termux/clipboard-broker.sh" "$STATE" "$1"
+    ) > "$LOGS/clipboard.log" 2>&1 &
+    record_pid clipboard "$!"
+}
+
 start_xwayland() {
     local parent_display="$1" n
     export XDG_RUNTIME_DIR="$RUNTIME" WAYLAND_DISPLAY="$parent_display"
@@ -172,7 +186,7 @@ start_session() {
     }
     exec 8>"$STATE/start.lock"
     flock -n 8 || { echo 'another Alroot startup is active' >&2; return 1; }
-    if alive xwayland || alive xfce || alive labwc; then
+    if alive xwayland || alive xfce || alive labwc || alive clipboard; then
         echo 'Existing Alroot session found; run status or stop first' >&2; return 1
     fi
     # Refuse to attach to an unexpected nested socket from a previous session.
@@ -185,10 +199,18 @@ start_session() {
         fi
     done
     # Failed intermediate stages must not leave project-owned processes alive.
-    trap 'rc=$?; if ((rc != 0)); then stop_one xfce; stop_one xwayland; stop_one labwc; fi' EXIT
+    trap 'rc=$?; if ((rc != 0)); then stop_one clipboard; stop_one xfce; stop_one xwayland; stop_one labwc; fi' EXIT
     if ! wait_socket wayland-0; then
         echo "BLOCKED: Android helper socket $RUNTIME/wayland-0 is not accepting connections" >&2
         return 1
+    fi
+    mkdir -p "$STATE/ipc"
+    chmod 700 "$STATE/ipc"
+    # A newly started project session cannot inherit an obsolete X11 selection.
+    rm -f "$STATE/ipc/x11-to-android.txt" "$STATE/ipc/.last-injected.txt"
+    if [[ -d "$STATE/ipc/ime-requests" ]]; then
+        find "$STATE/ipc/ime-requests" -maxdepth 1 -type f -name '*.commit' -delete
+        find "$STATE/ipc/ime-requests" -maxdepth 1 -type f -name '*.delete' -delete
     fi
     echo "$profile" > "$STATE/profile"
     local parent=wayland-0
@@ -215,6 +237,7 @@ start_session() {
     fi
     start_xwayland "$parent"
     xfce_start "$(cat "$STATE/display")"
+    clipboard_start "$(cat "$STATE/display")"
     sleep .6
     if ! alive xfce; then
         echo 'FAIL: XFCE exited immediately' >&2
@@ -246,7 +269,7 @@ case "${1:-}" in
         ;;
     status)
         echo "host: $RUNTIME/wayland-0 $(socket_ready "$RUNTIME/wayland-0" && echo READY || echo DOWN)"
-        for role in labwc xwayland xfce; do
+        for role in labwc xwayland xfce clipboard; do
             if alive "$role"; then echo "$role: RUNNING $(cut -d' ' -f1 "$STATE/$role.pid")"
             else echo "$role: DOWN"; fi
         done
@@ -254,6 +277,7 @@ case "${1:-}" in
         [[ ! -f "$STATE/display" ]] || echo "X DISPLAY: $(cat "$STATE/display")"
         ;;
     stop)
+        stop_one clipboard
         stop_one xfce
         stop_one xwayland
         stop_one labwc
@@ -264,7 +288,7 @@ case "${1:-}" in
         am start -n com.alroot.wayland/.MainActivity
         ;;
     logs)
-        for f in "$LOGS"/{labwc,xwayland,xfce}.log "$STATE/spawn.log"; do
+        for f in "$LOGS"/{labwc,xwayland,xfce,clipboard}.log "$STATE/spawn.log"; do
             if [[ -r "$f" ]]; then echo "--- $f"; tail -24 "$f"; fi
         done
         ;;

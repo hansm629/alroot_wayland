@@ -23,6 +23,19 @@ The Android menu provides controls for user capture, keyboard, output size,
 fit/stretch/fill, rotation, fullscreen, screen-on, and explicit stopping.
 Ctrl+Alt+Esc releases mouse capture and all injected key/button states.
 
+Install a new, non-overwriting Termux command symlink and run diagnostics:
+
+    bash ~/alroot_wayland/tools/install-cli.sh
+    alroot-wayland doctor
+    bash ~/alroot_wayland/tests/p01-smoke.sh
+
+X11 clipboard and Android committed IME text use a separate project-owned
+bridge under ~/.alroot-wayland/ipc. It uses only the isolated rootful X DISPLAY
+and pinned Termux xclip/xdotool packages. Clipboard is UTF-8 text only
+(maximum 1 MiB); X11 IME sends completed text via XTEST (up to 16 KiB
+per commit). Preedit remains Android-side until commit. Korean and multiline
+typing remain TEST-PENDING until live IDE verification.
+
 Logs: ~/.alroot-wayland/logs, ~/.alroot-wayland/spawn.log;
 Android: logcat -s AlrootWayland DroidDeckWayland
 

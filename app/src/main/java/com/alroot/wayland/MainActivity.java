@@ -7,6 +7,7 @@ import android.content.ClipboardManager;
 import android.content.Context;
 import android.content.Intent;
 import android.content.pm.ActivityInfo;
+import android.graphics.Bitmap;
 import android.graphics.Color;
 import android.os.Build;
 import android.os.Bundle;
@@ -34,6 +35,7 @@ import java.io.File;
 public final class MainActivity extends Activity implements SurfaceHolder.Callback {
     private final Handler main = new Handler(Looper.getMainLooper());
     private InputSurfaceView view;
+    private CursorOverlay cursorOverlay;
     private TextView status;
     private Surface attached;
     private static Surface activeSurface;
@@ -43,6 +45,58 @@ public final class MainActivity extends Activity implements SurfaceHolder.Callba
     private ClipboardManager clipboard;
     private ClipboardManager.OnPrimaryClipChangedListener clipboardObserver;
     private WaylandCompositor.ClipboardListener guestClipboardListener;
+    private final int[] cursorSnapshot = new int[WaylandCompositor.CURSOR_BUF_INTS];
+    private int lastCursorSerial = Integer.MIN_VALUE;
+    private final Runnable cursorPoll = new Runnable() {
+        @Override public void run() {
+            if (isFinishing() || isDestroyed()) return;
+            if (HelperService.running && cursorOverlay != null) {
+                try {
+                    int serial = WaylandCompositor.nativeCursorSerial();
+                    if (serial != lastCursorSerial) {
+                        int length = WaylandCompositor.nativeCursorSnapshot(cursorSnapshot);
+                        if (length >= 6) {
+                            boolean hidden = cursorSnapshot[1] != 0 && serial > 0;
+                            int w = cursorSnapshot[2], h = cursorSnapshot[3];
+                            Bitmap bitmap = null;
+                            if (!hidden && w > 0 && h > 0 && w <= 256 && h <= 256
+                                    && length >= 6 + w * h) {
+                                bitmap = Bitmap.createBitmap(w, h, Bitmap.Config.ARGB_8888);
+                                bitmap.setPixels(cursorSnapshot, 6, w, 0, 0, w, h);
+                                bitmap.setDensity(Bitmap.DENSITY_NONE);
+                            }
+                            view.setGuestCursor(bitmap, cursorSnapshot[4], cursorSnapshot[5], hidden);
+                            cursorOverlay.setGuestCursor(bitmap, cursorSnapshot[4], cursorSnapshot[5], hidden);
+                        }
+                        lastCursorSerial = serial;
+                    }
+                } catch (Throwable ex) {
+                    android.util.Log.w("AlrootWayland", "cursor snapshot unavailable", ex);
+                }
+            }
+            main.postDelayed(this, 150);
+        }
+    };
+    private final Runnable clipboardPoll = new Runnable() {
+        @Override public void run() {
+            if (isFinishing() || isDestroyed()) return;
+            if (hasWindowFocus() && HelperService.running) {
+                String text = ClipboardBridge.updatedX11Text();
+                if (text != null) {
+                    WaylandCompositor.setClipboardText(text);
+                    if (clipboard != null) {
+                        CharSequence old = clipboard.hasPrimaryClip()
+                                ? clipboard.getPrimaryClip().getItemAt(0).coerceToText(MainActivity.this) : "";
+                        if (!text.contentEquals(old)) {
+                            clipboardEcho = text;
+                            clipboard.setPrimaryClip(ClipData.newPlainText("Linux X11", text));
+                        }
+                    }
+                }
+            }
+            main.postDelayed(this, 450);
+        }
+    };
 
     private final Choreographer.FrameCallback vsync = new Choreographer.FrameCallback() {
         @Override public void doFrame(long frameTimeNanos) {
@@ -59,6 +113,11 @@ public final class MainActivity extends Activity implements SurfaceHolder.Callba
         view.getHolder().addCallback(this);
         FrameLayout root = new FrameLayout(this);
         root.addView(view, new FrameLayout.LayoutParams(-1, -1));
+        cursorOverlay = new CursorOverlay(this, view);
+        // Draw on top without stealing the mouse/touch events from SurfaceView.
+        cursorOverlay.setEnabled(false);
+        root.addView(cursorOverlay, new FrameLayout.LayoutParams(-1, -1));
+        view.setCursorMoveListener(() -> cursorOverlay.invalidate());
         LinearLayout overlay = new LinearLayout(this);
         overlay.setOrientation(LinearLayout.VERTICAL);
         overlay.setBackgroundColor(0xA8000000);
@@ -83,6 +142,7 @@ public final class MainActivity extends Activity implements SurfaceHolder.Callba
             CharSequence text = clipboard.getPrimaryClip().getItemAt(0).coerceToText(this);
             String s = text == null ? "" : text.toString();
             if (s.equals(clipboardEcho)) { clipboardEcho = null; return; }
+            ClipboardBridge.androidToX11(s);
             WaylandCompositor.setClipboardText(s);
         };
         clipboard.addPrimaryClipChangedListener(clipboardObserver);
@@ -91,6 +151,7 @@ public final class MainActivity extends Activity implements SurfaceHolder.Callba
             CharSequence old = clipboard.hasPrimaryClip()
                     ? clipboard.getPrimaryClip().getItemAt(0).coerceToText(this) : "";
             if (text.contentEquals(old)) return;
+            ClipboardBridge.androidToX11(text);
             clipboardEcho = text;
             clipboard.setPrimaryClip(ClipData.newPlainText("Linux", text));
         });
@@ -102,6 +163,8 @@ public final class MainActivity extends Activity implements SurfaceHolder.Callba
 
         restoreWindowSettings();
         startForegroundService(new Intent(this, HelperService.class));
+        main.post(cursorPoll);
+        main.post(clipboardPoll);
         updateStatus();
         main.postDelayed(new Runnable() {
             @Override public void run() {
@@ -292,8 +355,8 @@ public final class MainActivity extends Activity implements SurfaceHolder.Callba
         if (activeSurface != attached) {
             WaylandCompositor.nativeSetSurface(attached);
             activeSurface = attached;
+            applyScale();
         }
-        applyScale();
         if (!vsyncOn) {
             vsyncOn = true;
             Choreographer.getInstance().postFrameCallback(vsync);
@@ -321,11 +384,16 @@ public final class MainActivity extends Activity implements SurfaceHolder.Callba
         if (!hasFocus && view != null) {
             view.releaseAllKeys();
             view.releasePointerCapture();
+        } else if (hasFocus && clipboardObserver != null) {
+            // Android restricts clipboard access in the background; resync on focus.
+            clipboardObserver.onPrimaryClipChanged();
         }
         updateStatus();
     }
 
     @Override protected void onDestroy() {
+        main.removeCallbacks(cursorPoll);
+        main.removeCallbacks(clipboardPoll);
         detach();
         if (clipboard != null && clipboardObserver != null)
             clipboard.removePrimaryClipChangedListener(clipboardObserver);

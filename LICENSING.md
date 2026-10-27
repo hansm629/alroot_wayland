@@ -16,3 +16,6 @@ No GPLv3 code is embedded into external Labwc or wlroots GPLv2-only modules.
 The full source for shipped APK-specific modifications and reproducible build
 scripts is this repository. Third-party binary source correspondence remains
 to be audited before public release or redistribution beyond development CI.
+
+Project-private wlroots is compiled as a separate bionic library from upstream
+0.18.2; its permissive license is retained in LICENSES/wlroots-MIT.txt.
