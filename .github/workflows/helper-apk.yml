@@ -24,7 +24,7 @@ jobs:
           sdkmanager "platforms;android-35" "build-tools;35.0.0" "cmake;3.22.1" "ndk;27.3.13750724"
       - name: Check pinned binary hashes
         run: |
-          echo '2daff7500b6acee55291567d786653ba75f5a5e648fce4c10fe6bc7a8ea  app/src/main/jniLibs/arm64-v8a/libwayland-server.so' | sha256sum -c
+          echo '2daff7500b6acee55291567d786653ba75f5aecf5a5e648fce4c10fe6bc7a8ea  app/src/main/jniLibs/arm64-v8a/libwayland-server.so' | sha256sum -c
           echo '8855ba6dc12e9abf40729481a7a99aa391ac7b2e77bad4fbe0bb51cd66216c0e  app/src/main/jniLibs/arm64-v8a/libffi.so' | sha256sum -c
       - name: Configure signing credentials
         if: github.event_name != 'pull_request'
