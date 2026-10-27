@@ -6,6 +6,7 @@ PREFIX=/data/data/com.termux/files/usr
 STATE="$HOME/.alroot-wayland"
 RUNTIME="$STATE/runtime"
 LOGS="$STATE/logs"
+export TMPDIR="$PREFIX/tmp"
 mkdir -p "$STATE" "$LOGS"
 chmod 700 "$STATE" "$LOGS"
 
@@ -14,11 +15,40 @@ usage() {
     echo '       alroot-wayland status|open|stop|doctor|logs'
 }
 
-alive() {
-    local role="$1" pid="" expected=""
-    [[ -f "$STATE/$role.pid" ]] || return 1
-    read -r pid expected < "$STATE/$role.pid" || return 1
+process_start_ticks() {
+    local pid="$1" line
     [[ "$pid" =~ ^[0-9]+$ && -r "/proc/$pid/stat" ]] || return 1
+    IFS= read -r line < "/proc/$pid/stat" || return 1
+    line="${line##*) }"
+    local -a fields
+    read -r -a fields <<< "$line"
+    [[ "${fields[19]:-}" =~ ^[0-9]+$ ]] || return 1
+    printf '%s\n' "${fields[19]}"
+}
+
+isolated_session_leader() {
+    local pid="$1" line
+    [[ "$pid" =~ ^[0-9]+$ && -r "/proc/$pid/stat" ]] || return 1
+    IFS= read -r line < "/proc/$pid/stat" || return 1
+    line="${line##*) }"
+    local -a fields
+    read -r -a fields <<< "$line"
+    [[ "${fields[2]:-}" == "$pid" && "${fields[3]:-}" == "$pid" ]]
+}
+
+owned_pid_active() {
+    local role="$1" pid="" expected="" marker="" current=""
+    [[ -f "$STATE/$role.pid" ]] || return 1
+    read -r pid expected marker < "$STATE/$role.pid" || return 1
+    [[ "$marker" == "alroot-wayland" ]] || return 1
+    current="$(process_start_ticks "$pid")" || return 1
+    [[ "$current" == "$expected" ]] || return 1
+}
+
+alive() {
+    local role="$1" pid="" expected="" marker=""
+    owned_pid_active "$role" || return 1
+    read -r pid expected marker < "$STATE/$role.pid" || return 1
     local cmd
     cmd="$(tr '\0' ' ' < "/proc/$pid/cmdline" 2>/dev/null || true)"
     case "$role" in
@@ -31,7 +61,12 @@ alive() {
 
 record_pid() {
     local name="$1" pid="$2"
-    printf '%s project-owned\n' "$pid" > "$STATE/$name.pid"
+    local start
+    start="$(process_start_ticks "$pid")" || {
+        echo "Cannot inspect started $name PID $pid" >&2
+        return 1
+    }
+    printf '%s %s alroot-wayland\n' "$pid" "$start" > "$STATE/$name.pid"
 }
 
 socket_ready() {
@@ -53,9 +88,34 @@ wait_socket() {
     return 1
 }
 
+wait_nested_socket() {
+    local i path parent
+    for ((i=0; i<90; ++i)); do
+        for path in "$RUNTIME"/wayland-*; do
+            [[ -S "$path" && "$path" != "$RUNTIME/wayland-0" ]] || continue
+            if socket_ready "$path"; then
+                parent="${path##*/}"
+                printf '%s\n' "$parent" > "$STATE/labwc-socket"
+                printf '%s\n' "$parent"
+                return 0
+            fi
+        done
+        owned_pid_active labwc || return 1
+        sleep .2
+    done
+    return 1
+}
+
 xfce_start() {
     local display="$1"
     mkdir -p "$STATE/xfce-config" "$STATE/xfce-cache"
+    # One-time profile snapshot: never write into the original settings.
+    local config_name
+    for config_name in xfce4 nimf fontconfig gtk-3.0 gtk-4.0 qt5ct qt6ct; do
+        if [[ -e "$HOME/.config/$config_name" && ! -e "$STATE/xfce-config/$config_name" ]]; then
+            cp -a "$HOME/.config/$config_name" "$STATE/xfce-config/"
+        fi
+    done
     (
         export HOME PREFIX PATH="$PREFIX/bin:$PREFIX/bin/applets"
         export DISPLAY="$display" XAUTHORITY="$STATE/Xauthority"
@@ -63,7 +123,9 @@ xfce_start() {
         export XDG_CACHE_HOME="$STATE/xfce-cache" XDG_SESSION_TYPE=x11
         unset WAYLAND_DISPLAY DBUS_SESSION_BUS_ADDRESS SESSION_MANAGER
         export NO_AT_BRIDGE=1
-        exec dbus-run-session -- xfce4-session
+        # Separate process group so explicit stop can target this session's
+        # descendants without signalling any pre-existing desktop session.
+        exec setsid dbus-run-session -- xfce4-session
     ) > "$LOGS/xfce.log" 2>&1 &
     record_pid xfce "$!"
 }
@@ -93,7 +155,7 @@ start_xwayland() {
             printf ':%d\n' "$n" > "$STATE/display"
             return 0
         fi
-        if ! alive xwayland; then
+        if ! owned_pid_active xwayland; then
             tail -15 "$LOGS/xwayland.log" >&2
             return 1
         fi
@@ -113,6 +175,17 @@ start_session() {
     if alive xwayland || alive xfce || alive labwc; then
         echo 'Existing Alroot session found; run status or stop first' >&2; return 1
     fi
+    # Refuse to attach to an unexpected nested socket from a previous session.
+    local path
+    for path in "$RUNTIME"/wayland-*; do
+        [[ -S "$path" && "$path" != "$RUNTIME/wayland-0" ]] || continue
+        if socket_ready "$path"; then
+            echo "BLOCKED: unexpected nested Wayland socket already in use: $path" >&2
+            return 1
+        fi
+    done
+    # Failed intermediate stages must not leave project-owned processes alive.
+    trap 'rc=$?; if ((rc != 0)); then stop_one xfce; stop_one xwayland; stop_one labwc; fi' EXIT
     if ! wait_socket wayland-0; then
         echo "BLOCKED: Android helper socket $RUNTIME/wayland-0 is not accepting connections" >&2
         return 1
@@ -127,12 +200,14 @@ start_session() {
             export XDG_RUNTIME_DIR="$RUNTIME" WAYLAND_DISPLAY=wayland-0
             export WLR_BACKENDS=wayland WLR_RENDERER=pixman WLR_NO_HARDWARE_CURSORS=1
             export XDG_CONFIG_HOME="$STATE/xfce-config"
+            if [[ -r "$HOME/alroot_wayland/packages/prefix/lib/libwlroots-0.18.so" ]]; then
+                export LD_LIBRARY_PATH="$HOME/alroot_wayland/packages/prefix/lib"
+            fi
             unset DISPLAY DBUS_SESSION_BUS_ADDRESS
             exec labwc -C "$STATE/labwc-config"
         ) > "$LOGS/labwc.log" 2>&1 &
         record_pid labwc "$!"
-        parent=wayland-1
-        if ! wait_socket "$parent"; then
+        if ! parent="$(wait_nested_socket)"; then
             echo 'BLOCKED: Labwc Wayland backend did not start (nested socket missing)' >&2
             tail -16 "$LOGS/labwc.log" >&2
             return 1
@@ -147,13 +222,18 @@ start_session() {
         return 1
     fi
     echo "Alroot $profile started on $(cat "$STATE/display")"
+    trap - EXIT
 }
 
 stop_one() {
     local role="$1" pid=""
-    if alive "$role"; then
+    if owned_pid_active "$role"; then
         read -r pid _ < "$STATE/$role.pid"
-        kill -TERM "$pid" 2>/dev/null || true
+        if [[ "$role" == xfce ]] && isolated_session_leader "$pid"; then
+            kill -TERM -- "-$pid" 2>/dev/null || true
+        else
+            kill -TERM "$pid" 2>/dev/null || true
+        fi
         echo "signalled Alroot $role pid $pid"
     fi
     rm -f "$STATE/$role.pid"
@@ -178,6 +258,7 @@ case "${1:-}" in
         stop_one xwayland
         stop_one labwc
         rm -f "$STATE/display"
+        rm -f "$STATE/labwc-socket"
         ;;
     open)
         am start -n com.alroot.wayland/.MainActivity
@@ -194,7 +275,11 @@ case "${1:-}" in
             else echo "$tool: MISSING"; fi
         done
         if command -v labwc >/dev/null 2>&1; then
-            labwc -h 2>&1 | head -4 || true
+            if [[ -r "$HOME/alroot_wayland/packages/prefix/lib/libwlroots-0.18.so" ]]; then
+                LD_LIBRARY_PATH="$HOME/alroot_wayland/packages/prefix/lib" labwc -h 2>&1 | head -4 || true
+            else
+                labwc -h 2>&1 | head -4 || true
+            fi
         fi
         if [[ -d "$RUNTIME" ]]; then stat -c 'runtime permissions: %a' "$RUNTIME"; fi
         ;;

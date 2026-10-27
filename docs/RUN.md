@@ -4,6 +4,12 @@ Install the locally signed helper via Android system installer without deleting
 Termux or Termux-X11, then open Alroot Wayland. Verify UID/signature MATCH and
 the actual host socket status.
 
+If default Termux Labwc aborts with libtermuxgui protobuf missing symbols, build
+the project-private wlroots library using
+`bash ~/alroot_wayland/packages/build-wlroots-termux.sh`.
+This does not overwrite system wlroots or protobuf; the Labwc profile
+sets an isolated LD_LIBRARY_PATH for its own process.
+
 From the Termux shell (NOT inside PRoot):
 
     bash ~/alroot_wayland/termux/alroot-wayland doctor

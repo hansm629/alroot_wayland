@@ -1,0 +1,99 @@
+diff --git a/util/shm.c b/util/shm.c
+index 5eb87bb..e1c7137 100644
+--- a/util/shm.c
++++ b/util/shm.c
+@@ -1,5 +1,7 @@
+ #include <errno.h>
+ #include <fcntl.h>
++#include <stdio.h>
++#include <stdlib.h>
+ #include <string.h>
+ #include <sys/mman.h>
+ #include <sys/stat.h>
+@@ -8,41 +10,31 @@
+ #include <wlr/config.h>
+ #include "util/shm.h"
+ 
+-#define RANDNAME_PATTERN "/wlroots-XXXXXX"
+-
+-static void randname(char *buf) {
+-	struct timespec ts;
+-	clock_gettime(CLOCK_REALTIME, &ts);
+-	long r = ts.tv_nsec;
+-	for (int i = 0; i < 6; ++i) {
+-		buf[i] = 'A'+(r&15)+(r&16)*2;
+-		r >>= 5;
++static int excl_shm_open(char *name, size_t cap) {
++	const char *runtime = getenv("XDG_RUNTIME_DIR");
++	if (runtime == NULL || runtime[0] != '/') {
++		errno = EINVAL;
++		return -1;
+ 	}
+-}
+-
+-static int excl_shm_open(char *name) {
+-	int retries = 100;
+-	do {
+-		randname(name + strlen(RANDNAME_PATTERN) - 6);
+-
+-		--retries;
+-		// CLOEXEC is guaranteed to be set by shm_open
+-		int fd = shm_open(name, O_RDWR | O_CREAT | O_EXCL, 0600);
+-		if (fd >= 0) {
+-			return fd;
+-		}
+-	} while (retries > 0 && errno == EEXIST);
+-
+-	return -1;
++	if (snprintf(name, cap, "%s/wlroots-XXXXXX", runtime) >= (int)cap) {
++		errno = ENAMETOOLONG;
++		return -1;
++	}
++	int fd = mkstemp(name);
++	if (fd >= 0) {
++		fchmod(fd, 0600);
++		fcntl(fd, F_SETFD, FD_CLOEXEC);
++	}
++	return fd;
+ }
+ 
+ int allocate_shm_file(size_t size) {
+-	char name[] = RANDNAME_PATTERN;
+-	int fd = excl_shm_open(name);
++	char name[4096];
++	int fd = excl_shm_open(name, sizeof(name));
+ 	if (fd < 0) {
+ 		return -1;
+ 	}
+-	shm_unlink(name);
++	unlink(name);
+ 
+ 	int ret;
+ 	do {
+@@ -57,21 +49,21 @@ int allocate_shm_file(size_t size) {
+ }
+ 
+ bool allocate_shm_file_pair(size_t size, int *rw_fd_ptr, int *ro_fd_ptr) {
+-	char name[] = RANDNAME_PATTERN;
+-	int rw_fd = excl_shm_open(name);
++	char name[4096];
++	int rw_fd = excl_shm_open(name, sizeof(name));
+ 	if (rw_fd < 0) {
+ 		return false;
+ 	}
+ 
+ 	// CLOEXEC is guaranteed to be set by shm_open
+-	int ro_fd = shm_open(name, O_RDONLY, 0);
++	int ro_fd = open(name, O_RDONLY | O_CLOEXEC);
+ 	if (ro_fd < 0) {
+-		shm_unlink(name);
++		unlink(name);
+ 		close(rw_fd);
+ 		return false;
+ 	}
+ 
+-	shm_unlink(name);
++	unlink(name);
+ 
+ 	// Make sure the file cannot be re-opened in read-write mode (e.g. via
+ 	// "/proc/self/fd/" on Linux)
