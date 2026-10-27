@@ -66,7 +66,7 @@ jobs:
             echo "signed=${ALROOT_CI_SIGNED:-0}"
             cat upstream.lock
           } > artifact/manifest.txt
-          (cd artifact && find . -type f -print0 | xargs -0 -r sha256sum > SHA256SUMS)
+          (cd artifact && find . -type f ! -name SHA256SUMS -print0 | xargs -0 -r sha256sum > SHA256SUMS)
       - name: Upload
         if: always()
         uses: actions/upload-artifact@v4
