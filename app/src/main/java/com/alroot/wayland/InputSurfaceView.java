@@ -137,7 +137,7 @@ public final class InputSurfaceView extends SurfaceView {
         }
         if (action == MotionEvent.ACTION_SCROLL) {
             WaylandCompositor.nativeSendSceneInput(4,
-                    Math.round(event.getAxisValue(MotionEvent.AXIS_VSCROLL)));
+                    Math.round(event.getAxisValue(MotionEvent.AXIS_VSCROLL)), 0);
             return true;
         }
         if (action == MotionEvent.ACTION_BUTTON_PRESS || action == MotionEvent.ACTION_BUTTON_RELEASE) {
@@ -158,7 +158,7 @@ public final class InputSurfaceView extends SurfaceView {
             }
             if (event.getActionMasked() == MotionEvent.ACTION_SCROLL) {
                 WaylandCompositor.nativeSendSceneInput(4,
-                        Math.round(event.getAxisValue(MotionEvent.AXIS_VSCROLL)));
+                        Math.round(event.getAxisValue(MotionEvent.AXIS_VSCROLL)), 0);
                 return true;
             }
             if (event.getActionMasked() == MotionEvent.ACTION_BUTTON_PRESS ||

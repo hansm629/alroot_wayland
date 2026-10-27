@@ -81,9 +81,9 @@ public final class TermuxSession {
             process.directory(new File(HOME));
             process.redirectErrorStream(true);
             process.redirectOutput(ProcessBuilder.Redirect.appendTo(logfile));
-            Process child = process.start();
-            Log.i("AlrootWayland", "trusted Termux action " + command + " pid " + child.pid());
-            return "Action " + command + " launched, pid " + child.pid() + "; see " + logfile;
+            process.start();
+            Log.i("AlrootWayland", "trusted Termux action " + command + " spawned");
+            return "Action " + command + " launched; see " + logfile;
         } catch (Exception ex) {
             Log.e("AlrootWayland", "Termux action failed", ex);
             return "Termux command failed: " + ex;
