@@ -4,7 +4,7 @@
 #include <unistd.h>
 #include <fcntl.h>
 #include <errno.h>
-#include "droiddeck_ext.h"
+#include "alroot_ext.h"
 #include "wlr-data-control-unstable-v1-server-protocol.h"
 
 #define CLIP_MAX_BYTES (1024 * 1024)
@@ -107,7 +107,7 @@ static int on_writer_writable(int fd, uint32_t mask, void *data) {
 
 static int on_writer_timeout(void *data) {
     struct writer *w = data;
-    droiddeck_log("clipboard", "a program never read the clipboard text it asked for; giving up");
+    alroot_log("clipboard", "a program never read the clipboard text it asked for; giving up");
     writer_free(w);
     return 0;
 }
@@ -155,11 +155,11 @@ static void reader_finish(struct reader *r) {
             free(g_last_guest_text);
             g_last_guest_text = copy;
             g_last_guest_len = r->len;
-            droiddeck_log("clipboard", "guest copied %zu bytes (%s)", r->len, r->mime);
-            droiddeck_on_clipboard_text(copy, (int)r->len);
+            alroot_log("clipboard", "guest copied %zu bytes (%s)", r->len, r->mime);
+            alroot_on_clipboard_text(copy, (int)r->len);
         }
     } else {
-        droiddeck_log("clipboard", "guest copied an empty text; Android clipboard left alone");
+        alroot_log("clipboard", "guest copied an empty text; Android clipboard left alone");
     }
     reader_free(r);
 }
@@ -168,7 +168,7 @@ static int on_reader_readable(int fd, uint32_t mask, void *data) {
     struct reader *r = data;
     for (;;) {
         if (r->len >= CLIP_MAX_BYTES) {
-            droiddeck_log("clipboard", "guest text exceeds %d bytes; dropped", CLIP_MAX_BYTES);
+            alroot_log("clipboard", "guest text exceeds %d bytes; dropped", CLIP_MAX_BYTES);
             reader_free(r);
             return 0;
         }
@@ -191,7 +191,7 @@ static int on_reader_readable(int fd, uint32_t mask, void *data) {
 
 static int on_reader_timeout(void *data) {
     struct reader *r = data;
-    droiddeck_log("clipboard", "timed out reading the guest's clipboard text (%zu bytes so far)", r->len);
+    alroot_log("clipboard", "timed out reading the guest's clipboard text (%zu bytes so far)", r->len);
     reader_free(r);
     return 0;
 }
@@ -225,7 +225,7 @@ static void offer_receive(struct wl_client *c, struct wl_resource *r, const char
     if (!o || o->gen != g_gen) { close(fd); return; }
     if (g_owner == OWNER_HOST) {
         if (is_text_mime(mime)) {
-            droiddeck_log("clipboard", "Android clipboard → guest (%zu bytes) for %s", g_host_len, droiddeck_client_name(c));
+            alroot_log("clipboard", "Android clipboard → guest (%zu bytes) for %s", g_host_len, alroot_client_name(c));
             writer_start(fd, g_host_text, g_host_len);
         } else {
             close(fd);
@@ -298,7 +298,7 @@ static void broadcast_selection(void) {
     wl_display_flush_clients(g_disp);
 }
 
-void droiddeck_clipboard_keyboard_focus(struct wl_client *client) {
+void alroot_clipboard_keyboard_focus(struct wl_client *client) {
     struct device *d;
     if (client == g_kb_client) return;
     g_kb_client = client;
@@ -315,7 +315,7 @@ static void source_res_destroy(struct wl_resource *r) {
         g_src = NULL;
         g_owner = OWNER_NONE;
         if (g_reader) reader_free(g_reader);
-        droiddeck_log("clipboard", "%s withdrew its clipboard contents", droiddeck_client_name(wl_resource_get_client(r)));
+        alroot_log("clipboard", "%s withdrew its clipboard contents", alroot_client_name(wl_resource_get_client(r)));
         broadcast_selection();
     }
     for (int i = 0; i < s->nmimes; i++) free(s->mimes[i]);
@@ -365,9 +365,9 @@ static void set_selection(struct wl_client *c, struct wl_resource *source_res) {
             if (*list) strncat(list, ", ", sizeof(list) - strlen(list) - 1);
             strncat(list, s->mimes[i], sizeof(list) - strlen(list) - 1);
         }
-        droiddeck_log("clipboard", "selection set by %s (%s)", droiddeck_client_name(c), *list ? list : "no mime types");
+        alroot_log("clipboard", "selection set by %s (%s)", alroot_client_name(c), *list ? list : "no mime types");
     } else {
-        droiddeck_log("clipboard", "%s cleared the clipboard", droiddeck_client_name(c));
+        alroot_log("clipboard", "%s cleared the clipboard", alroot_client_name(c));
     }
     broadcast_selection();
     read_client_text();
@@ -383,7 +383,7 @@ static void device_res_destroy(struct wl_resource *r) {
 
 static void device_start_drag(struct wl_client *c, struct wl_resource *r, struct wl_resource *source,
                               struct wl_resource *origin, struct wl_resource *icon, uint32_t serial) {
-    droiddeck_log("clipboard", "%s started a drag and drop; not supported, cancelled", droiddeck_client_name(c));
+    alroot_log("clipboard", "%s started a drag and drop; not supported, cancelled", alroot_client_name(c));
     if (source) {
         struct source *s = wl_resource_get_user_data(source);
         if (s && s != g_src) source_send_cancelled(s);
@@ -475,7 +475,7 @@ void clipboard_host_text(char *utf8, size_t len) {
     if (!len) free(utf8);
     g_host_len = len;
     g_owner = len ? OWNER_HOST : OWNER_NONE;
-    droiddeck_log("clipboard", len ? "Android clipboard → guest (%zu bytes)" : "Android clipboard cleared (%zu bytes)", len);
+    alroot_log("clipboard", len ? "Android clipboard → guest (%zu bytes)" : "Android clipboard cleared (%zu bytes)", len);
     broadcast_selection();
 }
 

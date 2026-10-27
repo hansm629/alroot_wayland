@@ -109,7 +109,7 @@ static void log_settings(const struct fx_settings *s) {
     char line[400];
     int n;
     if (!spatial_mode(s->scaling) && !effect_count(s)) {
-        droiddeck_log("effects", "all off: scaling=%s (plain blit)", scaling_name(s->scaling));
+        alroot_log("effects", "all off: scaling=%s (plain blit)", scaling_name(s->scaling));
         return;
     }
     n = snprintf(line, sizeof(line), "scaling=%s", scaling_name(s->scaling));
@@ -127,7 +127,7 @@ static void log_settings(const struct fx_settings *s) {
     if (s->crt) n += snprintf(line + n, sizeof(line) - n, ", CRT on");
     if (s->deband_on) n += snprintf(line + n, sizeof(line) - n, ", Deband on %d%%", s->deband_pct);
     (void)n;
-    droiddeck_log("effects", "%s", line);
+    alroot_log("effects", "%s", line);
 }
 
 int vkp_effects_sync(void) {
@@ -252,7 +252,7 @@ static int target_ensure(struct fx_target *t, int w, int h, const char *what) {
                                      VK_IMAGE_USAGE_TRANSFER_SRC_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT,
                             .sharingMode = VK_SHARING_MODE_EXCLUSIVE, .initialLayout = VK_IMAGE_LAYOUT_UNDEFINED};
     VkResult r = g_vk.CreateImage(g_dev, &ii, NULL, &t->img);
-    if (r != VK_SUCCESS) { droiddeck_log("error", "effects: %s image %dx%d: vkCreateImage %d", what, w, h, (int)r); return -1; }
+    if (r != VK_SUCCESS) { alroot_log("error", "effects: %s image %dx%d: vkCreateImage %d", what, w, h, (int)r); return -1; }
     VkMemoryRequirements req;
     g_vk.GetImageMemoryRequirements(g_dev, t->img, &req);
     int idx = memtype(req.memoryTypeBits, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
@@ -261,7 +261,7 @@ static int target_ensure(struct fx_target *t, int w, int h, const char *what) {
                                 .memoryTypeIndex = (uint32_t)(idx < 0 ? 0 : idx)};
     r = g_vk.AllocateMemory(g_dev, &mai, NULL, &t->mem);
     if (r != VK_SUCCESS) {
-        droiddeck_log("error", "effects: %s image %dx%d (%llu bytes): vkAllocateMemory %d", what, w, h,
+        alroot_log("error", "effects: %s image %dx%d (%llu bytes): vkAllocateMemory %d", what, w, h,
                    (unsigned long long)req.size, (int)r);
         target_destroy(t); return -1;
     }
@@ -304,7 +304,7 @@ static VkShaderModule shader(const uint32_t *code, size_t size) {
 
 static VkPipeline post_pipeline(VkShaderModule vert, const uint32_t *frag_code, size_t frag_size, const char *name) {
     VkShaderModule frag = shader(frag_code, frag_size);
-    if (!frag) { droiddeck_log("error", "effects: %s: vkCreateShaderModule failed", name); return VK_NULL_HANDLE; }
+    if (!frag) { alroot_log("error", "effects: %s: vkCreateShaderModule failed", name); return VK_NULL_HANDLE; }
     VkPipelineShaderStageCreateInfo st[2] = {
         {.sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO, .stage = VK_SHADER_STAGE_VERTEX_BIT, .module = vert, .pName = "main"},
         {.sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO, .stage = VK_SHADER_STAGE_FRAGMENT_BIT, .module = frag, .pName = "main"}};
@@ -332,7 +332,7 @@ static VkPipeline post_pipeline(VkShaderModule vert, const uint32_t *frag_code, 
     VkPipeline p = VK_NULL_HANDLE;
     VkResult r = g_vk.CreateGraphicsPipelines(g_dev, VK_NULL_HANDLE, 1, &pi, NULL, &p);
     g_vk.DestroyShaderModule(g_dev, frag, NULL);
-    if (r != VK_SUCCESS) { droiddeck_log("error", "effects: %s: vkCreateGraphicsPipelines %d", name, (int)r); return VK_NULL_HANDLE; }
+    if (r != VK_SUCCESS) { alroot_log("error", "effects: %s: vkCreateGraphicsPipelines %d", name, (int)r); return VK_NULL_HANDLE; }
     return p;
 }
 
@@ -358,7 +358,7 @@ void vkp_effects_set_formats(VkFormat scene_fmt, VkFormat target_fmt) {
         g_fx_fmt = target_fmt;
         g_scene_fmt = scene_fmt;
         if (g_dev)
-            droiddeck_log("effects", "chain now works in %s (%s)",
+            alroot_log("effects", "chain now works in %s (%s)",
                        target_fmt == FX_FORMAT ? "8-bit RGBA"
                        : target_fmt == VK_FORMAT_R16G16B16A16_SFLOAT ? "FP16 RGBA" : "10-bit RGB",
                        target_fmt == FX_FORMAT ? "SDR frames"
@@ -372,7 +372,7 @@ void vkp_effects_set_formats(VkFormat scene_fmt, VkFormat target_fmt) {
 
 static int objects_ensure(void) {
     if (g_ready) return g_ready == 1 ? 0 : -1;
-    if (!g_dev || !g_vk.CreateGraphicsPipelines) { g_ready = -1; droiddeck_log("error", "effects: no device for the chain"); return -1; }
+    if (!g_dev || !g_vk.CreateGraphicsPipelines) { g_ready = -1; alroot_log("error", "effects: no device for the chain"); return -1; }
     VkAttachmentDescription att = {.format = g_fx_fmt, .samples = VK_SAMPLE_COUNT_1_BIT,
                                    .loadOp = VK_ATTACHMENT_LOAD_OP_DONT_CARE, .storeOp = VK_ATTACHMENT_STORE_OP_STORE,
                                    .stencilLoadOp = VK_ATTACHMENT_LOAD_OP_DONT_CARE, .stencilStoreOp = VK_ATTACHMENT_STORE_OP_DONT_CARE,
@@ -434,12 +434,12 @@ static int objects_ensure(void) {
 #undef MK
     g_vk.DestroyShaderModule(g_dev, vert, NULL);
     g_ready = 1;
-    droiddeck_log("effects", "chain ready: 13 passes (SGSR, SGSR HQ, NIS, FSR EASU+RCAS, CAS, colour, FXAA, Toon, HDR, NTSC, CRT, deband) on %s", vkp_gpu_name());
+    alroot_log("effects", "chain ready: 13 passes (SGSR, SGSR HQ, NIS, FSR EASU+RCAS, CAS, colour, FXAA, Toon, HDR, NTSC, CRT, deband) on %s", vkp_gpu_name());
     return 0;
 fail:
     objects_destroy();
     g_ready = -1;
-    droiddeck_log("error", "effects: the screen-effect chain could not be built on this driver; effects are off for this session");
+    alroot_log("error", "effects: the screen-effect chain could not be built on this driver; effects are off for this session");
     return -1;
 }
 

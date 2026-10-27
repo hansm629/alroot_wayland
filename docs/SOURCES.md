@@ -5,7 +5,8 @@ Pinned upstream: Droid-Deck/DroidDeck main SHA
 
 Copied sources: native/waylandcomp (including Vulkan, AHB, Wayland SHM,
 protocols, clipboard and JNI), native/adrenotools, native/shaders, and upstream
-WaylandCompositor.java. Imported libffi and libwayland-server are in Android
+WaylandCompositor.java (now com.alroot.wayland with Alroot JNI and runtime
+library identifiers). Imported libffi and libwayland-server are in Android
 jniLibs with hashes in upstream.lock. The Android front-end/service and stop
 request are Alroot-specific modifications, not a compositor rewrite.
 

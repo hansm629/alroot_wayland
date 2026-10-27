@@ -1,4 +1,4 @@
-add_library(droiddeckwayland SHARED
+add_library(alrootwayland SHARED
         src/compositor.c
         src/vk_present.c
         src/effects_chain.c
@@ -9,7 +9,7 @@ add_library(droiddeckwayland SHARED
         src/ahb_swapchain.c
         src/waylandcomp_jni.c
         src/gpu_clock_pin.c
-        src/droiddeck_ext.c
+        src/alroot_ext.c
         src/wl_dmabuf.c
         src/wl_clipboard.c
         src/wl_text_input.c
@@ -34,62 +34,62 @@ add_library(droiddeckwayland SHARED
         src/framegen_bridge.c
         src/framegen_jni.c
 )
-target_compile_options(droiddeckwayland PRIVATE
+target_compile_options(alrootwayland PRIVATE
         $<$<COMPILE_LANGUAGE:C>:-Wall -Wextra -Wno-unused-parameter -Wno-missing-field-initializers>)
-target_include_directories(droiddeckwayland PRIVATE
+target_include_directories(alrootwayland PRIVATE
         generated
         prebuilt/include
         src
         ${CMAKE_CURRENT_SOURCE_DIR}/../shaders
 )
 
-set(DROIDDECK_FRAMEGEN_LSFG_DIR ${CMAKE_CURRENT_SOURCE_DIR}/../framegen/lsfg)
-set(DROIDDECK_FRAMEGEN_DDFG_DIR ${CMAKE_CURRENT_SOURCE_DIR}/../framegen/ddfg)
-if (TARGET dxbc AND EXISTS ${DROIDDECK_FRAMEGEN_LSFG_DIR}/lsfg_engine.cpp
-        AND EXISTS ${DROIDDECK_FRAMEGEN_DDFG_DIR}/ddfg_engine.cpp)
-    message(STATUS "droiddeckwayland: frame-generation engines built in (LSFG Native, DD-FG Native)")
-    target_sources(droiddeckwayland PRIVATE
+set(ALROOT_FRAMEGEN_LSFG_DIR ${CMAKE_CURRENT_SOURCE_DIR}/../framegen/lsfg)
+set(ALROOT_FRAMEGEN_DDFG_DIR ${CMAKE_CURRENT_SOURCE_DIR}/../framegen/ddfg)
+if (TARGET dxbc AND EXISTS ${ALROOT_FRAMEGEN_LSFG_DIR}/lsfg_engine.cpp
+        AND EXISTS ${ALROOT_FRAMEGEN_DDFG_DIR}/ddfg_engine.cpp)
+    message(STATUS "alrootwayland: frame-generation engines built in (LSFG Native, DD-FG Native)")
+    target_sources(alrootwayland PRIVATE
             src/framegen_engine.cpp
-            ${DROIDDECK_FRAMEGEN_LSFG_DIR}/lsfg_probe.cpp
-            ${DROIDDECK_FRAMEGEN_LSFG_DIR}/lsfg_dll.cpp
-            ${DROIDDECK_FRAMEGEN_LSFG_DIR}/lsfg_dxbc.cpp
-            ${DROIDDECK_FRAMEGEN_LSFG_DIR}/lsfg_vkd.cpp
-            ${DROIDDECK_FRAMEGEN_LSFG_DIR}/lsfg_common.cpp
-            ${DROIDDECK_FRAMEGEN_LSFG_DIR}/lsfg_shaders.cpp
-            ${DROIDDECK_FRAMEGEN_LSFG_DIR}/lsfg_mipmaps.cpp
-            ${DROIDDECK_FRAMEGEN_LSFG_DIR}/lsfg_alpha.cpp
-            ${DROIDDECK_FRAMEGEN_LSFG_DIR}/lsfg_beta.cpp
-            ${DROIDDECK_FRAMEGEN_LSFG_DIR}/lsfg_gamma.cpp
-            ${DROIDDECK_FRAMEGEN_LSFG_DIR}/lsfg_delta.cpp
-            ${DROIDDECK_FRAMEGEN_LSFG_DIR}/lsfg_generate.cpp
-            ${DROIDDECK_FRAMEGEN_LSFG_DIR}/lsfg_chain.cpp
-            ${DROIDDECK_FRAMEGEN_LSFG_DIR}/lsfg_pacer.cpp
-            ${DROIDDECK_FRAMEGEN_LSFG_DIR}/lsfg_engine.cpp
-            ${DROIDDECK_FRAMEGEN_LSFG_DIR}/lsfg_governor.cpp
-            ${DROIDDECK_FRAMEGEN_LSFG_DIR}/lsfg_jni.cpp
-            ${DROIDDECK_FRAMEGEN_DDFG_DIR}/framegen.cpp
-            ${DROIDDECK_FRAMEGEN_DDFG_DIR}/ddfg_vkd.cpp
-            ${DROIDDECK_FRAMEGEN_DDFG_DIR}/ddfg_engine.cpp
+            ${ALROOT_FRAMEGEN_LSFG_DIR}/lsfg_probe.cpp
+            ${ALROOT_FRAMEGEN_LSFG_DIR}/lsfg_dll.cpp
+            ${ALROOT_FRAMEGEN_LSFG_DIR}/lsfg_dxbc.cpp
+            ${ALROOT_FRAMEGEN_LSFG_DIR}/lsfg_vkd.cpp
+            ${ALROOT_FRAMEGEN_LSFG_DIR}/lsfg_common.cpp
+            ${ALROOT_FRAMEGEN_LSFG_DIR}/lsfg_shaders.cpp
+            ${ALROOT_FRAMEGEN_LSFG_DIR}/lsfg_mipmaps.cpp
+            ${ALROOT_FRAMEGEN_LSFG_DIR}/lsfg_alpha.cpp
+            ${ALROOT_FRAMEGEN_LSFG_DIR}/lsfg_beta.cpp
+            ${ALROOT_FRAMEGEN_LSFG_DIR}/lsfg_gamma.cpp
+            ${ALROOT_FRAMEGEN_LSFG_DIR}/lsfg_delta.cpp
+            ${ALROOT_FRAMEGEN_LSFG_DIR}/lsfg_generate.cpp
+            ${ALROOT_FRAMEGEN_LSFG_DIR}/lsfg_chain.cpp
+            ${ALROOT_FRAMEGEN_LSFG_DIR}/lsfg_pacer.cpp
+            ${ALROOT_FRAMEGEN_LSFG_DIR}/lsfg_engine.cpp
+            ${ALROOT_FRAMEGEN_LSFG_DIR}/lsfg_governor.cpp
+            ${ALROOT_FRAMEGEN_LSFG_DIR}/lsfg_jni.cpp
+            ${ALROOT_FRAMEGEN_DDFG_DIR}/framegen.cpp
+            ${ALROOT_FRAMEGEN_DDFG_DIR}/ddfg_vkd.cpp
+            ${ALROOT_FRAMEGEN_DDFG_DIR}/ddfg_engine.cpp
     )
-    target_include_directories(droiddeckwayland PRIVATE
+    target_include_directories(alrootwayland PRIVATE
             ${CMAKE_CURRENT_SOURCE_DIR}/..
             ${CMAKE_CURRENT_SOURCE_DIR}/../framegen
     )
-    target_compile_options(droiddeckwayland PRIVATE
+    target_compile_options(alrootwayland PRIVATE
             $<$<COMPILE_LANGUAGE:CXX>:-std=c++17 -fvisibility=hidden>)
-    target_compile_definitions(droiddeckwayland PRIVATE
+    target_compile_definitions(alrootwayland PRIVATE
             DDFG_UPSTREAM="${DDFG_UPSTREAM}"
             DDFG_CHAIN_HASH="${DDFG_CHAIN_HASH}"
     )
-    target_link_libraries(droiddeckwayland dxbc atomic)
+    target_link_libraries(alrootwayland dxbc atomic)
 else()
-    message(STATUS "droiddeckwayland: frame-generation engines NOT built in (standalone build): stub")
-    target_sources(droiddeckwayland PRIVATE src/framegen_engine_stub.c)
+    message(STATUS "alrootwayland: frame-generation engines NOT built in (standalone build): stub")
+    target_sources(alrootwayland PRIVATE src/framegen_engine_stub.c)
 endif()
 add_library(wayland-server SHARED IMPORTED)
 set_target_properties(wayland-server PROPERTIES IMPORTED_LOCATION
         ${CMAKE_CURRENT_SOURCE_DIR}/prebuilt/lib/libwayland-server.so)
-target_link_libraries(droiddeckwayland
+target_link_libraries(alrootwayland
         wayland-server
         adrenotools
         dl

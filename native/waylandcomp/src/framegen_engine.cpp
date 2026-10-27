@@ -14,8 +14,8 @@
 #include "lsfg/lsfg_vkd.h"
 #include "ddfg/ddfg_engine.h"
 
-#define ELOG(...) __android_log_print(ANDROID_LOG_INFO, "DroidDeckWayland", "framegen: " __VA_ARGS__)
-#define ELOGE(...) __android_log_print(ANDROID_LOG_ERROR, "DroidDeckWayland", "framegen: " __VA_ARGS__)
+#define ELOG(...) __android_log_print(ANDROID_LOG_INFO, "AlrootWayland", "framegen: " __VA_ARGS__)
+#define ELOGE(...) __android_log_print(ANDROID_LOG_ERROR, "AlrootWayland", "framegen: " __VA_ARGS__)
 
 namespace {
 

@@ -10,10 +10,10 @@
 #include <time.h>
 #include <android/log.h>
 
-void droiddeck_log(const char *tag, const char *fmt, ...) __attribute__((format(printf, 2, 3)));
-uint64_t droiddeck_game_frames(void);
-#define FGLOG(...) droiddeck_log("framegen", __VA_ARGS__)
-#define LOGD(...) __android_log_print(ANDROID_LOG_DEBUG, "DroidDeckWayland", __VA_ARGS__)
+void alroot_log(const char *tag, const char *fmt, ...) __attribute__((format(printf, 2, 3)));
+uint64_t alroot_game_frames(void);
+#define FGLOG(...) alroot_log("framegen", __VA_ARGS__)
+#define LOGD(...) __android_log_print(ANDROID_LOG_DEBUG, "AlrootWayland", __VA_ARGS__)
 
 static _Atomic int   g_kind = VKP_FG_ENGINE_LSFG;
 static _Atomic int   g_armed;
@@ -385,7 +385,7 @@ int vkp_framegen_run(VkCommandBuffer cmd, VkImage scene, VkImageView scene_view,
     /* The pacer's source rate must be the game's, not this loop's: a loop slowed by its own
      * generations would otherwise read as a slower game and justify even more generations. */
     ++g_source_frames;
-    const uint64_t game_frames = droiddeck_game_frames();
+    const uint64_t game_frames = alroot_game_frames();
     uint32_t n_gen = fge_plan(g_ring_n, game_frames ? game_frames : g_source_frames, g_presented_rate);
     if (n_gen > g_ring_n) n_gen = g_ring_n;
     g_planned = n_gen;

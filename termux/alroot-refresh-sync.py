@@ -63,16 +63,22 @@ def main():
         if not output_match:
             raise RuntimeError("no isolated rootful Xwayland output")
         output = output_match.group(1)
-        name = "Alroot-%dx%d-%.2f" % (w, h, hz)
+        # Use CVT's stock, server-accepted pixel clock. The earlier
+        # "exact MHz" adjustment was rejected by rootful Xwayland's
+        # RRAddOutputMode (BadMatch), leaving the mode stuck at 59.96Hz.
+        # At 120Hz CVT-RB is 119.88Hz; the actual frame pacing is still
+        # provided by the Android host's physical VSync, not the modeline.
+        name = "Alroot-%dx%d-%dHz" % (w, h, round(hz))
         if re.search(r"^\s*" + re.escape(name) + r"\s+[\d.]+\*", before, re.M):
             print("Alroot XRandR already synchronized: %.3fHz" % hz)
             return 0
 
-        # cvt determines valid reduced-blanking horizontal/vertical totals.
-        # Its stock pixel clock is rounded and yields ~119.88Hz for 120Hz;
-        # calculate the exact clock from real Android wl_output mHz instead.
-        cvt = run([str(PREFIX / "bin/cvt"), "-r", str(w), str(h),
-                   str(round(hz))])
+        # CVT reduced blanking requires >=60Hz; 30Hz PiP uses classic CVT.
+        command = [str(PREFIX / "bin/cvt")]
+        if hz >= 59:
+            command.append("-r")
+        command += [str(w), str(h), str(round(hz))]
+        cvt = run(command)
         modeline = next((line.split("Modeline", 1)[1].strip() for line in
                          cvt.splitlines() if "Modeline" in line), None)
         if not modeline:
@@ -80,9 +86,7 @@ def main():
         tokens = shlex.split(modeline)
         if len(tokens) < 10:
             raise RuntimeError("incomplete CVT modeline")
-        htotal, vtotal = int(tokens[5]), int(tokens[9])
-        exact_mhz = mhz * htotal * vtotal / 1_000_000_000.0
-        model = [name, "%.6f" % exact_mhz, *tokens[2:]]
+        model = [name, tokens[1], *tokens[2:]]
 
         if name not in before:
             run([str(PREFIX / "bin/xrandr"), "--newmode", *model], env=env)
@@ -102,7 +106,10 @@ def main():
         return 0
     except (ValueError, subprocess.CalledProcessError, subprocess.TimeoutExpired,
             OSError, RuntimeError, StopIteration) as exc:
-        print("P03 XRandR refresh sync blocked: %s" % exc, file=sys.stderr)
+        if isinstance(exc, subprocess.CalledProcessError) and exc.stderr:
+            print("Alroot XRandR stderr: %s" % exc.stderr[:600],
+                  file=sys.stderr)
+        print("P05 XRandR refresh sync blocked: %s" % exc, file=sys.stderr)
         return 1
 
 

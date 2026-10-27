@@ -20,16 +20,16 @@ uint32_t ahb_swapchain_ahb_format(const struct dmabuf_buffer *b);
 
 void ahb_swapchain_layer_released(void *token, int release_fd);
 
-struct dmabuf_buffer *droiddeck_dmabuf_from_resource(struct wl_resource *buffer);
-int droiddeck_dmabuf_fd(const struct dmabuf_buffer *b);
-void droiddeck_dmabuf_size(const struct dmabuf_buffer *b, int *w, int *h);
-void **droiddeck_dmabuf_ahb_slot(struct dmabuf_buffer *b);
-void droiddeck_dmabuf_ref(struct dmabuf_buffer *b);
-void droiddeck_dmabuf_unref(struct dmabuf_buffer *b);
-void droiddeck_release_buffer(struct surface *s, struct wl_resource *buffer, int paced, int64_t since_ns);
-void droiddeck_request_redraw(void);
-void droiddeck_surface_describe(const struct surface *s, char *out, size_t size);
-struct droiddeck_color;
-const struct droiddeck_color *droiddeck_surface_color(const struct surface *s);
+struct dmabuf_buffer *alroot_dmabuf_from_resource(struct wl_resource *buffer);
+int alroot_dmabuf_fd(const struct dmabuf_buffer *b);
+void alroot_dmabuf_size(const struct dmabuf_buffer *b, int *w, int *h);
+void **alroot_dmabuf_ahb_slot(struct dmabuf_buffer *b);
+void alroot_dmabuf_ref(struct dmabuf_buffer *b);
+void alroot_dmabuf_unref(struct dmabuf_buffer *b);
+void alroot_release_buffer(struct surface *s, struct wl_resource *buffer, int paced, int64_t since_ns);
+void alroot_request_redraw(void);
+void alroot_surface_describe(const struct surface *s, char *out, size_t size);
+struct alroot_color;
+const struct alroot_color *alroot_surface_color(const struct surface *s);
 
 #endif

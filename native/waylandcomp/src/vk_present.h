@@ -73,12 +73,12 @@ struct vkp_perf {
 void vkp_perf_take(struct vkp_perf *out);
 int vkp_can_wait_sync_fd(void);
 
-struct droiddeck_color;
+struct alroot_color;
 struct vkp_hdr_frame {
     const unsigned char *is_hdr;
     float peak_nits;
     int tonemap;
-    const struct droiddeck_color *color;
+    const struct alroot_color *color;
 };
 int vkp_render_hdr(int scene_w, int scene_h, const struct vkp_draw *draws, int n,
                    const struct vkp_hdr_frame *hf, int *how);
@@ -99,6 +99,6 @@ int vkp_pass_begin(int scene_w, int scene_h, const struct vkp_draw *draws, int n
 int vkp_pass_copy_to(struct vkp_image *dst, int wait_fd);
 void vkp_pass_abort(void);
 
-void droiddeck_log(const char *tag, const char *fmt, ...) __attribute__((format(printf, 2, 3)));
+void alroot_log(const char *tag, const char *fmt, ...) __attribute__((format(printf, 2, 3)));
 
 #endif

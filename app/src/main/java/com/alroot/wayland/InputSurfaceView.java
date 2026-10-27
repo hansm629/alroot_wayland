@@ -17,7 +17,6 @@ import android.view.inputmethod.BaseInputConnection;
 import android.view.inputmethod.EditorInfo;
 import android.view.inputmethod.InputConnection;
 import android.view.inputmethod.SurroundingText;
-import com.droiddeck.launcher.wayland.WaylandCompositor;
 import java.util.HashSet;
 import java.util.Set;
 

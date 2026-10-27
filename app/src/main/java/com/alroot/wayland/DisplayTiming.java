@@ -9,7 +9,6 @@ import android.os.Looper;
 import android.util.Log;
 import android.view.Display;
 import android.view.Surface;
-import com.droiddeck.launcher.wayland.WaylandCompositor;
 
 /**
  * Synchronizes the actual Android display/vsync cadence with wl_output mode.

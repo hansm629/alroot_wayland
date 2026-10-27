@@ -124,6 +124,33 @@ Do not promote code existence or build success into screen/input PASS.
   gesture acceptance pending.
 - English and Korean Android resources cover menus, dialogs and
   foreground-service notification. UI screenshot/locale test pending.
+
+## P05 2026-10-28 — outstanding acceptance tests
+
+- Korean input issue: user observed X11 clipboard copy toast and wrong
+  selected-range replacement despite the P04 fast persistent socket.
+  Source diagnosis: persistent native IME used X11 CLIPBOARD as paste
+  transport. P05 rewrites native Unicode input using a blank XKB/X11
+  keycode and XTEST with no CLIPBOARD involvement. Private Xvfb GTK and
+  terminal tests passed. On-device Samsung IME acceptance is pending.
+- XFCE panel: GenMon is registered under plugin-107 and is running, but
+  user reports missing visual output. Project-private GTK battery tray
+  icon was confirmed XEmbed-embedded on the Alroot :90 XFCE panel.
+  Original XFCE Notes runs only on :0; P05 prepares an independent
+  Alroot :90 notes autostart with isolated data snapshot and configuration.
+- Runtime identifier refactor: Wayland wl_output make/model, seat,
+  log tags, JNI library/class and native prefixes are Alroot-based.
+  Upstream copyright, original licenses and provenance are retained.
+  New native build required to verify renamed ABI symbols.
+- Debian 30Hz: original Termux shell has DISPLAY=:0; fastfetch measures
+  original Termux-X11 XRandR ~29.95Hz. Alroot's separate :90 has distinct
+  modes. Added aw-debian project-only launcher to select the Alroot X11
+  server without modifying the original debian command; XRandR custom
+  refresh mode validation continues.
+- Standalone APK: review only. Development build still uses
+  android:sharedUserId=com.termux and relies on matching Termux signing
+  key, UID and executable HOME. A true independent APK needs app-private
+  runtime packaging and environment redesign.
 - P04 refresh stability: Choreographer measured timestamp jitter briefly
   caused the older code to advertise 122Hz despite the physical mode
   remaining 120Hz. This release retains the actual Android active physical

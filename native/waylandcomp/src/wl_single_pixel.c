@@ -1,5 +1,5 @@
 #include <stdlib.h>
-#include "droiddeck_ext.h"
+#include "alroot_ext.h"
 #include "single-pixel-buffer-v1-server-protocol.h"
 
 struct single_pixel {

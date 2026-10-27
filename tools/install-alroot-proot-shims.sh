@@ -17,4 +17,14 @@ for name in mpd mprun pdrun; do
         ln -s "$SOURCE" "$dest"
     fi
 done
+dest="$STATE/bin/debian"
+source="$HOME/alroot_wayland/termux/aw-debian"
+if [[ -e "$dest" || -L "$dest" ]]; then
+    [[ -L "$dest" && "$(readlink "$dest")" == "$source" ]] || {
+        echo "Refusing to overwrite custom Alroot Debian command $dest" >&2
+        exit 1
+    }
+else
+    ln -s "$source" "$dest"
+fi
 echo "Alroot-only PRoot shims ready; original Termux mpd/mprun/pdrun untouched"

@@ -89,13 +89,13 @@ void vkp_cardboard_set(const struct cardboard_params *p) {
     shm_publish(g_live);
     pthread_mutex_unlock(&g_lock);
     if (was != c.enabled || c.enabled)
-        droiddeck_log("cardboard", "%s: %s%s, ipd %.0f mm, screen %.1f m wide at %.1f m, lens k1 %.2f k2 %.2f, fov %.0f, inset %.3f, chroma %.3f",
+        alroot_log("cardboard", "%s: %s%s, ipd %.0f mm, screen %.1f m wide at %.1f m, lens k1 %.2f k2 %.2f, fov %.0f, inset %.3f, chroma %.3f",
                       c.enabled ? "on" : "off", c.source == CARDBOARD_SOURCE_SBS ? "side-by-side source" :
                       c.source == CARDBOARD_SOURCE_FLAT ? "flat image in both eyes" : "virtual screen",
                       c.mono ? " (one eye)" : "", c.ipd_m * 1000.0f, c.screen_width_m, c.screen_dist_m, c.k1, c.k2, c.fov_deg, c.lens_inset, c.chroma);
 }
 
-static struct droiddeck_headpose *g_shm;
+static struct alroot_headpose *g_shm;
 static int g_eye_w, g_eye_h;
 static int g_render_height;
 
@@ -110,19 +110,19 @@ void vkp_cardboard_set_pose_file(const char *path) {
     pthread_mutex_lock(&g_lock);
     if (!g_shm && path && *path) {
         int fd = open(path, O_RDWR | O_CREAT | O_CLOEXEC, 0600);
-        if (fd >= 0 && ftruncate(fd, sizeof(struct droiddeck_headpose)) == 0) {
-            void *p = mmap(NULL, sizeof(struct droiddeck_headpose), PROT_READ | PROT_WRITE, MAP_SHARED, fd, 0);
+        if (fd >= 0 && ftruncate(fd, sizeof(struct alroot_headpose)) == 0) {
+            void *p = mmap(NULL, sizeof(struct alroot_headpose), PROT_READ | PROT_WRITE, MAP_SHARED, fd, 0);
             if (p != MAP_FAILED) {
                 g_shm = p;
                 memset(g_shm, 0, sizeof(*g_shm));
-                g_shm->magic = DROIDDECK_HEADPOSE_MAGIC;
-                g_shm->version = DROIDDECK_HEADPOSE_VERSION;
+                g_shm->magic = ALROOT_HEADPOSE_MAGIC;
+                g_shm->version = ALROOT_HEADPOSE_VERSION;
                 memcpy(g_shm->rot, g_pose, sizeof(g_shm->rot));
                 shm_publish(g_live);
             }
         }
         if (fd >= 0) close(fd);
-        droiddeck_log("cardboard", g_shm ? "head pose shared with the guest at %s" : "could not share the head pose at %s", path);
+        alroot_log("cardboard", g_shm ? "head pose shared with the guest at %s" : "could not share the head pose at %s", path);
     }
     pthread_mutex_unlock(&g_lock);
 }
@@ -137,8 +137,8 @@ static void shm_publish(int live) {
     atomic_thread_fence(memory_order_release);
     memcpy(g_shm->rot, g_pose, sizeof(g_shm->rot));
     g_shm->ipd_m = g_set.ipd_m;
-    g_shm->flags = (live ? DROIDDECK_HEADPOSE_LIVE : 0u) | (g_set.enabled ? DROIDDECK_HEADPOSE_ENABLED : 0u) |
-                   (g_set.mono ? DROIDDECK_HEADPOSE_MONO : 0u);
+    g_shm->flags = (live ? ALROOT_HEADPOSE_LIVE : 0u) | (g_set.enabled ? ALROOT_HEADPOSE_ENABLED : 0u) |
+                   (g_set.mono ? ALROOT_HEADPOSE_MONO : 0u);
     g_shm->display_hz = g_set.display_hz;
     g_shm->render_height = (uint32_t)g_render_height;
     g_shm->time_ns = (int64_t)ts.tv_sec * 1000000000LL + ts.tv_nsec;
@@ -276,10 +276,10 @@ static int target_ensure(int w, int h) {
     if (g_vk.CreateFramebuffer(g_dev, &fi, NULL, &g_t.fb) != VK_SUCCESS) goto fail;
     g_t.w = w;
     g_t.h = h;
-    droiddeck_log("cardboard", "eye target %dx%d (two %dx%d eyes)", w, h, w / 2, h);
+    alroot_log("cardboard", "eye target %dx%d (two %dx%d eyes)", w, h, w / 2, h);
     return 0;
 fail:
-    droiddeck_log("error", "cardboard: could not create the %dx%d eye target", w, h);
+    alroot_log("error", "cardboard: could not create the %dx%d eye target", w, h);
     target_destroy();
     return -1;
 }
@@ -392,12 +392,12 @@ static int objects_ensure(void) {
         if (r != VK_SUCCESS) goto fail;
     }
     g_ready = 1;
-    droiddeck_log("cardboard", "pass ready on %s", vkp_gpu_name());
+    alroot_log("cardboard", "pass ready on %s", vkp_gpu_name());
     return 0;
 fail:
     objects_destroy();
     g_ready = -1;
-    droiddeck_log("error", "cardboard: the pass could not be built on this driver; frames are shown flat");
+    alroot_log("error", "cardboard: the pass could not be built on this driver; frames are shown flat");
     return -1;
 }
 
@@ -428,7 +428,7 @@ VkImage vkp_cardboard_run(VkCommandBuffer cmd, VkImage src, int src_w, int src_h
     VkDescriptorSet ds = source_ds(src);
     if (!ds) {
         static int said;
-        if (!said) { said = 1; droiddeck_log("error", "cardboard: no descriptor for the frame; shown flat"); }
+        if (!said) { said = 1; alroot_log("error", "cardboard: no descriptor for the frame; shown flat"); }
         return VK_NULL_HANDLE;
     }
     snapshot();

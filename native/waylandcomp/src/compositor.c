@@ -33,12 +33,12 @@
 #include <pthread.h>
 #include "effects_chain.h"
 #include "cardboard.h"
-#include "droiddeck_ext.h"
-#include "droiddeck_color.h"
+#include "alroot_ext.h"
+#include "alroot_color.h"
 #include "compositor_internal.h"
 
-#define WLOGI(...) __android_log_print(ANDROID_LOG_INFO, "DroidDeckWayland", __VA_ARGS__)
-#define WLOGE(...) __android_log_print(ANDROID_LOG_ERROR, "DroidDeckWayland", __VA_ARGS__)
+#define WLOGI(...) __android_log_print(ANDROID_LOG_INFO, "AlrootWayland", __VA_ARGS__)
+#define WLOGE(...) __android_log_print(ANDROID_LOG_ERROR, "AlrootWayland", __VA_ARGS__)
 
 
 #define SESSION_LOG_DIR "/storage/emulated/0/Download/Wayland-logs"
@@ -50,7 +50,7 @@ static pthread_mutex_t g_log_lock = PTHREAD_MUTEX_INITIALIZER;
 static char *g_prelog[PRELOG_MAX];
 static int g_prelog_n;
 
-void droiddeck_log(const char *tag, const char *fmt, ...) {
+void alroot_log(const char *tag, const char *fmt, ...) {
     char msg[512];
     va_list ap;
     va_start(ap, fmt);
@@ -94,10 +94,10 @@ static void open_session_log(void) {
     setvbuf(f, NULL, _IOLBF, 0);
     strftime(stamp, sizeof(stamp), "%Y-%m-%d %H:%M:%S", &tm);
     fprintf(f,
-            "DroidDeck Wayland session\n"
+            "Alroot Wayland session\n"
             "=========================\n"
             "Started   %s\n"
-            "Display   Wayland: programs draw through the DroidDeck compositor.\n"
+            "Display   Wayland: programs draw through the Alroot compositor.\n"
             "          gamescope and the desktop start their own Xwayland for X11 programs.\n"
             "Log       %s\n\n"
             "Time          Area      Event\n"
@@ -147,8 +147,8 @@ static const char *client_name(struct wl_client *client) {
 
 static void on_client_destroyed(struct wl_listener *l, void *data) {
     struct client_info *ci = wl_container_of(l, ci, destroy), **pp;
-    droiddeck_log("program", "disconnected: %s (pid %d)", ci->name, (int)ci->pid);
-    droiddeck_color_client_gone(ci->client);
+    alroot_log("program", "disconnected: %s (pid %d)", ci->name, (int)ci->pid);
+    alroot_color_client_gone(ci->client);
     for (pp = &g_clients; *pp; pp = &(*pp)->next)
         if (*pp == ci) { *pp = ci->next; break; }
     free(ci);
@@ -180,7 +180,7 @@ static void on_client_created(struct wl_listener *l, void *data) {
     wl_client_add_destroy_listener(client, &ci->destroy);
     ci->next = g_clients;
     g_clients = ci;
-    droiddeck_log("program", "connected over Wayland: %s (pid %d)", ci->name, (int)ci->pid);
+    alroot_log("program", "connected over Wayland: %s (pid %d)", ci->name, (int)ci->pid);
 }
 
 
@@ -458,11 +458,11 @@ static void cursor_publish_shm(struct wl_shm_buffer *shm, int hx, int hy) {
     wl_shm_buffer_end_access(shm);
 }
 
-int droiddeck_cursor_serial(void) {
+int alroot_cursor_serial(void) {
     return __atomic_load_n(&g_cursor_serial, __ATOMIC_RELAXED);
 }
 
-int droiddeck_cursor_snapshot(int *out, int cap) {
+int alroot_cursor_snapshot(int *out, int cap) {
     int n = 0;
     pthread_mutex_lock(&g_cursor_lock);
     int need = 6 + (g_cursor_hidden ? 0 : g_cursor_w * g_cursor_h);
@@ -567,7 +567,7 @@ static void map_toplevel(struct surface *s) {
     {
         char name[160];
         describe(s, name, sizeof(name));
-        droiddeck_log("window", "opened %s %dx%d at %d,%d%s", name, w, h, s->x, s->y,
+        alroot_log("window", "opened %s %dx%d at %d,%d%s", name, w, h, s->x, s->y,
                    s->placed ? "" : " (no desktop position yet)");
     }
     wl_list_insert(g_toplevels.prev, &s->toplevel_link);
@@ -582,12 +582,12 @@ static void unmap_toplevel(struct surface *s) {
     {
         char name[160];
         describe(s, name, sizeof(name));
-        droiddeck_log("window", "closed %s", name);
+        alroot_log("window", "closed %s", name);
     }
     wl_list_remove(&s->toplevel_link);
     wl_list_init(&s->toplevel_link);
     if (g_ime_click == s) g_ime_click = NULL;
-    droiddeck_text_input_refocus();
+    alroot_text_input_refocus();
 }
 
 static void drop_dmabuf(struct surface *s, int paced) {
@@ -676,7 +676,7 @@ static int below_surface(const struct surface *s, const struct surface *other) {
     return a >= 0 && b >= 0 && a < b;
 }
 
-int droiddeck_hud_frame_times(float *out, int len, int64_t *total) {
+int alroot_hud_frame_times(float *out, int len, int64_t *total) {
     pthread_mutex_lock(&g_hud_times_lock);
     *total = g_hud_times_total;
     int64_t n = *total < len ? *total : len;
@@ -686,9 +686,9 @@ int droiddeck_hud_frame_times(float *out, int len, int64_t *total) {
     return (int)n;
 }
 static uint64_t g_game_frames;
-extern void droiddeck_on_game_surface(const char *window, const char *gpu);
-extern void droiddeck_on_game_frame(void);
-extern void droiddeck_on_game_program(int pid, const char *program);
+extern void alroot_on_game_surface(const char *window, const char *gpu);
+extern void alroot_on_game_frame(void);
+extern void alroot_on_game_program(int pid, const char *program);
 
 static void take_shm(struct surface *s, struct wl_shm_buffer *shm, struct wl_resource *buffer) {
     int32_t w = wl_shm_buffer_get_width(shm), h = wl_shm_buffer_get_height(shm);
@@ -736,7 +736,7 @@ static void take_shm(struct surface *s, struct wl_shm_buffer *shm, struct wl_res
             g_hud_shm = s;
             g_hud_shm_ns = now;
             g_hud_new = 1;
-            droiddeck_on_game_frame();
+            alroot_on_game_frame();
         }
     }
 }
@@ -780,7 +780,7 @@ static void take_dmabuf(struct surface *s, struct dmabuf_buffer *b, struct wl_re
         (s->buf_w != b->width || s->buf_h != b->height)) {
         char name[160];
         describe(s, name, sizeof(name));
-        droiddeck_log("vulkan", "%s changed its frame size: %dx%d -> %dx%d", name,
+        alroot_log("vulkan", "%s changed its frame size: %dx%d -> %dx%d", name,
                    s->buf_w, s->buf_h, b->width, b->height);
     }
     s->buf_w = b->width;
@@ -794,18 +794,18 @@ static void take_dmabuf(struct surface *s, struct dmabuf_buffer *b, struct wl_re
         s->announced_vulkan = 1;
         describe(s, name, sizeof(name));
         if (b->img)
-            droiddeck_log("vulkan", "%s is presenting GPU frames through Wayland: %dx%d, format %c%c%c%c, %s (%s)",
+            alroot_log("vulkan", "%s is presenting GPU frames through Wayland: %dx%d, format %c%c%c%c, %s (%s)",
                        name, b->width, b->height, b->format & 0xff, (b->format >> 8) & 0xff,
                        (b->format >> 16) & 0xff, (b->format >> 24) & 0xff,
                        vkp_modifier_name(b->modifier),
                        ahb_swapchain_has_ahb(b) ? "gralloc buffers: can go on the display layer without a copy"
                                                 : "dma-buf: copied into the screen swapchain");
         else if (ahb_swapchain_has_ahb(b))
-            droiddeck_log("vulkan", "%s is presenting GPU frames through Wayland: %dx%d on its own display layer only "
+            alroot_log("vulkan", "%s is presenting GPU frames through Wayland: %dx%d on its own display layer only "
                        "(gralloc buffers the compositor cannot import for the copy path)",
                        name, b->width, b->height);
         else
-            droiddeck_log("error", "could not import GPU frames from %s (%dx%d, modifier %#llx)",
+            alroot_log("error", "could not import GPU frames from %s (%dx%d, modifier %#llx)",
                        name, b->width, b->height, (unsigned long long)b->modifier);
     }
     if (s != g_hud_surface && (b->img || ahb_swapchain_has_ahb(b)) &&
@@ -815,19 +815,19 @@ static void take_dmabuf(struct surface *s, struct dmabuf_buffer *b, struct wl_re
         char name[160];
         describe(s, name, sizeof(name));
         g_hud_surface = s;
-        droiddeck_on_game_surface(name, vkp_gpu_name());
+        alroot_on_game_surface(name, vkp_gpu_name());
         struct client_info *ci = client_info_of(wl_resource_get_client(s->resource));
-        if (ci) droiddeck_on_game_program((int)ci->pid, strncmp(ci->name, "pid ", 4) ? ci->name : "");
+        if (ci) alroot_on_game_program((int)ci->pid, strncmp(ci->name, "pid ", 4) ? ci->name : "");
     }
-    if (b->format != s->hdr_fmt_logged && droiddeck_color_hdr_open()) {
+    if (b->format != s->hdr_fmt_logged && alroot_color_hdr_open()) {
         char name[160];
         uint32_t af = ahb_swapchain_ahb_format(b);
         int ten = b->format == FOURCC('A', 'B', '3', '0') || b->format == FOURCC('X', 'B', '3', '0');
         describe(s, name, sizeof(name));
-        droiddeck_log("color", "%s presents %dx%d buffers in %c%c%c%c (%s), %s%s%s; %s", name, b->width, b->height,
+        alroot_log("color", "%s presents %dx%d buffers in %c%c%c%c (%s), %s%s%s; %s", name, b->width, b->height,
                    b->format & 0xff, (b->format >> 8) & 0xff, (b->format >> 16) & 0xff, (b->format >> 24) & 0xff,
                    ten ? "10-bit A2B10G10R10" : "8-bit", vkp_modifier_name(b->modifier),
-                   af ? ", gralloc " : ", no gralloc buffer (copy path only)", af ? droiddeck_ahb_format_name(af) : "",
+                   af ? ", gralloc " : ", no gralloc buffer (copy path only)", af ? alroot_ahb_format_name(af) : "",
                    b->img ? "the compositor imported it"
                           : af ? "the compositor's driver could NOT import it (display layer only, fullscreen)"
                                : "the compositor's driver could NOT import it (nothing can show it)");
@@ -835,25 +835,25 @@ static void take_dmabuf(struct surface *s, struct dmabuf_buffer *b, struct wl_re
     }
     if (s == g_hud_surface) {
         g_hud_alive_ns = now_ns();
-        if (!repeat) { g_hud_last_ns = g_hud_alive_ns; g_hud_fresh = 1; g_hud_new = 1; g_game_frames++; droiddeck_on_game_frame(); }
+        if (!repeat) { g_hud_last_ns = g_hud_alive_ns; g_hud_fresh = 1; g_hud_new = 1; g_game_frames++; alroot_on_game_frame(); }
     }
 }
 
-uint64_t droiddeck_game_frames(void) { return g_game_frames; }
+uint64_t alroot_game_frames(void) { return g_game_frames; }
 
-struct dmabuf_buffer *droiddeck_dmabuf_from_resource(struct wl_resource *buffer) { return get_dmabuf(buffer); }
-int droiddeck_dmabuf_fd(const struct dmabuf_buffer *b) { return b && b->n_planes > 0 ? b->fd[0] : -1; }
-void droiddeck_dmabuf_size(const struct dmabuf_buffer *b, int *w, int *h) { *w = b->width; *h = b->height; }
-void **droiddeck_dmabuf_ahb_slot(struct dmabuf_buffer *b) { return &b->ahb_state; }
-void droiddeck_dmabuf_ref(struct dmabuf_buffer *b) { b->refs++; }
-void droiddeck_dmabuf_unref(struct dmabuf_buffer *b) { dmabuf_buffer_unref(b); }
-void droiddeck_release_buffer(struct surface *s, struct wl_resource *buffer, int paced, int64_t since_ns) {
+struct dmabuf_buffer *alroot_dmabuf_from_resource(struct wl_resource *buffer) { return get_dmabuf(buffer); }
+int alroot_dmabuf_fd(const struct dmabuf_buffer *b) { return b && b->n_planes > 0 ? b->fd[0] : -1; }
+void alroot_dmabuf_size(const struct dmabuf_buffer *b, int *w, int *h) { *w = b->width; *h = b->height; }
+void **alroot_dmabuf_ahb_slot(struct dmabuf_buffer *b) { return &b->ahb_state; }
+void alroot_dmabuf_ref(struct dmabuf_buffer *b) { b->refs++; }
+void alroot_dmabuf_unref(struct dmabuf_buffer *b) { dmabuf_buffer_unref(b); }
+void alroot_release_buffer(struct surface *s, struct wl_resource *buffer, int paced, int64_t since_ns) {
     if (paced && s) release_buffer(s, buffer, since_ns);
     else { wl_buffer_send_release(buffer); perf_note_release(since_ns); }
 }
-void droiddeck_surface_describe(const struct surface *s, char *out, size_t size) { describe(s, out, size); }
-const struct droiddeck_color *droiddeck_surface_color(const struct surface *s) {
-    return s ? droiddeck_color_of(s->resource) : NULL;
+void alroot_surface_describe(const struct surface *s, char *out, size_t size) { describe(s, out, size); }
+const struct alroot_color *alroot_surface_color(const struct surface *s) {
+    return s ? alroot_color_of(s->resource) : NULL;
 }
 
 
@@ -1166,7 +1166,7 @@ static void surface_commit(struct wl_client *c, struct wl_resource *r) {
     wl_list_insert_list(s->feedback.prev, &s->pending_feedback);
     wl_list_init(&s->pending_feedback);
     constraints_surface_commit(s);
-    droiddeck_color_commit(s->resource);
+    alroot_color_commit(s->resource);
 
     if (s->role == ROLE_TOPLEVEL && s->xdg_toplevel) {
         if (s->has_content) map_toplevel(s);
@@ -1220,9 +1220,9 @@ static void surface_resource_destroy(struct wl_resource *r) {
     if (g_grab == s) g_grab = NULL;
     if (g_key_target == s) g_key_target = NULL;
     if (g_ime_click == s) g_ime_click = NULL;
-    droiddeck_text_input_surface_gone(r);
-    if (g_desktop == s) { g_desktop = NULL; droiddeck_log("desktop", "the desktop closed"); }
-    if (g_hud_surface == s) { g_hud_surface = NULL; droiddeck_on_game_surface(NULL, NULL); }
+    alroot_text_input_surface_gone(r);
+    if (g_desktop == s) { g_desktop = NULL; alroot_log("desktop", "the desktop closed"); }
+    if (g_hud_surface == s) { g_hud_surface = NULL; alroot_on_game_surface(NULL, NULL); }
     if (g_hud_shm == s) g_hud_shm = NULL;
     constraints_surface_gone(s);
 
@@ -1459,12 +1459,12 @@ static void xdg_toplevel_set_title(struct wl_client *c, struct wl_resource *r, c
     if (announce) {
         char after[160];
         describe(s, after, sizeof(after));
-        droiddeck_log("window", "renamed %s -> %s", before, after);
+        alroot_log("window", "renamed %s -> %s", before, after);
     }
 }
 static void xdg_toplevel_set_app_id(struct wl_client *c, struct wl_resource *r, const char *id) {
     struct surface *s = wl_resource_get_user_data(r);
-    if (s && id && !strcmp(id, "droiddeck-cardboard-vr")) s->keep_on_top = 1;
+    if (s && id && !strcmp(id, "alroot-cardboard-vr")) s->keep_on_top = 1;
 }
 static void xdg_toplevel_show_menu(struct wl_client *c, struct wl_resource *r, struct wl_resource *seat,
                                    uint32_t serial, int32_t x, int32_t y) {}
@@ -1628,7 +1628,7 @@ static void desktop_set_desktop(struct wl_client *c, struct wl_resource *r, stru
     if (!s || (s->role != ROLE_NONE && s->role != ROLE_DESKTOP)) return;
     s->role = ROLE_DESKTOP;
     g_desktop = s;
-    droiddeck_log("desktop", "Windows virtual desktop created by %s", client_name(c));
+    alroot_log("desktop", "Windows virtual desktop created by %s", client_name(c));
     schedule_render();
 }
 static void desktop_set_window(struct wl_client *c, struct wl_resource *r, struct wl_resource *surface,
@@ -1638,7 +1638,7 @@ static void desktop_set_window(struct wl_client *c, struct wl_resource *r, struc
     if (s->placed && (s->x != x || s->y != y) && s->mapped && log_budget()) {
         char name[160];
         describe(s, name, sizeof(name));
-        droiddeck_log("window", "moved %s to %d,%d", name, x, y);
+        alroot_log("window", "moved %s to %d,%d", name, x, y);
     }
     s->hwnd = hwnd;
     s->x = x;
@@ -1688,11 +1688,11 @@ static void bind_output(struct wl_client *c, void *data, uint32_t ver, uint32_t 
     wl_resource_set_implementation(r, &output_impl, NULL, output_resource_destroy);
     wl_list_insert(&g_outputs, wl_resource_get_link(r));
     wl_output_send_geometry(r, 0, 0, 340, 190, WL_OUTPUT_SUBPIXEL_UNKNOWN,
-                            "DroidDeck", "Wayland", WL_OUTPUT_TRANSFORM_NORMAL);
+                            "Alroot", "Wayland", WL_OUTPUT_TRANSFORM_NORMAL);
     output_send_mode(r, g_output_announced_refresh_mhz);
     if (ver >= WL_OUTPUT_NAME_SINCE_VERSION) {
-        wl_output_send_name(r, "DroidDeck-1");
-        wl_output_send_description(r, "DroidDeck display");
+        wl_output_send_name(r, "Alroot-1");
+        wl_output_send_description(r, "Alroot display");
     }
     if (ver >= 2) {
         wl_output_send_scale(r, 1);
@@ -1714,7 +1714,7 @@ static int g_hdr_unimported_rect[4], g_hdr_unimported_below;
 
 static void note_hdr_unimported(const struct draw_list *dl, struct surface *s, int ox, int oy) {
     if (!s->dmabuf_buf || s->dmabuf_buf->img || !ahb_swapchain_has_ahb(s->dmabuf_buf)) return;
-    const struct droiddeck_color *c = droiddeck_color_of(s->resource);
+    const struct alroot_color *c = alroot_color_of(s->resource);
     if (!c || !c->dataspace) return;
     if (s->src_set && (s->src[0] != 0 || s->src[1] != 0 || (int)(s->src[2] + 0.5f) != s->buf_w ||
                        (int)(s->src[3] + 0.5f) != s->buf_h)) return;
@@ -1741,7 +1741,7 @@ static void add_surface(struct draw_list *dl, struct surface *s, int ox, int oy)
     int dw, dh;
 
     if (!img) {
-        if (g_zero_copy && droiddeck_color_hdr_open()) note_hdr_unimported(dl, s, ox, oy);
+        if (g_zero_copy && alroot_color_hdr_open()) note_hdr_unimported(dl, s, ox, oy);
         return;
     }
     if (s->src_set) { sx = s->src[0]; sy = s->src[1]; sw = s->src[2]; sh = s->src[3]; }
@@ -1849,7 +1849,7 @@ struct hdr_scene {
     struct vkp_hdr_frame hf;
     unsigned char *is_hdr;
     int n_hdr;
-    const struct droiddeck_color *color;
+    const struct alroot_color *color;
     struct surface *who;
     const char *why;
 };
@@ -1862,27 +1862,27 @@ static struct surface *hdr_unimported_fullscreen(const struct draw_list *dl, int
 }
 
 static int is_hdr_surface(struct surface *s) {
-    const struct droiddeck_color *c = s ? droiddeck_color_of(s->resource) : NULL;
+    const struct alroot_color *c = s ? alroot_color_of(s->resource) : NULL;
     return c && c->dataspace;
 }
 
 static int hdr_plan(const struct draw_list *dl, int w, int h, int fx_on, int framegen, struct hdr_scene *hs) {
     memset(hs, 0, sizeof(*hs));
-    if (!droiddeck_color_hdr_open()) return 0;
+    if (!alroot_color_hdr_open()) return 0;
     struct surface *un = hdr_unimported_fullscreen(dl, w, h);
     if (!un) {
         struct surface *lo = ahb_layer_only_candidate(w, h);
         if (lo && is_hdr_surface(lo)) un = lo;
     }
-    if (un && g_zero_copy) { hs->color = droiddeck_color_of(un->resource); hs->who = un; return 3; }
-    hs->hf.tonemap = !droiddeck_color_output();
+    if (un && g_zero_copy) { hs->color = alroot_color_of(un->resource); hs->who = un; return 3; }
+    hs->hf.tonemap = !alroot_color_output();
     if (dl->n <= 0 || !(hs->is_hdr = calloc((size_t)dl->n, 1))) return 0;
     for (int i = 0; i < dl->n; i++) {
         struct surface *s = surface_for_image(dl->d[i].img);
         if (!is_hdr_surface(s)) continue;
         hs->is_hdr[i] = 1;
         hs->n_hdr++;
-        hs->color = droiddeck_color_of(s->resource);
+        hs->color = alroot_color_of(s->resource);
         hs->who = s;
     }
     if (!hs->n_hdr) { free(hs->is_hdr); hs->is_hdr = NULL; return 0; }
@@ -1907,7 +1907,7 @@ static int hdr_plan(const struct draw_list *dl, int w, int h, int fx_on, int fra
 static void hdr_note_route(int route, const struct hdr_scene *hs) {
     static int said = -1, said_tm = -1;
     static const char *said_why;
-    const int tm = route != 0 && !droiddeck_color_output();
+    const int tm = route != 0 && !alroot_color_output();
     if (route == said && tm == said_tm && (route != 1 || hs->why == said_why)) return;
     int was = said;
     said = route; said_why = hs->why; said_tm = tm;
@@ -1916,30 +1916,30 @@ static void hdr_note_route(int route, const struct hdr_scene *hs) {
     switch (route) {
     case 1:
         if (tm)
-            droiddeck_log("color", "tone-mapped picture for %s: %s - the whole scene is composed and tone-mapped to SDR "
+            alroot_log("color", "tone-mapped picture for %s: %s - the whole scene is composed and tone-mapped to SDR "
                        "(HDR peak %.0f nits rolled off to SDR white, screen effects applied after it) on the game's "
                        "display layer, untagged", name, hs->why ? hs->why : "?", hs->hf.peak_nits);
         else
-            droiddeck_log("color", "HDR picture for %s: %s - the whole scene is composed into one 10-bit PQ BT.2020 picture "
+            alroot_log("color", "HDR picture for %s: %s - the whole scene is composed into one 10-bit PQ BT.2020 picture "
                        "(SDR content at %.0f nits, screen effects applied in 10-bit) on the game's display layer, tagged "
-                       "BT2020_PQ", name, hs->why ? hs->why : "?", droiddeck_color_sdr_white());
+                       "BT2020_PQ", name, hs->why ? hs->why : "?", alroot_color_sdr_white());
         break;
     case 2:
         if (tm)
-            droiddeck_log("color", "HDR with frame generation for %s, HDR output switched off: the scene is tone-mapped to "
+            alroot_log("color", "HDR with frame generation for %s, HDR output switched off: the scene is tone-mapped to "
                        "SDR and presented through an SDR screen swapchain", name);
         else
-            droiddeck_log("color", "HDR with frame generation for %s: the scene is composed into PQ and presented through "
+            alroot_log("color", "HDR with frame generation for %s: the scene is composed into PQ and presented through "
                        "the screen swapchain (HDR10 where the surface offers it, else tone-mapped to SDR)", name);
         break;
     case 3:
         if (tm)
-            droiddeck_log("color", "HDR output is switched off, but %s's HDR frames cannot be imported by the compositor, "
+            alroot_log("color", "HDR output is switched off, but %s's HDR frames cannot be imported by the compositor, "
                        "so nothing can tone-map them: they stay HDR on its own display layer", name);
         break;
     default:
         if (was == 1 || was == 2)
-            droiddeck_log("color", "%s is back on its own display layer (no composition needed)", name);
+            alroot_log("color", "%s is back on its own display layer (no composition needed)", name);
         break;
     }
 }
@@ -1951,18 +1951,18 @@ static void hdr_note_precedence(struct surface *hs, int fx_on, int framegen) {
     if (hs) describe(hs, name, sizeof(name));
     if (fx_skip != fx_said) {
         if (fx_skip)
-            droiddeck_log("color", "screen effects are NOT applied to %s: its HDR frames cannot be imported by the "
+            alroot_log("color", "screen effects are NOT applied to %s: its HDR frames cannot be imported by the "
                        "compositor, so only its own display layer can show them (as they are)", name);
         else if (fx_said == 1)
-            droiddeck_log("color", "screen effects apply to the scene again (no HDR game on its layer, or effects off)");
+            alroot_log("color", "screen effects apply to the scene again (no HDR game on its layer, or effects off)");
         fx_said = fx_skip;
     }
     if (fg_skip != fg_said) {
         if (fg_skip)
-            droiddeck_log("color", "frame generation is NOT applied to %s: its HDR frames cannot be imported by the "
+            alroot_log("color", "frame generation is NOT applied to %s: its HDR frames cannot be imported by the "
                        "compositor, so only its own display layer can show them (as they are)", name);
         else if (fg_said == 1)
-            droiddeck_log("color", "frame generation applies again (no HDR game on its layer, or frame generation off)");
+            alroot_log("color", "frame generation applies again (no HDR game on its layer, or frame generation off)");
         fg_said = fg_skip;
     }
 }
@@ -1970,11 +1970,11 @@ static void hdr_note_precedence(struct surface *hs, int fx_on, int framegen) {
 static void hdr_count_copied(const struct draw_list *dl, const char *reason) {
     for (int i = 0; i < dl->n; i++) {
         struct surface *s = surface_for_image(dl->d[i].img);
-        const struct droiddeck_color *c = s ? droiddeck_color_of(s->resource) : NULL;
+        const struct alroot_color *c = s ? alroot_color_of(s->resource) : NULL;
         if (!c || !c->dataspace) continue;
         char name[160];
         describe(s, name, sizeof(name));
-        droiddeck_color_frame_copied(name, reason);
+        alroot_color_frame_copied(name, reason);
     }
 }
 
@@ -2022,11 +2022,11 @@ static void stream_take(void) {
         struct vkp_image *img = vkp_image_from_ahb(ahb);
         if (!img) {
             static int said;
-            if (!said) { said = 1; droiddeck_log("stream", "a decoded frame could not be imported: nothing to show"); }
+            if (!said) { said = 1; alroot_log("stream", "a decoded frame could not be imported: nothing to show"); }
             AHardwareBuffer_release(ahb);
             return;
         }
-        droiddeck_log("stream", "decoded frame buffer imported (%dx%d)", vkp_image_width(img), vkp_image_height(img));
+        alroot_log("stream", "decoded frame buffer imported (%dx%d)", vkp_image_width(img), vkp_image_height(img));
         slot = oldest;
         if (g_stream_slots[slot].img) {
             vkp_wait_idle(); /* the GPU may still read the picture being replaced */
@@ -2049,7 +2049,7 @@ static void render_stream(void) {
     if (!img) return;
     int w = vkp_image_width(img), h = vkp_image_height(img);
     if (w != g_scene_w || h != g_scene_h) {
-        droiddeck_log("stream", "picture %dx%d", w, h);
+        alroot_log("stream", "picture %dx%d", w, h);
         g_scene_w = w;
         g_scene_h = h;
     }
@@ -2060,14 +2060,14 @@ static void render_stream(void) {
     if (r == 0) {
         g_stat_frames++;
         static int first;
-        if (!first) { first = 1; droiddeck_log("stream", "first stream frame presented"); }
+        if (!first) { first = 1; alroot_log("stream", "first stream frame presented"); }
     } else {
         static int failed;
-        if (failed++ % 600 == 0) droiddeck_log("stream", "presenting a stream frame failed (%d, %d times)", r, failed);
+        if (failed++ % 600 == 0) alroot_log("stream", "presenting a stream frame failed (%d, %d times)", r, failed);
     }
 }
 
-void droiddeck_stream_set(int on) {
+void alroot_stream_set(int on) {
     atomic_store(&g_stream_on, on ? 1 : 0);
     if (g_input_pipe[1] < 0) return;
     struct input_msg m = { 21, on ? 1 : 0, 0, 0, 0 };
@@ -2076,7 +2076,7 @@ void droiddeck_stream_set(int on) {
 }
 
 /* Any thread: hands over one decoded frame (acquires its own reference). */
-void droiddeck_stream_frame(AHardwareBuffer *ahb) {
+void alroot_stream_frame(AHardwareBuffer *ahb) {
     if (!ahb || !atomic_load(&g_stream_on) || g_input_pipe[1] < 0) return;
     AHardwareBuffer_acquire(ahb);
     pthread_mutex_lock(&g_stream_lock);
@@ -2089,7 +2089,7 @@ void droiddeck_stream_frame(AHardwareBuffer *ahb) {
     (void)n;
 }
 
-unsigned droiddeck_stream_frames(void) { return atomic_load(&g_stream_frames); }
+unsigned alroot_stream_frames(void) { return atomic_load(&g_stream_frames); }
 
 static void render_scene(void) {
     if (atomic_load(&g_stream_on)) { render_stream(); return; }
@@ -2105,8 +2105,8 @@ static void render_scene(void) {
     wl_list_for_each(s, &g_surfaces, link) s->drawn = 0;
     scene_size(&w, &h);
     if (w != g_scene_w || h != g_scene_h) {
-        if (g_desktop) droiddeck_log("desktop", "size %dx%d", w, h);
-        else droiddeck_log("desktop", "no desktop: showing %dx%d (largest window)", w, h);
+        if (g_desktop) alroot_log("desktop", "size %dx%d", w, h);
+        else alroot_log("desktop", "no desktop: showing %dx%d (largest window)", w, h);
         g_scene_w = w;
         g_scene_h = h;
     }
@@ -2124,7 +2124,7 @@ static void render_scene(void) {
     struct hdr_scene hs;
     int hdr_route = hdr_plan(&dl, w, h, fx_on, framegen, &hs);
     const char *hdr_copy = NULL;
-    if (droiddeck_color_hdr_open()) {
+    if (alroot_color_hdr_open()) {
         hdr_note_route(hdr_route, &hs);
         hdr_note_precedence(hdr_route == 3 ? hs.who : NULL, fx_on, framegen);
     }
@@ -2135,12 +2135,12 @@ static void render_scene(void) {
         sc_layer_hide_overlay();
         if (sc_layer_present_hdr_scene(dl.d, dl.n, &hs.hf, w, h, hs.color) == 0) {
             rendered = vkp_base_black(w, h) == 0;
-            if (fell_back) { fell_back = 0; droiddeck_log("color", "the composed picture is on the game's display layer again"); }
+            if (fell_back) { fell_back = 0; alroot_log("color", "the composed picture is on the game's display layer again"); }
         } else {
             hdr_route = 2;
             if (!fell_back) {
                 fell_back = 1;
-                droiddeck_log("color", "the composed picture could not go on the game's display layer (no layer, or the "
+                alroot_log("color", "the composed picture could not go on the game's display layer (no layer, or the "
                            "10-bit pass failed): it goes through the screen swapchain instead until that changes");
             }
         }
@@ -2150,8 +2150,8 @@ static void render_scene(void) {
         sc_layer_hide();
         rendered = vkp_render_hdr(w, h, dl.d, dl.n, &hs.hf, &how) == 0;
         copy = 1;
-        if (rendered && how == 1) droiddeck_color_frame_shown(hs.color, DROIDDECK_HDR_SWAPCHAIN, 0);
-        else if (rendered && how == 2) droiddeck_color_frame_shown(hs.color, DROIDDECK_HDR_TONEMAPPED, 0);
+        if (rendered && how == 1) alroot_color_frame_shown(hs.color, ALROOT_HDR_SWAPCHAIN, 0);
+        else if (rendered && how == 2) alroot_color_frame_shown(hs.color, ALROOT_HDR_TONEMAPPED, 0);
         else if (rendered) hdr_copy = "the HDR composition pass is unavailable on this driver";
     }
     if (hdr_route == 0 && vkp_quest_layer_presentation() && !framegen && !cardboard &&
@@ -2171,14 +2171,14 @@ static void render_scene(void) {
     if (g_zero_copy && blocked != g_zero_copy_paused) {
         g_zero_copy_paused = blocked;
         if (blocked == 1)
-            droiddeck_log("framegen", "zero-copy paused: frame generation needs the compositor pass");
+            alroot_log("framegen", "zero-copy paused: frame generation needs the compositor pass");
         else if (blocked == 2)
-            droiddeck_log("effects", "zero-copy paused: a window above the game needs the compositor pass for the whole scene");
+            alroot_log("effects", "zero-copy paused: a window above the game needs the compositor pass for the whole scene");
         else if (blocked == 3)
-            droiddeck_log("layer", "zero-copy paused: a window above the game would need a second display layer, "
+            alroot_log("layer", "zero-copy paused: a window above the game would need a second display layer, "
                                 "which this display cannot compose in hardware - whole scene on the copy path");
         else
-            droiddeck_log("effects", "zero-copy resumed: the game is back on its own display layer");
+            alroot_log("effects", "zero-copy resumed: the game is back on its own display layer");
     }
     struct surface *ls = li >= 0 ? surface_for_image(dl.d[li].img) : NULL;
     if (li < 0) ls = ahb_layer_only_candidate(w, h);
@@ -2186,7 +2186,7 @@ static void render_scene(void) {
     if (cardboard) ls = NULL;
     if (ls && pass_on && li < 0 && !g_zero_copy_fx_skip_said) {
         g_zero_copy_fx_skip_said = 1;
-        droiddeck_log(framegen ? "framegen" : "effects",
+        alroot_log(framegen ? "framegen" : "effects",
                    "the game's frames cannot be imported by the compositor: shown zero-copy, %s skipped",
                    framegen ? "frame generation" : "effects");
     }
@@ -2197,7 +2197,7 @@ static void render_scene(void) {
             r = ahb_swapchain_present(ls->dmabuf_buf, ls, w, h);
         if (r != 0 && li >= 0)
             r = fx_on ? sc_layer_present_pass(&dl.d[li], 1, w, h)
-                      : sc_layer_present(dl.d[li].img, w, h, ls ? droiddeck_surface_color(ls) : NULL);
+                      : sc_layer_present(dl.d[li].img, w, h, ls ? alroot_surface_color(ls) : NULL);
         if (r == 0) {
             if (ls) ls->drawn = 1;
             int go[8], ov = 0;
@@ -2229,7 +2229,7 @@ static void render_scene(void) {
     }
     }
     free(hs.is_hdr);
-    if (hdr_copy && rendered && droiddeck_color_hdr_open()) hdr_count_copied(&dl, hdr_copy);
+    if (hdr_copy && rendered && alroot_color_hdr_open()) hdr_count_copied(&dl, hdr_copy);
     if (rendered) {
         int64_t t = presented_ns(t_scene);
         g_stat_frames++;
@@ -2397,7 +2397,7 @@ static void bind_seat(struct wl_client *c, void *data, uint32_t ver, uint32_t id
     struct wl_resource *r = wl_resource_create(c, &wl_seat_interface, ver, id);
     wl_resource_set_implementation(r, &seat_impl, NULL, NULL);
     wl_seat_send_capabilities(r, WL_SEAT_CAPABILITY_POINTER | WL_SEAT_CAPABILITY_KEYBOARD | WL_SEAT_CAPABILITY_TOUCH);
-    if (ver >= 2) wl_seat_send_name(r, "droiddeck-seat");
+    if (ver >= 2) wl_seat_send_name(r, "alroot-seat");
 }
 
 static struct seat_pointer *pointer_for(struct wl_client *client) {
@@ -2472,7 +2472,7 @@ static void keyboard_focus(struct wl_resource *target) {
                                    g_mods_depressed, 0, g_mods_locked, 0);
     }
     wl_array_release(&keys);
-    droiddeck_clipboard_keyboard_focus(client);
+    alroot_clipboard_keyboard_focus(client);
 }
 
 
@@ -2505,14 +2505,14 @@ static double g_ptr_x, g_ptr_y;
 static double g_raw_x, g_raw_y;
 static int g_raw_valid;
 
-extern void droiddeck_on_pointer_lock(int locked, int x, int y);
+extern void alroot_on_pointer_lock(int locked, int x, int y);
 
 static void sync_lock_notify(void) {
     static int last;
     int locked = g_active_constraint && g_active_constraint->is_lock;
     if (locked == last) return;
     last = locked;
-    droiddeck_on_pointer_lock(locked, (int)g_ptr_x, (int)g_ptr_y);
+    alroot_on_pointer_lock(locked, (int)g_ptr_x, (int)g_ptr_y);
 }
 
 static void constraint_describe(const struct constraint *k, char *out, size_t size) {
@@ -2578,7 +2578,7 @@ static void constraint_end(struct constraint *k, int tell_client, const char *wh
     }
     if (tell_client) constraint_send_state(k, 0);
     constraint_describe(k, name, sizeof(name));
-    droiddeck_log("pointer", "%s: %s (%s), pointer at %d,%d", k->is_lock ? "unlocked" : "unconfined",
+    alroot_log("pointer", "%s: %s (%s), pointer at %d,%d", k->is_lock ? "unlocked" : "unconfined",
                name, why, (int)g_ptr_x, (int)g_ptr_y);
     sync_lock_notify();
 }
@@ -2603,15 +2603,15 @@ static void constraint_activate(struct constraint *k) {
     constraint_send_state(k, 1);
     constraint_describe(k, name, sizeof(name));
     if (k->is_lock)
-        droiddeck_log("pointer", "locked: %s (%s), pointer frozen at %d,%d", name,
+        alroot_log("pointer", "locked: %s (%s), pointer frozen at %d,%d", name,
                    k->lifetime == ZWP_POINTER_CONSTRAINTS_V1_LIFETIME_ONESHOT ? "oneshot" : "persistent",
                    (int)g_ptr_x, (int)g_ptr_y);
     else if (k->region.set)
-        droiddeck_log("pointer", "confined: %s (%s) to %dx%d at %d,%d of the window", name,
+        alroot_log("pointer", "confined: %s (%s) to %dx%d at %d,%d of the window", name,
                    k->lifetime == ZWP_POINTER_CONSTRAINTS_V1_LIFETIME_ONESHOT ? "oneshot" : "persistent",
                    k->region.w, k->region.h, k->region.x, k->region.y);
     else
-        droiddeck_log("pointer", "confined: %s (%s) to the whole window", name,
+        alroot_log("pointer", "confined: %s (%s) to the whole window", name,
                    k->lifetime == ZWP_POINTER_CONSTRAINTS_V1_LIFETIME_ONESHOT ? "oneshot" : "persistent");
     sync_lock_notify();
     wl_display_flush_clients(g_display);
@@ -2663,7 +2663,7 @@ static void constraints_surface_commit(struct surface *s) {
                 g_ptr_x = ox + k->hint_x;
                 g_ptr_y = oy + k->hint_y;
                 if (log_budget())
-                    droiddeck_log("pointer", "position hint: pointer moved to %d,%d", (int)g_ptr_x, (int)g_ptr_y);
+                    alroot_log("pointer", "position hint: pointer moved to %d,%d", (int)g_ptr_x, (int)g_ptr_y);
             }
         }
         if (k->pending_region_set) {
@@ -2743,7 +2743,7 @@ static void constraint_create(struct wl_client *c, struct wl_resource *r, uint32
     wl_list_insert(g_constraints.prev, &k->link);
     if (!s) { k->defunct = 1; return; }
     constraint_describe(k, name, sizeof(name));
-    droiddeck_log("pointer", "%s requested by %s for %s", is_lock ? "lock" : "confine", client_name(c), name);
+    alroot_log("pointer", "%s requested by %s for %s", is_lock ? "lock" : "confine", client_name(c), name);
     constraint_activate(k);
 }
 
@@ -2773,7 +2773,7 @@ static void bind_pointer_constraints(struct wl_client *c, void *data, uint32_t v
 static void relative_pointer_resource_destroy(struct wl_resource *r) {
     struct relative_pointer *rp = wl_resource_get_user_data(r);
     if (!rp) return;
-    droiddeck_log("pointer", "relative pointer released by %s", client_name(wl_resource_get_client(r)));
+    alroot_log("pointer", "relative pointer released by %s", client_name(wl_resource_get_client(r)));
     wl_list_remove(&rp->link);
     free(rp);
 }
@@ -2792,7 +2792,7 @@ static void relative_pointer_manager_get(struct wl_client *c, struct wl_resource
     rp->pointer = pointer;
     wl_resource_set_implementation(res, &relative_pointer_impl, rp, relative_pointer_resource_destroy);
     wl_list_insert(g_relative_pointers.prev, &rp->link);
-    droiddeck_log("pointer", "relative pointer created for %s (motion arrives as deltas)", client_name(c));
+    alroot_log("pointer", "relative pointer created for %s (motion arrives as deltas)", client_name(c));
 }
 static const struct zwp_relative_pointer_manager_v1_interface relative_pointer_manager_impl = {
     .destroy = relative_pointer_manager_destroy,
@@ -2894,7 +2894,7 @@ static void pointer_input(double x, double y, int relative, uint32_t button, int
     if (button && pressed && !(k && k->is_lock)) {
         struct surface *clicked = toplevel_at(g_ptr_x, g_ptr_y);
         if (clicked) g_ime_click = clicked;
-        droiddeck_text_input_refocus();
+        alroot_text_input_refocus();
     }
     wl_display_flush_clients(g_display);
 }
@@ -3045,7 +3045,7 @@ static void touch_down(int id, double x, double y) {
     if (!any_active) {
         char name[160];
         describe(target, name, sizeof(name));
-        droiddeck_log("touch", "%s gets %s", name, has_touch ? "touch" : "the pointer (it takes no touch)");
+        alroot_log("touch", "%s gets %s", name, has_touch ? "touch" : "the pointer (it takes no touch)");
     }
     if (!has_touch) {
         if (any_active) return;
@@ -3124,7 +3124,7 @@ static void deliver_touch(const struct input_msg *m) {
 }
 
 static void key_event(uint32_t evdev, int pressed);
-struct wl_resource *droiddeck_ime_target(void);
+struct wl_resource *alroot_ime_target(void);
 static void deliver_key(const struct input_msg *m) {
     key_event((uint32_t)m->p1, m->p2);
 }
@@ -3194,7 +3194,7 @@ static void key_event(uint32_t evdev, int pressed) {
     }
     int mods_changed = update_modifiers(evdev, pressed);
     struct surface *target = NULL;
-    struct wl_resource *ime = droiddeck_ime_target();
+    struct wl_resource *ime = alroot_ime_target();
     if (ime) target = wl_resource_get_user_data(ime);
     if (!target && g_key_target && g_key_target->mapped && g_key_target != g_desktop) target = g_key_target;
     if (!target) target = g_desktop;
@@ -3232,7 +3232,7 @@ static void output_resized(void) {
     output_notify_mode();
     wl_list_for_each(s, &g_surfaces, link)
         if (s->xdg_toplevel && s->toplevel_committed) send_toplevel_configure(s);
-    droiddeck_log("display", "output resized to %dx%d", g_output_w, g_output_h);
+    alroot_log("display", "output resized to %dx%d", g_output_w, g_output_h);
     wl_display_flush_clients(g_display);
 }
 
@@ -3271,7 +3271,7 @@ static int on_input_readable(int fd, uint32_t mask, void *data) {
     return 0;
 }
 
-void droiddeck_wayland_set_scale_mode(int mode, int alignment) {
+void alroot_wayland_set_scale_mode(int mode, int alignment) {
     if (g_input_pipe[1] < 0) {
         vk_present_set_scale_mode(mode, alignment);
         return;
@@ -3281,42 +3281,42 @@ void droiddeck_wayland_set_scale_mode(int mode, int alignment) {
     (void)n;
 }
 
-void droiddeck_wayland_send_pointer(int action, int x, int y) {
+void alroot_wayland_send_pointer(int action, int x, int y) {
     if (g_input_pipe[1] < 0) return;
     struct input_msg m = { 0, action, x, y, 0 };
     ssize_t n = write(g_input_pipe[1], &m, sizeof(m));
     (void)n;
 }
 
-void droiddeck_wayland_send_touch(int action, int pointer_id, int x, int y) {
+void alroot_wayland_send_touch(int action, int pointer_id, int x, int y) {
     if (g_input_pipe[1] < 0) return;
     struct input_msg m = { 7, action, pointer_id, x, y };
     ssize_t n = write(g_input_pipe[1], &m, sizeof(m));
     (void)n;
 }
 
-void droiddeck_wayland_send_key(int evdev, int state) {
+void alroot_wayland_send_key(int evdev, int state) {
     if (g_input_pipe[1] < 0) return;
     struct input_msg m = { 1, evdev, state, 0, 0 };
     ssize_t n = write(g_input_pipe[1], &m, sizeof(m));
     (void)n;
 }
 
-void droiddeck_wayland_request_stop(void) {
+void alroot_wayland_request_stop(void) {
     if (g_input_pipe[1] < 0) return;
     struct input_msg m = { 90, 0, 0, 0, 0 };
     ssize_t n = write(g_input_pipe[1], &m, sizeof(m));
     (void)n;
 }
 
-void droiddeck_wayland_output_resized(void) {
+void alroot_wayland_output_resized(void) {
     if (g_input_pipe[1] < 0) return;
     struct input_msg m = { 8, 0, 0, 0, 0 };
     ssize_t n = write(g_input_pipe[1], &m, sizeof(m));
     (void)n;
 }
 
-void droiddeck_wayland_set_output_refresh_rate(int mhz) {
+void alroot_wayland_set_output_refresh_rate(int mhz) {
     if (mhz <= 0) mhz = 60000;
     if (atomic_exchange(&g_output_refresh_mhz, mhz) == mhz || g_input_pipe[1] < 0) return;
     atomic_store(&g_output_refresh_pending, 1);
@@ -3326,14 +3326,14 @@ void droiddeck_wayland_set_output_refresh_rate(int mhz) {
     (void)n;
 }
 
-void droiddeck_wayland_vsync(int64_t frame_time_ns) {
+void alroot_wayland_vsync(int64_t frame_time_ns) {
     if (g_input_pipe[1] < 0) return;
     struct input_msg m = { 5, (int)(frame_time_ns >> 32), (int)(uint32_t)frame_time_ns, 0, 0 };
     ssize_t n = write(g_input_pipe[1], &m, sizeof(m));
     (void)n;
 }
 
-void droiddeck_wayland_send_scene_input(int type, int a, int b) {
+void alroot_wayland_send_scene_input(int type, int a, int b) {
     if (g_input_pipe[1] < 0) return;
     struct input_msg m = { type, a, b, 0, 0 };
     ssize_t n = write(g_input_pipe[1], &m, sizeof(m));
@@ -3341,11 +3341,11 @@ void droiddeck_wayland_send_scene_input(int type, int a, int b) {
 }
 
 
-const char *droiddeck_client_name(struct wl_client *client) { return client_name(client); }
-struct wl_display *droiddeck_get_display(void) { return g_display; }
-void droiddeck_request_redraw(void) { schedule_render(); }
+const char *alroot_client_name(struct wl_client *client) { return client_name(client); }
+struct wl_display *alroot_get_display(void) { return g_display; }
+void alroot_request_redraw(void) { schedule_render(); }
 
-struct wl_resource *droiddeck_ime_target(void) {
+struct wl_resource *alroot_ime_target(void) {
     struct surface *s;
     if (g_ime_click && g_ime_click->mapped) return g_ime_click->resource;
     struct wl_client *shell = g_desktop ? wl_resource_get_client(g_desktop->resource) : NULL;
@@ -3354,13 +3354,13 @@ struct wl_resource *droiddeck_ime_target(void) {
     return NULL;
 }
 
-void droiddeck_surface_scene_origin(struct wl_resource *surface, int *x, int *y) {
+void alroot_surface_scene_origin(struct wl_resource *surface, int *x, int *y) {
     struct surface *s = surface ? wl_resource_get_user_data(surface) : NULL;
     *x = 0; *y = 0;
     if (s && s->placed) { *x = s->x; *y = s->y; }
 }
 
-void droiddeck_inject_key(uint32_t evdev, int pressed) { key_event(evdev, pressed); }
+void alroot_inject_key(uint32_t evdev, int pressed) { key_event(evdev, pressed); }
 
 
 static struct wl_event_source *g_stats_timer;
@@ -3380,7 +3380,7 @@ static int on_stats_timer(void *data) {
         if (g_zero_copy || zero_copy) off += snprintf(extra + off, sizeof(extra) - (size_t)off, " | %u zero-copy frames", zero_copy);
         if (layer_frames) off += snprintf(extra + off, sizeof(extra) - (size_t)off, " | %u layer frames", layer_frames);
         if (generated) snprintf(extra + off, sizeof(extra) - (size_t)off, " | %u generated frames", generated);
-        droiddeck_log("stats", "last 10 s: %u frames on screen (%.1f fps) | %u GPU frames from games | %u window redraws | %d windows open%s",
+        alroot_log("stats", "last 10 s: %u frames on screen (%.1f fps) | %u GPU frames from games | %u window redraws | %d windows open%s",
                    g_stat_frames + generated, (g_stat_frames + generated) / 10.0, g_stat_dmabuf, g_stat_shm, windows, extra);
     }
     {
@@ -3389,7 +3389,7 @@ static int on_stats_timer(void *data) {
         const unsigned drops = sc_layer_drops_take();
 #define PERF_MS(sum, n) ((n) ? (double)(sum) / 1e6 / (double)(n) : 0.0)
         if (g_perf.scenes || vp.presents || g_perf.releases || drops)
-            droiddeck_log("perf", "last 10 s: %u ticks, %u scenes, %u on screen (copy %u, zero-copy %u, layer copy %u) | "
+            alroot_log("perf", "last 10 s: %u ticks, %u scenes, %u on screen (copy %u, zero-copy %u, layer copy %u) | "
                        "render_scene %.2f/%.2f ms | base %u black kept, %u presented | acquire %.2f/%.2f ms | "
                        "present %.2f/%.2f ms (%u) | fence wait %.2f/%.2f ms (%u, %u GPU release waits) | "
                        "release %.2f/%.2f ms (%u, %u held) | %u pool drops",
@@ -3405,7 +3405,7 @@ static int on_stats_timer(void *data) {
         memset(&g_perf, 0, sizeof(g_perf));
     }
     g_stat_frames = g_stat_dmabuf = g_stat_shm = 0;
-    droiddeck_color_stats_tick();
+    alroot_color_stats_tick();
 
 
 
@@ -3413,7 +3413,7 @@ static int on_stats_timer(void *data) {
         if (!ci->asked_feedback || ci->dmabuf_buffers || ci->shm_gl_said || ci->shm_frames < 150)
             continue;
         ci->shm_gl_said = 1;
-        droiddeck_log("opengl", "%s asked for GPU buffers but has drawn only software (shared-memory) "
+        alroot_log("opengl", "%s asked for GPU buffers but has drawn only software (shared-memory) "
                    "frames: its OpenGL fell back to software rendering, which the Wayland layer cannot "
                    "draw - expect a black picture (main device %u:%u)", ci->name,
                    (unsigned)major(g_main_device), (unsigned)minor(g_main_device));
@@ -3433,7 +3433,7 @@ static void test_input_line(const char *line) {
     int n = sscanf(line, "%15s %lf %lf", cmd, &x, &y);
 
     if (n < 2) return;
-    droiddeck_log("test", "input: %s", line);
+    alroot_log("test", "input: %s", line);
     if (!strcmp(cmd, "key") || !strcmp(cmd, "keydown") || !strcmp(cmd, "keyup")) {
         code = (unsigned)x;
         if (strcmp(cmd, "keyup")) key_event(code, 1);
@@ -3492,7 +3492,7 @@ static void start_test_input(struct wl_event_loop *loop) {
 
 static struct wl_listener g_client_created = { .notify = on_client_created };
 
-int droiddeck_wayland_run(void) {
+int alroot_wayland_run(void) {
     wl_list_init(&g_surfaces);
     wl_list_init(&g_toplevels);
     wl_list_init(&g_outputs);
@@ -3522,7 +3522,7 @@ int droiddeck_wayland_run(void) {
               rt ? rt : "(null)");
         return 1;
     }
-    droiddeck_log("display", "Wayland compositor listening on %s/wayland-0", rt ? rt : "?");
+    alroot_log("display", "Wayland compositor listening on %s/wayland-0", rt ? rt : "?");
     wl_display_add_client_created_listener(display, &g_client_created);
 
     wl_global_create(display, &wl_compositor_interface, 6, NULL, bind_compositor);
@@ -3538,11 +3538,11 @@ int droiddeck_wayland_run(void) {
     wl_global_create(display, &wp_presentation_interface, 2, NULL, bind_presentation);
     wl_global_create(display, &zwp_pointer_constraints_v1_interface, 1, NULL, bind_pointer_constraints);
     wl_global_create(display, &zwp_relative_pointer_manager_v1_interface, 1, NULL, bind_relative_pointer_manager);
-    droiddeck_ext_init(display);
+    alroot_ext_init(display);
     ahb_swapchain_init(display);
 
 
-    droiddeck_color_init(display);
+    alroot_color_init(display);
 
 
 

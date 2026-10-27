@@ -13,7 +13,6 @@ import android.os.Handler;
 import android.os.Looper;
 import android.util.Log;
 
-import com.droiddeck.launcher.wayland.WaylandCompositor;
 import java.io.File;
 
 public final class HelperService extends Service {

@@ -69,6 +69,45 @@ def install_plank():
         os.replace(target_tmp, project_db)
     return "SYNCED (autostart, launchers, DConf ordering/theme/zoom)"
 
+def install_notes():
+    # The original native Termux-X11 Notes process is bound to DISPLAY :0.
+    # Alroot must start its own XEmbed tray instance, on DISPLAY :90, using
+    # a private copy of the user's sticky notes (never write originals).
+    source_data = HOME / ".local/share/notes"
+    project_data = STATE / "notes-data/notes"
+    if source_data.is_dir() and not project_data.exists():
+        project_data.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copytree(source_data, project_data, symlinks=False)
+    source_cfg = HOME / ".config/xfce4/notes"
+    project_cfg = CONFIG / "xfce4/notes"
+    if source_cfg.is_dir() and not project_cfg.exists():
+        project_cfg.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copytree(source_cfg, project_cfg, symlinks=False)
+    dest = CONFIG / "autostart/xfce4-notes-autostart.desktop"
+    dest.parent.mkdir(parents=True, exist_ok=True)
+    original = HOME / ".config/autostart/xfce4-notes-autostart.desktop"
+    if original.is_file():
+        text = original.read_text(encoding="utf-8")
+        text = text.replace("Exec=xfce4-notes",
+                            "Exec=" + str(PROJECT / "termux/alroot-notes.sh"))
+    else:
+        text = ("[Desktop Entry]\nType=Application\nName=Notes\n"
+                "Exec=" + str(PROJECT / "termux/alroot-notes.sh")
+                + "\nOnlyShowIn=XFCE;\nTerminal=false\n")
+    dest.write_text(text, encoding="utf-8")
+    return "ENABLED (separate X11 tray and private data snapshot)"
+
+
+def install_battery_tray():
+    dest = CONFIG / "autostart/alroot-battery-tray.desktop"
+    dest.parent.mkdir(parents=True, exist_ok=True)
+    dest.write_text(
+        "[Desktop Entry]\nType=Application\nName=Alroot Battery\n"
+        "Exec=" + str(PROJECT / "termux/alroot-battery-tray.sh") + "\n"
+        "OnlyShowIn=XFCE;\nTerminal=false\nStartupNotify=false\n",
+        encoding="utf-8")
+    return "ENABLED (GTK XEmbed status icon + Android percentage)"
+
 
 def install_battery():
     xmlpath = CONFIG / "xfce4/xfconf/xfce-perchannel-xml/xfce4-panel.xml"
@@ -152,3 +191,5 @@ if __name__ == "__main__":
     print("Alroot XFCE: " + mirror_xfce())
     print("Alroot XFCE Plank: " + install_plank())
     print("Alroot XFCE battery GenMon: " + install_battery())
+    print("Alroot XFCE battery tray: " + install_battery_tray())
+    print("Alroot XFCE sticky notes: " + install_notes())

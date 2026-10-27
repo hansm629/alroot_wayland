@@ -11,8 +11,8 @@
 
 #include "linux-dmabuf-v1-server-protocol.h"
 #include "vk_present.h"
-#include "droiddeck_ext.h"
-#include "droiddeck_color.h"
+#include "alroot_ext.h"
+#include "alroot_color.h"
 #include "compositor_internal.h"
 
 
@@ -118,7 +118,7 @@ static void dmabuf_build_formats(void) {
     char line[320];
     int pos = 0, compressed = 0;
     g_dmabuf_fmts_ready = 1;
-    g_dmabuf_nfmt = droiddeck_color_hdr_open() ? DMABUF_NFMT_MAX : DMABUF_NFMT_SDR;
+    g_dmabuf_nfmt = alroot_color_hdr_open() ? DMABUF_NFMT_MAX : DMABUF_NFMT_SDR;
     for (int f = 0; f < g_dmabuf_nfmt; f++) {
         uint64_t got[DMABUF_NMOD];
         int n = vkp_dmabuf_modifiers(g_dmabuf_fmts[f].fmt, got, DMABUF_NMOD), k = 0;
@@ -139,16 +139,16 @@ static void dmabuf_build_formats(void) {
                             vkp_modifier_name(g_dmabuf_fmts[f].mods[i]));
         if (pos >= (int)sizeof(line)) pos = (int)sizeof(line) - 1;
     }
-    droiddeck_log("dmabuf", "formats: %s%s", line,
-               !g_ubwc ? " (DROIDDECK_WAYLAND_UBWC=0: qcom_compressed not advertised)" : "");
+    alroot_log("dmabuf", "formats: %s%s", line,
+               !g_ubwc ? " (ALROOT_WAYLAND_UBWC=0: qcom_compressed not advertised)" : "");
     if (g_ubwc && !compressed)
-        droiddeck_log("dmabuf", "the compositor's driver (%s) reports no importable qcom_compressed layout: "
+        alroot_log("dmabuf", "the compositor's driver (%s) reports no importable qcom_compressed layout: "
                    "game swapchains stay linear", vkp_gpu_name());
     if (g_dmabuf_nfmt > DMABUF_NFMT_SDR) {
         uint64_t got[DMABUF_NMOD];
         int n = vkp_dmabuf_modifiers(DRM_XBGR2101010, got, DMABUF_NMOD), ubwc10 = 0;
         for (int i = 0; i < n; i++) if (got[i] == VKP_MOD_QCOM_COMPRESSED) ubwc10 = 1;
-        droiddeck_log("color", "10-bit dma-buf formats AB30/XB30 advertised for HDR10; the compositor's driver (%s) "
+        alroot_log("color", "10-bit dma-buf formats AB30/XB30 advertised for HDR10; the compositor's driver (%s) "
                    "imports XB30 %s", vkp_gpu_name(),
                    n == 0 ? "with no layout it reports (copy path unlikely; display layer only)"
                           : ubwc10 ? "linear and UBWC" : "linear only (UBWC 10-bit frames: display layer only)");
@@ -202,7 +202,7 @@ static void dmabuf_build_feedback(void) {
         }
     if (!n) return;
 
-    int fd = (int)syscall(__NR_memfd_create, "droiddeck-dmabuf-formats",
+    int fd = (int)syscall(__NR_memfd_create, "alroot-dmabuf-formats",
                           MFD_CLOEXEC | MFD_ALLOW_SEALING);
     if (fd < 0) { WLOGE("dmabuf feedback: memfd_create failed (%s)", strerror(errno)); return; }
     size_t size = (size_t)n * sizeof(entries[0]);
@@ -215,12 +215,12 @@ static void dmabuf_build_feedback(void) {
     g_fmt_table_fd = fd;
     g_fmt_table_size = size;
     g_fmt_table_n = (uint16_t)n;
-    droiddeck_log("dmabuf", "feedback ready: %d format/modifier pairs, main device %u:%u",
+    alroot_log("dmabuf", "feedback ready: %d format/modifier pairs, main device %u:%u",
                n, (unsigned)major(g_main_device), (unsigned)minor(g_main_device));
     if (!g_main_device)
-        droiddeck_log("dmabuf", "%s: OpenGL games need Wayland layer versionCode 9 or newer, "
+        alroot_log("dmabuf", "%s: OpenGL games need Wayland layer versionCode 9 or newer, "
                    "which runs OpenGL on the GPU without a DRM node; older layers show a black window",
-                   g_no_render_node ? "no DRM device named (forced by DROIDDECK_WAYLAND_NO_RENDER_NODE=1)"
+                   g_no_render_node ? "no DRM device named (forced by ALROOT_WAYLAND_NO_RENDER_NODE=1)"
                                     : "this device gives apps no display (DRM) device (/dev/dri)");
 }
 

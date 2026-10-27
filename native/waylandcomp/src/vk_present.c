@@ -7,7 +7,7 @@
 #include "framegen_bridge.h"
 #include "hdr_compose.h"
 #include "blend_pass.h"
-#include "droiddeck_color.h"
+#include "alroot_color.h"
 #include "quest_device.h"
 #include <stdio.h>
 #include <stdlib.h>
@@ -21,9 +21,9 @@
 #include <android/log.h>
 #include <android/hardware_buffer.h>
 
-#define TAG "DroidDeckWayland"
+#define TAG "AlrootWayland"
 #define LOGI(...) __android_log_print(ANDROID_LOG_INFO, TAG, __VA_ARGS__)
-#define LOGE(...) droiddeck_log("error", __VA_ARGS__)
+#define LOGE(...) alroot_log("error", __VA_ARGS__)
 #define MOD_INVALID VKP_MOD_INVALID
 
 struct vkp_image {
@@ -79,7 +79,7 @@ int vkp_quest_layer_presentation(void) {
         __system_property_get("ro.product.device", device);
         __system_property_get("ro.product.manufacturer", maker);
         enabled = quest_device_matches(model, device, maker);
-        if (enabled) droiddeck_log("gpu", "Quest presentation: display layers for Steam and desktop, CPU-initialized black backdrop; independent of HDR");
+        if (enabled) alroot_log("gpu", "Quest presentation: display layers for Steam and desktop, CPU-initialized black backdrop; independent of HDR");
     }
     return enabled;
 }
@@ -159,7 +159,7 @@ static int g_game_picture_top;
 static int64_t g_swap_retry_at_ns;
 static int g_swap_fail_logged;
 
-extern void droiddeck_on_first_frame(void);
+extern void alroot_on_first_frame(void);
 
 static char g_gpu_name[VK_MAX_PHYSICAL_DEVICE_NAME_SIZE];
 const char *vkp_gpu_name(void) { return g_gpu_name; }
@@ -270,7 +270,7 @@ int vkp_apply_window_request(void) {
         sc_layer_window_gone();
         destroy_swapchain();
         window_request_applied(generation);
-        droiddeck_log("gpu", "screen surface rebound: rebuilding the swapchain at its new size");
+        alroot_log("gpu", "screen surface rebound: rebuilding the swapchain at its new size");
         return 1;
     }
     sc_layer_window_gone();
@@ -281,7 +281,7 @@ int vkp_apply_window_request(void) {
     g_swap_retry_at_ns = 0;
     g_swap_fail_logged = 0;
     window_request_applied(generation);
-    droiddeck_log("gpu", w ? "screen surface attached" : "screen surface gone: presenting paused");
+    alroot_log("gpu", w ? "screen surface attached" : "screen surface gone: presenting paused");
     return 1;
 }
 
@@ -363,7 +363,7 @@ static void update_map(int scene_w, int scene_h) {
     g_game_picture_rect[2] = g_map.off_x + scene_w * g_map.kx;
     g_game_picture_rect[3] = g_map.off_y + scene_h * g_map.ky;
     pthread_mutex_unlock(&g_game_picture_lock);
-    droiddeck_log("screen", "%s, %s: %dx%d scene shown %dx%d at %d,%d on the %dx%d output",
+    alroot_log("screen", "%s, %s: %dx%d scene shown %dx%d at %d,%d on the %dx%d output",
                mode_name(mode), align_name(align), scene_w, scene_h,
                (int)(scene_w * g_map.kx + 0.5f), (int)(scene_h * g_map.ky + 0.5f),
                (int)g_map.off_x, (int)g_map.off_y, W, H);
@@ -407,7 +407,7 @@ static int dev_init(void) {
     const char *inst_exts[3] = {VK_KHR_SURFACE_EXTENSION_NAME,
                                 VK_KHR_ANDROID_SURFACE_EXTENSION_NAME, NULL};
     uint32_t n_inst_exts = 2;
-    if (droiddeck_color_requested() && g_vk.EnumerateInstanceExtensionProperties) {
+    if (alroot_color_requested() && g_vk.EnumerateInstanceExtensionProperties) {
         uint32_t ne = 0;
         g_vk.EnumerateInstanceExtensionProperties(NULL, &ne, NULL);
         VkExtensionProperties *ie = ne ? calloc(ne, sizeof(*ie)) : NULL;
@@ -420,12 +420,12 @@ static int dev_init(void) {
                 }
         }
         free(ie);
-        droiddeck_log("color", "compositor instance %s VK_EXT_swapchain_colorspace (an HDR10 swapchain for frame "
+        alroot_log("color", "compositor instance %s VK_EXT_swapchain_colorspace (an HDR10 swapchain for frame "
                    "generation %s)", g_colorspace_ext ? "enables" : "has no",
                    g_colorspace_ext ? "is possible where the screen surface offers one" : "is not possible: tone-mapped instead");
     }
     VkApplicationInfo app = {.sType = VK_STRUCTURE_TYPE_APPLICATION_INFO,
-                             .pApplicationName = "droiddeck-wayland-present",
+                             .pApplicationName = "alroot-wayland-present",
                              .apiVersion = VK_API_VERSION_1_3};
     VkInstanceCreateInfo ici = {.sType = VK_STRUCTURE_TYPE_INSTANCE_CREATE_INFO,
                                 .pApplicationInfo = &app,
@@ -455,9 +455,9 @@ static int dev_init(void) {
         VkPhysicalDeviceProperties props;
         g_vk.GetPhysicalDeviceProperties(g_pd, &props);
         snprintf(g_gpu_name, sizeof(g_gpu_name), "%s", props.deviceName);
-        droiddeck_log("gpu", "compositor renders on %s with %s", props.deviceName,
+        alroot_log("gpu", "compositor renders on %s with %s", props.deviceName,
                    g_library_name ? g_library_name : "the system Vulkan driver");
-        if (g_driver_path) droiddeck_log("gpu", "driver folder %s", g_driver_path);
+        if (g_driver_path) alroot_log("gpu", "driver folder %s", g_driver_path);
     }
     g_vk.GetPhysicalDeviceMemoryProperties(g_pd, &g_memprops);
 
@@ -475,7 +475,7 @@ static int dev_init(void) {
         else LOGE("present: driver MISSING %s (dmabuf import will fail)", import_exts[i]);
     }
     int want_hdr_md = 0;
-    if (droiddeck_color_requested()) {
+    if (alroot_color_requested()) {
         want_hdr_md = has_ext(exts, ne, VK_EXT_HDR_METADATA_EXTENSION_NAME);
         if (want_hdr_md) dev_exts[n_dev_exts++] = VK_EXT_HDR_METADATA_EXTENSION_NAME;
     }
@@ -499,7 +499,7 @@ static int dev_init(void) {
                               .enabledExtensionCount = n_dev_exts, .ppEnabledExtensionNames = dev_exts};
     VkResult dr = g_vk.CreateDevice(g_pd, &dci, NULL, &g_dev);
     if (dr != VK_SUCCESS && fg_features) {
-        droiddeck_log("framegen", "the driver refused the LSFG feature set (%s); device created without it",
+        alroot_log("framegen", "the driver refused the LSFG feature set (%s); device created without it",
                    vk_result_name(dr));
         dci.pNext = NULL;
         fg_features = NULL;
@@ -518,13 +518,13 @@ static int dev_init(void) {
             g_wait_sem = VK_NULL_HANDLE;
         }
     }
-    droiddeck_log("perf", "layer buffers: the display's release fences are waited for %s",
+    alroot_log("perf", "layer buffers: the display's release fences are waited for %s",
                g_import_sem_fd ? "on the GPU (VK_KHR_external_semaphore_fd)"
                                : "on the CPU (this driver has no VK_KHR_external_semaphore_fd)");
     if (want_hdr_md)
         g_set_hdr_metadata = (PFN_vkSetHdrMetadataEXT)g_vk.GetDeviceProcAddr(g_dev, "vkSetHdrMetadataEXT");
-    if (droiddeck_color_requested())
-        droiddeck_log("color", "compositor device %s VK_EXT_hdr_metadata (the HDR10 swapchain for frame generation %s)",
+    if (alroot_color_requested())
+        alroot_log("color", "compositor device %s VK_EXT_hdr_metadata (the HDR10 swapchain for frame generation %s)",
                    g_set_hdr_metadata ? "enables" : "has no",
                    g_set_hdr_metadata ? "carries the game's mastering metadata" : "goes without the game's metadata");
 
@@ -650,7 +650,7 @@ static void log_surface_formats(const VkSurfaceFormatKHR *f, uint32_t n) {
                                        vk_colorspace_short(f[i].colorSpace));
             else hdr_cut++;
         }
-    droiddeck_log("color", "screen surface lists %u format/colour-space pairs (%s); HDR-capable: %s%s", n, per,
+    alroot_log("color", "screen surface lists %u format/colour-space pairs (%s); HDR-capable: %s%s", n, per,
                hdr_n ? hdr : "none", hdr_cut ? " (+more)" : "");
 }
 
@@ -680,7 +680,7 @@ static int swap_init_locked(void) {
     }
     VkSurfaceFormatKHR chosen = fmts[0];
     const VkSurfaceFormatKHR sdr_choice = fmts[0];
-    if (droiddeck_color_requested() && (!g_surface_formats_said || g_swap_hdr_want)) {
+    if (alroot_color_requested() && (!g_surface_formats_said || g_swap_hdr_want)) {
         g_surface_formats_said = 1;
         log_surface_formats(fmts, nfmt);
     }
@@ -700,13 +700,13 @@ static int swap_init_locked(void) {
             g_swap_is_hdr = 1;
             char fname[24];
             vk_format_short(chosen.format, fname, sizeof(fname));
-            droiddeck_log("color", "screen swapchain built as HDR10 (format %d %s, HDR10_ST2084): frame-generated HDR "
+            alroot_log("color", "screen swapchain built as HDR10 (format %d %s, HDR10_ST2084): frame-generated HDR "
                        "frames reach the display as PQ BT.2020%s", (int)chosen.format, fname,
                        vk_format_bits(chosen.format) <= 8 ? " - an 8-bit swapchain: banding possible in smooth gradients"
                                                           : "");
         } else {
             g_swap_hdr_unavailable = 1;
-            droiddeck_log("color", "the screen surface lists no HDR10 swapchain format among its %u format/colour-space "
+            alroot_log("color", "the screen surface lists no HDR10 swapchain format among its %u format/colour-space "
                        "pairs (see the line above): frames with frame generation are tone-mapped to SDR instead",
                        nfmt);
         }
@@ -737,7 +737,7 @@ static int swap_init_locked(void) {
         .presentMode = VK_PRESENT_MODE_FIFO_KHR, .clipped = VK_TRUE};
     VkResult cr = g_vk.CreateSwapchainKHR(g_dev, &sci, NULL, &g_swapchain);
     if (cr != VK_SUCCESS && g_swap_is_hdr) {
-        droiddeck_log("color", "the driver refused the HDR10 swapchain (%s): frames with frame generation are "
+        alroot_log("color", "the driver refused the HDR10 swapchain (%s): frames with frame generation are "
                    "tone-mapped to SDR instead", vk_result_name(cr));
         g_swap_is_hdr = 0;
         g_swap_hdr_unavailable = 1;
@@ -756,7 +756,7 @@ static int swap_init_locked(void) {
     g_images = calloc(g_nimg, sizeof(VkImage));
     g_vk.GetSwapchainImagesKHR(g_dev, g_swapchain, &g_nimg, g_images);
 
-    droiddeck_log("gpu", "screen output %ux%u, %u buffers, vsync%s", g_extent.width, g_extent.height, g_nimg,
+    alroot_log("gpu", "screen output %ux%u, %u buffers, vsync%s", g_extent.width, g_extent.height, g_nimg,
                g_swap_extra ? " (frame generation: several presents per frame)" : "");
     return 0;
 }
@@ -819,7 +819,7 @@ static void init_black_image(void) {
         g_vk.WaitForFences(g_dev, 1, &g_fence, VK_TRUE, 1000000000ULL) == VK_SUCCESS)
         g_black_state = 1;
     else
-        droiddeck_log("gpu", "letterbox black image unavailable: the whole output is cleared every copy-path frame");
+        alroot_log("gpu", "letterbox black image unavailable: the whole output is cleared every copy-path frame");
 }
 
 static int record_bars_clear(VkCommandBuffer cmd, VkImage img, const VkImageBlit *covered) {
@@ -952,7 +952,7 @@ struct vkp_image *vkp_image_import_dmabuf(int fd, uint32_t drm_format, uint64_t 
         LOGE("%s: vkCreateImage(%s, %dx%d, pitch %u, offset %u) -> %s%s", as_blit_dst ? "layer" : "dmabuf",
              vkp_modifier_name(modifier), w, h, stride, offset, vk_result_name(cr),
              (!as_blit_dst && modifier == VKP_MOD_QCOM_COMPRESSED)
-                 ? ": the game's UBWC layout was refused; DROIDDECK_WAYLAND_UBWC=0 forces linear buffers" : "");
+                 ? ": the game's UBWC layout was refused; ALROOT_WAYLAND_UBWC=0 forces linear buffers" : "");
         free(img); return NULL;
     }
 
@@ -1208,7 +1208,7 @@ static int ensure_scene_image(int w, int h) {
     if (r != VK_SUCCESS) { LOGE("effects: scene image %dx%d: vkAllocateMemory %s", w, h, vk_result_name(r)); destroy_scene_image(); return -1; }
     g_vk.BindImageMemory(g_dev, g_scene.img, g_scene.mem, 0);
     g_scene.w = w; g_scene.h = h;
-    droiddeck_log("effects", "scene image %dx%d for the effect chain", w, h);
+    alroot_log("effects", "scene image %dx%d for the effect chain", w, h);
     return 0;
 }
 
@@ -1244,7 +1244,7 @@ static int ensure_img(struct vkp_img_slot *s, int w, int h, VkFormat fmt, VkImag
     s->w = w; s->h = h; s->fmt = fmt;
     char fname[24];
     vk_format_short(fmt, fname, sizeof(fname));
-    droiddeck_log("color", "%s image %dx%d (%s)", what, w, h, fname);
+    alroot_log("color", "%s image %dx%d (%s)", what, w, h, fname);
     return 0;
 }
 
@@ -1270,7 +1270,7 @@ static int compose_hdr(VkCommandBuffer cmd, const struct vkp_draw *draws, int n,
                           .dstAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT};
     g_vk.CmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT, 0, 1, &mb, 0, NULL, 0, NULL);
 
-    struct hdrc_params p = {.mode = mode, .sdr_white_nits = droiddeck_color_sdr_white(),
+    struct hdrc_params p = {.mode = mode, .sdr_white_nits = alroot_color_sdr_white(),
                             .peak_nits = hf->peak_nits > 0.0f ? hf->peak_nits : 1000.0f};
     int lowest_hdr = -1;
     for (int i = 0; i < n; i++) {
@@ -1292,7 +1292,7 @@ static int compose_hdr(VkCommandBuffer cmd, const struct vkp_draw *draws, int n,
         }
         if (i >= lowest_hdr && !truncated_said) {
             truncated_said = 1;
-            droiddeck_log("color", "HDR composition: more than %d windows are stacked over the HDR game - the lowest "
+            alroot_log("color", "HDR composition: more than %d windows are stacked over the HDR game - the lowest "
                        "ones are treated as SDR", HDRC_MAX_RECTS);
         }
     }
@@ -1304,7 +1304,7 @@ static void device_lost(const char *where) {
     g_dev_state = -2;
     g_base_black = 0;
     vkp_framegen_device_lost();
-    droiddeck_log("error", "GPU device lost (VK_ERROR_DEVICE_LOST in %s): the compositor has stopped presenting; "
+    alroot_log("error", "GPU device lost (VK_ERROR_DEVICE_LOST in %s): the compositor has stopped presenting; "
                "restart the session", where);
     for (uint32_t i = 0; i < g_nimg; i++) blendp_forget_image(g_images[i]);
     if (g_swapchain) g_vk.DestroySwapchainKHR(g_dev, g_swapchain, NULL);
@@ -1410,12 +1410,12 @@ static int acquire_image(int k, int first, uint32_t *img, VkResult *ar_out) {
         if (ar == VK_SUCCESS || ar == VK_SUBOPTIMAL_KHR) { *ar_out = ar; return 0; }
         if (ar == VK_ERROR_DEVICE_LOST) { device_lost("acquire"); return -1; }
         if (ar == VK_ERROR_OUT_OF_DATE_KHR || ar == VK_ERROR_SURFACE_LOST_KHR) {
-            droiddeck_log("gpu", "screen surface %s on acquire: rebuilding the swapchain", vk_result_name(ar));
+            alroot_log("gpu", "screen surface %s on acquire: rebuilding the swapchain", vk_result_name(ar));
             destroy_swapchain();
             if (first && attempt == 0) continue;
             return -1;
         }
-        droiddeck_log("error", "present: acquire %d failed (%s %d)", k, vk_result_name(ar), (int)ar);
+        alroot_log("error", "present: acquire %d failed (%s %d)", k, vk_result_name(ar), (int)ar);
         if (ar == VK_TIMEOUT || ar == VK_NOT_READY) return -1;
         destroy_swapchain();
         return -1;
@@ -1440,7 +1440,7 @@ static void check_surface_changed(void) {
     if (caps.currentExtent.width == g_caps_extent.width && caps.currentExtent.height == g_caps_extent.height &&
         caps.currentTransform == g_surface_transform)
         return;
-    droiddeck_log("gpu", "screen surface changed (%ux%u -> %ux%u, transform %d -> %d): rebuilding the swapchain",
+    alroot_log("gpu", "screen surface changed (%ux%u -> %ux%u, transform %d -> %d): rebuilding the swapchain",
                g_caps_extent.width, g_caps_extent.height, caps.currentExtent.width, caps.currentExtent.height,
                (int)g_surface_transform, (int)caps.currentTransform);
     destroy_swapchain();
@@ -1482,7 +1482,7 @@ static int take_wait_fd(int fd) {
         static int said;
         if (!said) {
             said = 1;
-            droiddeck_log("perf", "layer buffers: importing a release fence as a GPU wait failed; waiting for it on the CPU");
+            alroot_log("perf", "layer buffers: importing a release fence as a GPU wait failed; waiting for it on the CPU");
         }
     }
     struct pollfd p = {.fd = fd, .events = POLLIN};
@@ -1492,18 +1492,18 @@ static int take_wait_fd(int fd) {
     return r == 0 ? -1 : 0;
 }
 
-static void send_hdr_metadata(const struct droiddeck_color *c) {
+static void send_hdr_metadata(const struct alroot_color *c) {
     static int said_none, said_nodesc;
     if (!c) return;
     if (!g_set_hdr_metadata) {
-        if (!said_none) { said_none = 1; droiddeck_log("color", "HDR10 swapchain without the game's metadata: this device "
+        if (!said_none) { said_none = 1; alroot_log("color", "HDR10 swapchain without the game's metadata: this device "
                                                     "has no VK_EXT_hdr_metadata (the display uses its defaults)"); }
         return;
     }
     if (!c->has_st2086 && !c->has_cta861) {
         if (said_nodesc != (int)c->identity) {
             said_nodesc = (int)c->identity;
-            droiddeck_log("color", "HDR10 swapchain: image description #%u carries no HDR metadata (the game sent none), "
+            alroot_log("color", "HDR10 swapchain: image description #%u carries no HDR metadata (the game sent none), "
                        "so none is set - the display uses its defaults", c->identity);
         }
         return;
@@ -1522,7 +1522,7 @@ static void send_hdr_metadata(const struct droiddeck_color *c) {
         md.maxFrameAverageLightLevel = c->max_fall;
     }
     g_set_hdr_metadata(g_dev, 1, &g_swapchain, &md);
-    droiddeck_log("color", "HDR10 swapchain: the game's metadata set via VK_EXT_hdr_metadata (image description #%u: %s)",
+    alroot_log("color", "HDR10 swapchain: the game's metadata set via VK_EXT_hdr_metadata (image description #%u: %s)",
                c->identity, c->text);
 }
 
@@ -1536,13 +1536,13 @@ static int render_impl(int scene_w, int scene_h, const struct vkp_draw *draws, i
     if (dev_init() != 0 || !g_window || scene_w <= 0 || scene_h <= 0) return -1;
 
     if (g_swapchain && vkp_framegen_extra_images() != g_swap_extra) {
-        droiddeck_log("gpu", "frame generation now wants %d present%s per frame: rebuilding the swapchain",
+        alroot_log("gpu", "frame generation now wants %d present%s per frame: rebuilding the swapchain",
                    1 + vkp_framegen_extra_images(), vkp_framegen_extra_images() ? "s" : "");
         destroy_swapchain();
     }
     const int want_hdr = hf && !hf->tonemap && g_colorspace_ext && !g_swap_hdr_unavailable;
     if (g_swapchain && want_hdr != g_swap_is_hdr) {
-        droiddeck_log("color", want_hdr ? "HDR frames with frame generation: rebuilding the screen swapchain as HDR10"
+        alroot_log("color", want_hdr ? "HDR frames with frame generation: rebuilding the screen swapchain as HDR10"
                             : hf     ? "HDR output switched off: rebuilding the screen swapchain as SDR (frames tone-mapped)"
                                      : "no HDR frames through the screen swapchain any more: rebuilding it as SDR");
         destroy_swapchain();
@@ -1563,7 +1563,7 @@ static int render_impl(int scene_w, int scene_h, const struct vkp_draw *draws, i
     int cb = !g_plain_frame && vkp_cardboard_active();
     if (cb && hf) {
         static int said;
-        if (!said) { said = 1; droiddeck_log("cardboard", "HDR frames are shown flat: the cardboard pass is 8-bit only"); }
+        if (!said) { said = 1; alroot_log("cardboard", "HDR frames are shown flat: the cardboard pass is 8-bit only"); }
         cb = 0;
     }
     vkp_cardboard_begin_frame();
@@ -1579,10 +1579,10 @@ static int render_impl(int scene_w, int scene_h, const struct vkp_draw *draws, i
             char sw[24];
             vk_format_short(g_swap_fmt, sw, sizeof(sw));
             if (deep)
-                droiddeck_log("color", "frame generation runs on the HDR picture in FP16 (RGBA16F): more than 8 bits of PQ "
+                alroot_log("color", "frame generation runs on the HDR picture in FP16 (RGBA16F): more than 8 bits of PQ "
                            "through interpolation, into the HDR10 swapchain (%s)", sw);
             else
-                droiddeck_log("color", "frame generation runs on the HDR picture in 8 bits (the engine cannot take FP16 here), "
+                alroot_log("color", "frame generation runs on the HDR picture in 8 bits (the engine cannot take FP16 here), "
                            "into the HDR10 swapchain (%s): banding possible in smooth gradients", sw);
         }
     }
@@ -1728,7 +1728,7 @@ static int render_impl(int scene_w, int scene_h, const struct vkp_draw *draws, i
         if (k > 0) {
             VkResult ark;
             if (acquire_image(k, 0, &img, &ark) != 0) {
-                droiddeck_log("framegen", "present %d/%d: no swapchain image; the frame ends early", k + 1, presents);
+                alroot_log("framegen", "present %d/%d: no swapchain image; the frame ends early", k + 1, presents);
                 pr = VK_ERROR_OUT_OF_DATE_KHR;
                 break;
             }
@@ -1769,14 +1769,14 @@ static int render_impl(int scene_w, int scene_h, const struct vkp_draw *draws, i
     if (fg) vkp_framegen_presented(presented_gen);
     if (fr == VK_ERROR_DEVICE_LOST || pr == VK_ERROR_DEVICE_LOST) { device_lost("present"); return -1; }
     if (pr == VK_ERROR_OUT_OF_DATE_KHR || pr == VK_ERROR_SURFACE_LOST_KHR) {
-        droiddeck_log("gpu", "screen surface %s on present: rebuilding the swapchain", vk_result_name(pr));
+        alroot_log("gpu", "screen surface %s on present: rebuilding the swapchain", vk_result_name(pr));
         destroy_swapchain();
         return -1;
     } else if (pr == VK_SUBOPTIMAL_KHR || ar == VK_SUBOPTIMAL_KHR) {
         static int said;
-        if (!said) { said = 1; droiddeck_log("gpu", "surface reports SUBOPTIMAL (panel rotation); presenting as is"); }
+        if (!said) { said = 1; alroot_log("gpu", "surface reports SUBOPTIMAL (panel rotation); presenting as is"); }
     } else if (pr != VK_SUCCESS) {
-        droiddeck_log("error", "present: vkQueuePresentKHR failed (%s %d)", vk_result_name(pr), (int)pr);
+        alroot_log("error", "present: vkQueuePresentKHR failed (%s %d)", vk_result_name(pr), (int)pr);
         destroy_swapchain();
         return -1;
     }
@@ -1785,7 +1785,7 @@ static int render_impl(int scene_w, int scene_h, const struct vkp_draw *draws, i
 
     if (drawn && !g_first_frame_done) {
         g_first_frame_done = 1;
-        droiddeck_on_first_frame();
+        alroot_on_first_frame();
     }
     if (how) *how = hdr_how;
     return 0;
@@ -1801,7 +1801,7 @@ int vkp_render(int scene_w, int scene_h, const struct vkp_draw *draws, int n) {
         if (n > 0) {
             if (sc_layer_present_pass(draws, n, scene_w, scene_h) != 0) {
                 static int said;
-                if (!said) { said = 1; droiddeck_log("error", "Quest scene layer unavailable; retaining the previous frame rather than using the corrupt Android swapchain"); }
+                if (!said) { said = 1; alroot_log("error", "Quest scene layer unavailable; retaining the previous frame rather than using the corrupt Android swapchain"); }
                 return -1;
             }
         } else {
@@ -1840,7 +1840,7 @@ void vkp_reset_first_frame(void) {
 void vkp_signal_first_frame(void) {
     if (g_first_frame_done) return;
     g_first_frame_done = 1;
-    droiddeck_on_first_frame();
+    alroot_on_first_frame();
 }
 
 int vkp_update_map(int scene_w, int scene_h) {

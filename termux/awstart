@@ -134,7 +134,7 @@ case "$action" in
         exec "$PREFIX/bin/bash" "$CLI" status ;;
     logs)
         "$CLI" logs
-        ((debug)) && { logcat -d -s AlrootWayland DroidDeckWayland 2>/dev/null | tail -25 || true; }
+        ((debug)) && { logcat -d -s AlrootWayland AlrootWayland 2>/dev/null | tail -25 || true; }
         exit 0 ;;
     doctor)
         "$CLI" doctor

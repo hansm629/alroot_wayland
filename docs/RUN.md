@@ -106,7 +106,7 @@ session should remain alive. Actual screen/input tests are still required.
 ## 4. Failure logs and safe recovery
 
     awstart --logs
-    logcat -d -s AlrootWayland DroidDeckWayland | tail -60
+    logcat -d -s AlrootWayland | tail -60
 
 If normal Labwc fails, stop this session, then try the direct diagnostic:
 
@@ -254,7 +254,7 @@ After Android APK update, use:
 
     awstart --refresh-diag
     logcat -d -s AlrootWayland | grep DisplayTiming | tail -15
-    logcat -d -s DroidDeckWayland | grep -E 'ticks|on screen' | tail -10
+    logcat -d -s AlrootWayland | grep -E 'ticks|on screen' | tail -10
 
 The above reports the Android active physical display rate, measured
 Android VSync cadence, the advertised Wayland mode and actual host
@@ -354,3 +354,50 @@ Verify real Samsung keyboard Hangul composition and deletion in Mousepad
 and XFCE terminal, pointer behavior on short taps, PiP on Home/reopen and
 Korean menu text. An isolated test or successful APK build does not prove
 real-device UI correctness.
+
+## P05: native Unicode IME, isolated XFCE indicators, runtime naming
+
+P04 still used the X11 CLIPBOARD for every Hangul composition, briefly
+changing the selection owner. This triggered Android clipboard notifications
+and could replace selected text with clipboard contents. P05 replaces
+Unicode input with the persistent X11 XTEST daemon's reserved spare
+keycode, mapping each UTF-8 Unicode scalar directly to an X11 key event.
+It NEVER reads, takes ownership of, or modifies CLIPBOARD. The isolated
+Xvfb GTK entry and xfce4-terminal synthetic tests both pass, with the
+pre-existing clipboard preserved. Real Samsung keyboard input must
+still be tested after installing the APK.
+
+The original XFCE battery GenMon plugin was registered but not reliably
+visible. P05 adds a separate project-only GTK battery status icon showing
+the Android BatteryManager percentage. It was confirmed embedded in the
+Alroot Xwayland system tray. XFCE Notes autostart is also copied and
+retargeted to a second Alroot-only process, DISPLAY :90. Notes and
+configuration data are snapshot-copied into the private project directory
+on first use. They are not shared writable with the original :0 notes.
+
+All shipped Wayland output manufacturer/model, seat, JNI symbols, log
+identifiers, native function prefixes and native shared-library name
+are Alroot-branded. Original GPLv3 attribution remains in LICENSING.md
+and LICENSES/. The original upstream provenance is still auditable.
+
+Termux's original debian launcher continues to target Termux-X11 :0,
+which can report about 30Hz through XRandR. It is not an Alroot display.
+Use aw-debian from native Termux to target Alroot Xwayland, or run debian
+within the Alroot XFCE terminal (project-only PATH). Neither changes
+the original Termux-X11 launcher or its display:
+
+    aw-debian
+    fastfetch --structure Display
+
+The Alroot XRandR synchronizer now uses server-accepted CVT timings
+instead of a modeline which Xwayland rejected. The Android host's
+Wayland CURRENT mode remains the physical refresh authority; a modeline
+alone does not prove matching real frame presentation cadence.
+
+The current sharedUserId-based development helper cannot install
+independently of a matching Termux APK because it inherits Termux's
+UID, signature and app-private executable/rootfs paths. A future
+standalone APK is possible, but requires bundling the runtime/rootfs
+and replacing the Termux app-data paths and shared-UID relationship.
+Do not remove sharedUserId or change signing until that independent
+product architecture is implemented.

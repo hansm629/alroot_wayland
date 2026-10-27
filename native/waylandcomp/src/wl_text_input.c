@@ -1,7 +1,7 @@
 #define _GNU_SOURCE 1
 #include <stdlib.h>
 #include <string.h>
-#include "droiddeck_ext.h"
+#include "alroot_ext.h"
 #include "text-input-unstable-v3-server-protocol.h"
 
 #ifndef KEY_BACKSPACE
@@ -34,7 +34,7 @@ static struct wl_resource *g_target;
 static int g_told_enabled, g_told_rect[4];
 static struct text_input *g_told_ti;
 
-static const char *ti_program(struct text_input *ti) { return droiddeck_client_name(ti->client); }
+static const char *ti_program(struct text_input *ti) { return alroot_client_name(ti->client); }
 
 static struct text_input *active_input(void) {
     struct text_input *ti;
@@ -49,22 +49,22 @@ static void tell_app(void) {
     int enabled = ti != NULL, rect[4] = {0, 0, 0, 0};
     if (ti) {
         int ox = 0, oy = 0;
-        droiddeck_surface_scene_origin(ti->entered, &ox, &oy);
+        alroot_surface_scene_origin(ti->entered, &ox, &oy);
         rect[0] = ti->rect[0] + ox; rect[1] = ti->rect[1] + oy;
         rect[2] = ti->rect[2]; rect[3] = ti->rect[3];
     }
     if (enabled == g_told_enabled && ti == g_told_ti && !memcmp(rect, g_told_rect, sizeof(rect))) return;
     if (enabled && (!g_told_enabled || ti != g_told_ti))
-        droiddeck_log("text-input", "text input enabled by %s (cursor rect %d,%d %dx%d)", ti_program(ti),
+        alroot_log("text-input", "text input enabled by %s (cursor rect %d,%d %dx%d)", ti_program(ti),
                    rect[0], rect[1], rect[2], rect[3]);
     else if (enabled)
-        droiddeck_log("text-input", "cursor rect from %s: %d,%d %dx%d", ti_program(ti), rect[0], rect[1], rect[2], rect[3]);
+        alroot_log("text-input", "cursor rect from %s: %d,%d %dx%d", ti_program(ti), rect[0], rect[1], rect[2], rect[3]);
     else
-        droiddeck_log("text-input", "text input disabled%s%s", g_told_ti ? " by " : "", g_told_ti ? ti_program(g_told_ti) : "");
+        alroot_log("text-input", "text input disabled%s%s", g_told_ti ? " by " : "", g_told_ti ? ti_program(g_told_ti) : "");
     g_told_enabled = enabled;
     g_told_ti = ti;
     memcpy(g_told_rect, rect, sizeof(rect));
-    droiddeck_on_text_input(enabled, enabled ? ti_program(ti) : "", rect[0], rect[1], rect[2], rect[3]);
+    alroot_on_text_input(enabled, enabled ? ti_program(ti) : "", rect[0], rect[1], rect[2], rect[3]);
 }
 
 
@@ -76,8 +76,8 @@ static void send_leave(struct text_input *ti) {
     ti->has_preedit = 0;
 }
 
-void droiddeck_text_input_refocus(void) {
-    struct wl_resource *t = droiddeck_ime_target();
+void alroot_text_input_refocus(void) {
+    struct wl_resource *t = alroot_ime_target();
     struct text_input *ti;
     if (t == g_target) return;
     wl_list_for_each(ti, &g_inputs, link)
@@ -95,7 +95,7 @@ void droiddeck_text_input_refocus(void) {
     wl_display_flush_clients(g_disp);
 }
 
-void droiddeck_text_input_surface_gone(struct wl_resource *surface) {
+void alroot_text_input_surface_gone(struct wl_resource *surface) {
     struct text_input *ti;
     wl_list_for_each(ti, &g_inputs, link)
         if (ti->entered == surface) { ti->entered = NULL; ti->enabled = 0; ti->has_preedit = 0; }
@@ -109,7 +109,7 @@ static void ti_res_destroy(struct wl_resource *r) {
     if (!ti) return;
     wl_list_remove(&ti->link);
     if (g_told_ti == ti) { g_told_ti = NULL; g_told_enabled = 0; memset(g_told_rect, 0, sizeof(g_told_rect));
-                           droiddeck_on_text_input(0, "", 0, 0, 0, 0); }
+                           alroot_on_text_input(0, "", 0, 0, 0, 0); }
     free(ti);
 }
 
@@ -206,13 +206,13 @@ static int32_t utf8_offset(const char *s, size_t len, int chars) {
 void text_input_host_commit(const char *utf8, size_t len) {
     struct text_input *ti = active_input();
     if (!ti) {
-        droiddeck_log("text-input", "typed text (%zu chars) dropped: no program accepts text input", utf8_chars(utf8, len));
+        alroot_log("text-input", "typed text (%zu chars) dropped: no program accepts text input", utf8_chars(utf8, len));
         return;
     }
     if (ti->has_preedit) { zwp_text_input_v3_send_preedit_string(ti->res, "", 0, 0); ti->has_preedit = 0; }
     zwp_text_input_v3_send_commit_string(ti->res, utf8);
     zwp_text_input_v3_send_done(ti->res, ti->serial);
-    droiddeck_log("text-input", "committed %zu chars to %s", utf8_chars(utf8, len), ti_program(ti));
+    alroot_log("text-input", "committed %zu chars to %s", utf8_chars(utf8, len), ti_program(ti));
 }
 
 void text_input_host_preedit(const char *utf8, size_t len, int cursor_begin, int cursor_end) {
@@ -235,9 +235,9 @@ void text_input_host_delete(int before, int after) {
         zwp_text_input_v3_send_done(ti->res, ti->serial);
         ti->has_preedit = 0;
     }
-    for (int i = 0; i < before; i++) { droiddeck_inject_key(KEY_BACKSPACE, 1); droiddeck_inject_key(KEY_BACKSPACE, 0); }
-    for (int i = 0; i < after; i++) { droiddeck_inject_key(KEY_DELETE, 1); droiddeck_inject_key(KEY_DELETE, 0); }
-    droiddeck_log("text-input", "deleted %d before / %d after the caret (as key presses)", before, after);
+    for (int i = 0; i < before; i++) { alroot_inject_key(KEY_BACKSPACE, 1); alroot_inject_key(KEY_BACKSPACE, 0); }
+    for (int i = 0; i < after; i++) { alroot_inject_key(KEY_DELETE, 1); alroot_inject_key(KEY_DELETE, 0); }
+    alroot_log("text-input", "deleted %d before / %d after the caret (as key presses)", before, after);
 }
 
 void text_input_init(struct wl_display *display) {

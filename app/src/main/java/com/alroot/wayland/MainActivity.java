@@ -38,7 +38,6 @@ import android.widget.PopupMenu;
 import android.widget.SeekBar;
 import android.widget.TextView;
 import android.widget.Toast;
-import com.droiddeck.launcher.wayland.WaylandCompositor;
 import java.io.File;
 
 public final class MainActivity extends Activity implements SurfaceHolder.Callback {

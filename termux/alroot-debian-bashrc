@@ -1,0 +1,10 @@
+# Private Debian interactive bash rc: original user .bashrc remains untouched.
+if [ -f "$HOME/.bashrc" ]; then
+    . "$HOME/.bashrc"
+fi
+if [ -r /data/data/com.termux/files/home/.alroot-wayland/display ]; then
+    read -r DISPLAY < /data/data/com.termux/files/home/.alroot-wayland/display
+    export DISPLAY
+fi
+export XAUTHORITY=/data/data/com.termux/files/home/.alroot-wayland/Xauthority
+unset WAYLAND_DISPLAY

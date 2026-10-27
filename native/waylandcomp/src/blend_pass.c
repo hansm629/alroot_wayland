@@ -160,12 +160,12 @@ static int objects_ensure(void) {
     if (!(g_vert = shader(blend_vert_code, sizeof(blend_vert_code)))) goto fail;
     if (!(g_frag = shader(blend_frag_code, sizeof(blend_frag_code)))) goto fail;
     g_ready = 1;
-    droiddeck_log("gpu", "alpha composition ready on %s: translucent surfaces are blended over what is under them",
+    alroot_log("gpu", "alpha composition ready on %s: translucent surfaces are blended over what is under them",
             vkp_gpu_name());
     return 0;
 fail:
     objects_destroy();
-    droiddeck_log("error", "gpu: the alpha composition pass could not be built on this driver; translucent surfaces "
+    alroot_log("error", "gpu: the alpha composition pass could not be built on this driver; translucent surfaces "
                "are drawn opaque this session");
     return -1;
 }

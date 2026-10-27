@@ -2,17 +2,17 @@
 #define HEADPOSE_SHM_H
 #include <stdint.h>
 
-#define DROIDDECK_HEADPOSE_MAGIC 0x50484444u
-#define DROIDDECK_HEADPOSE_VERSION 1u
-#define DROIDDECK_HEADPOSE_FILE "droiddeck-headpose"
+#define ALROOT_HEADPOSE_MAGIC 0x50484444u
+#define ALROOT_HEADPOSE_VERSION 1u
+#define ALROOT_HEADPOSE_FILE "alroot-headpose"
 
 enum {
-    DROIDDECK_HEADPOSE_LIVE = 1u << 0,
-    DROIDDECK_HEADPOSE_ENABLED = 1u << 1,
-    DROIDDECK_HEADPOSE_MONO = 1u << 2,
+    ALROOT_HEADPOSE_LIVE = 1u << 0,
+    ALROOT_HEADPOSE_ENABLED = 1u << 1,
+    ALROOT_HEADPOSE_MONO = 1u << 2,
 };
 
-struct droiddeck_headpose {
+struct alroot_headpose {
     uint32_t magic;
     uint32_t version;
     uint32_t seq;
@@ -30,9 +30,9 @@ struct droiddeck_headpose {
 };
 
 #ifdef __cplusplus
-static_assert(sizeof(struct droiddeck_headpose) == 128, "headpose layout");
+static_assert(sizeof(struct alroot_headpose) == 128, "headpose layout");
 #else
-_Static_assert(sizeof(struct droiddeck_headpose) == 128, "headpose layout");
+_Static_assert(sizeof(struct alroot_headpose) == 128, "headpose layout");
 #endif
 
 #endif

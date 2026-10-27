@@ -1,5 +1,5 @@
 #include <stdlib.h>
-#include "droiddeck_ext.h"
+#include "alroot_ext.h"
 #include "xdg-toplevel-icon-v1-server-protocol.h"
 
 static void icon_destroy(struct wl_client *c, struct wl_resource *r) { wl_resource_destroy(r); }

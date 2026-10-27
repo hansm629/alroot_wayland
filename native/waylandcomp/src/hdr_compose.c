@@ -177,7 +177,7 @@ static int objects_ensure(void) {
         if (!(g_out[i].pipe = make_pipe(g_out[i].rp))) goto fail;
     }
     g_ready = 1;
-    droiddeck_log("color", "HDR composition ready on %s: scenes that mix HDR and SDR content are put into one "
+    alroot_log("color", "HDR composition ready on %s: scenes that mix HDR and SDR content are put into one "
                "encoding (PQ BT.2020, or tone-mapped sRGB) instead of being shown washed out", vkp_gpu_name());
     return 0;
 fail:
@@ -187,7 +187,7 @@ fail:
         g_dev = keep;
     }
     g_ready = -1;
-    droiddeck_log("error", "color: the HDR composition pass could not be built on this driver; HDR scenes that cannot "
+    alroot_log("error", "color: the HDR composition pass could not be built on this driver; HDR scenes that cannot "
                "stay on the game's own layer are shown the old way (washed out) this session");
     return -1;
 }

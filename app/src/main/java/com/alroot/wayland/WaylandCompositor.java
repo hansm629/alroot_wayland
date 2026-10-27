@@ -1,10 +1,10 @@
-package com.droiddeck.launcher.wayland;
+package com.alroot.wayland;
 
 import android.view.Surface;
 
 public final class WaylandCompositor {
     static {
-        System.loadLibrary("droiddeckwayland");
+        System.loadLibrary("alrootwayland");
     }
 
     private WaylandCompositor() {}

@@ -34,3 +34,14 @@ for name in mpd mprun pdrun; do
     fi
     echo "PASS: Alroot PRoot command $destination"
 done
+source="$project/termux/aw-debian"
+destination="$prefix/bin/aw-debian"
+if [[ -e "$destination" || -L "$destination" ]]; then
+    [[ -L "$destination" && "$(readlink "$destination")" == "$source" ]] || {
+        echo "BLOCKED: refusing to overwrite existing $destination" >&2
+        exit 1
+    }
+else
+    ln -s "$source" "$destination"
+fi
+echo "PASS: isolated Alroot Debian shell available as aw-debian"

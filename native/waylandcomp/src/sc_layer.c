@@ -1,7 +1,7 @@
 #define _GNU_SOURCE
 #include "sc_layer.h"
 #include "ahb_swapchain.h"
-#include "droiddeck_color.h"
+#include "alroot_color.h"
 #include "vk_present.h"
 #include <android/hardware_buffer.h>
 #include <android/native_window.h>
@@ -28,7 +28,7 @@
 #define MOD_LINEAR 0ULL
 #define MOD_QCOM_COMPRESSED 0x0500000000000001ULL
 
-struct droiddeck_native_handle { int version; int numFds; int numInts; int data[]; };
+struct alroot_native_handle { int version; int numFds; int numInts; int data[]; };
 
 
 typedef struct ASurfaceControl ASurfaceControl;
@@ -36,12 +36,12 @@ typedef struct ASurfaceTransaction ASurfaceTransaction;
 typedef struct ASurfaceTransactionStats ASurfaceTransactionStats;
 typedef void (*sc_complete_fn)(void *context, ASurfaceTransactionStats *stats);
 
-struct droiddeck_color_xy { float x, y; };
-struct droiddeck_hdr_smpte2086 {
-    struct droiddeck_color_xy displayPrimaryRed, displayPrimaryGreen, displayPrimaryBlue, whitePoint;
+struct alroot_color_xy { float x, y; };
+struct alroot_hdr_smpte2086 {
+    struct alroot_color_xy displayPrimaryRed, displayPrimaryGreen, displayPrimaryBlue, whitePoint;
     float maxLuminance, minLuminance;
 };
-struct droiddeck_hdr_cta861_3 { float maxContentLightLevel, maxFrameAverageLightLevel; };
+struct alroot_hdr_cta861_3 { float maxContentLightLevel, maxFrameAverageLightLevel; };
 
 static struct {
     ASurfaceControl *(*createFromWindow)(ANativeWindow *, const char *);
@@ -60,8 +60,8 @@ static struct {
     void (*setFrameRate)(ASurfaceTransaction *, ASurfaceControl *, float, int8_t);
     void (*setFrameRateStrategy)(ASurfaceTransaction *, ASurfaceControl *, float, int8_t, int8_t);
     void (*setBufferDataSpace)(ASurfaceTransaction *, ASurfaceControl *, int32_t);
-    void (*setHdrMetadata_smpte2086)(ASurfaceTransaction *, ASurfaceControl *, const struct droiddeck_hdr_smpte2086 *);
-    void (*setHdrMetadata_cta861_3)(ASurfaceTransaction *, ASurfaceControl *, const struct droiddeck_hdr_cta861_3 *);
+    void (*setHdrMetadata_smpte2086)(ASurfaceTransaction *, ASurfaceControl *, const struct alroot_hdr_smpte2086 *);
+    void (*setHdrMetadata_cta861_3)(ASurfaceTransaction *, ASurfaceControl *, const struct alroot_hdr_cta861_3 *);
     const void *(*getNativeHandle)(const AHardwareBuffer *);
     void (*setDesiredHdrHeadroom)(ASurfaceTransaction *, ASurfaceControl *, float);
     int state;
@@ -79,12 +79,12 @@ static int load_api(void) {
     if (!nw) nw = dlopen("libnativewindow.so", RTLD_NOW);
     api.getNativeHandle = nw ? dlsym(nw, "AHardwareBuffer_getNativeHandle") : NULL;
     if (!api.getNativeHandle) {
-        droiddeck_log("layer", "unavailable: libnativewindow.so has no AHardwareBuffer_getNativeHandle");
+        alroot_log("layer", "unavailable: libnativewindow.so has no AHardwareBuffer_getNativeHandle");
         return -1;
     }
     void *lib = dlopen("libandroid.so", RTLD_NOW | RTLD_NOLOAD);
     if (!lib) lib = dlopen("libandroid.so", RTLD_NOW);
-    if (!lib) { droiddeck_log("layer", "unavailable: dlopen(libandroid.so): %s", dlerror()); return -1; }
+    if (!lib) { alroot_log("layer", "unavailable: dlopen(libandroid.so): %s", dlerror()); return -1; }
 #define SYM(field, name) api.field = dlsym(lib, name)
     SYM(createFromWindow, "ASurfaceControl_createFromWindow");
     SYM(release, "ASurfaceControl_release");
@@ -109,7 +109,7 @@ static int load_api(void) {
     if (!api.createFromWindow || !api.release || !api.txCreate || !api.txDelete || !api.txApply ||
         !api.setBuffer || !api.setZOrder || !api.setVisibility || !api.setGeometry ||
         !api.setBufferTransparency || !api.reparent || !api.setOnComplete || !api.prevReleaseFence) {
-        droiddeck_log("layer", "unavailable: libandroid.so lacks part of the ASurfaceControl API (Android 10+)");
+        alroot_log("layer", "unavailable: libandroid.so lacks part of the ASurfaceControl API (Android 10+)");
         return -1;
     }
     api.state = 1;
@@ -191,10 +191,10 @@ static int g_base_w, g_base_h, g_base_shown;
 static void layers_init(void) {
     if (g_layers_ready) return;
     g_layers_ready = 1;
-    g_layers[SC_LAYER_GAME] = (struct layer){.name = "droiddeck_wayland_game", .z = 1, .pool_n = POOL_MAX,
+    g_layers[SC_LAYER_GAME] = (struct layer){.name = "alroot_wayland_game", .z = 1, .pool_n = POOL_MAX,
                                              .cur_slot = -1, .votes_rate = 1, .fps_applied = -1.0f, .hr_applied = -1.0f,
                                              .ds_applied = -1};
-    g_layers[SC_LAYER_OVERLAY] = (struct layer){.name = "droiddeck_wayland_overlay", .z = 2, .pool_n = 3,
+    g_layers[SC_LAYER_OVERLAY] = (struct layer){.name = "alroot_wayland_overlay", .z = 2, .pool_n = 3,
                                                 .cur_slot = -1, .votes_rate = 0, .fps_applied = -1.0f,
                                                 .hr_applied = -1.0f, .ds_applied = -1};
     for (int i = 0; i < SC_LAYER_COUNT; i++)
@@ -284,7 +284,7 @@ int sc_layer_base_black(int width, int height) {
     if (g_base_sc && g_base_shown && width == g_base_w && height == g_base_h) return 0;
     AHardwareBuffer *black = blank_buffer();
     if (!black) return -1;
-    if (!g_base_sc) g_base_sc = api.createFromWindow(vkp_window(), "droiddeck_wayland_black");
+    if (!g_base_sc) g_base_sc = api.createFromWindow(vkp_window(), "alroot_wayland_black");
     if (!g_base_sc) return -1;
     ASurfaceTransaction *tx = api.txCreate();
     if (!tx) return -1;
@@ -340,7 +340,7 @@ static void retire_sc(struct layer *l) {
         if (l->cur_token) ahb_swapchain_layer_released(l->cur_token, -1);
         api.release(l->sc);
     }
-    droiddeck_log("layer", "%s: SurfaceControl retired (window %p)", l->name, (void *)l->win);
+    alroot_log("layer", "%s: SurfaceControl retired (window %p)", l->name, (void *)l->win);
     l->sc = NULL; l->win = NULL;
     l->shown = 0; l->cur_slot = -1; l->cur_token = NULL; l->geo_valid = 0;
     l->fps_applied = -1.0f;
@@ -373,7 +373,7 @@ static void drain_and_free_pools(void) {
     pthread_mutex_unlock(&g_lock);
 }
 
-static int sniff_modifier(const struct droiddeck_native_handle *h, uint64_t *mod) {
+static int sniff_modifier(const struct alroot_native_handle *h, uint64_t *mod) {
     const uint32_t gmsm = ('g' << 24) | ('m' << 16) | ('s' << 8) | 'm';
     if (!h || h->numFds < 1 || h->numInts < 2) return 0;
     if ((uint32_t)h->data[h->numFds] != gmsm) return 0;
@@ -384,7 +384,7 @@ static int sniff_modifier(const struct droiddeck_native_handle *h, uint64_t *mod
 static int g_alloc_failed;
 
 enum { TIER_UBWC, TIER_PLAIN, TIER_LINEAR };
-#define DROIDDECK_AHB_USAGE_VENDOR_UBWC (1ULL << 28)
+#define ALROOT_AHB_USAGE_VENDOR_UBWC (1ULL << 28)
 
 static const char *tier_name(int tier) {
     return tier == TIER_UBWC ? "asked for UBWC" : tier == TIER_PLAIN ? "no UBWC request" : "linear by request (CPU bit)";
@@ -399,28 +399,28 @@ static int alloc_slot(struct layer *l, struct slot *s, int w, int h, uint32_t fm
             .format = fmt,
             .usage = AHARDWAREBUFFER_USAGE_GPU_COLOR_OUTPUT | AHARDWAREBUFFER_USAGE_GPU_SAMPLED_IMAGE |
                      AHARDWAREBUFFER_USAGE_COMPOSER_OVERLAY |
-                     (tier == TIER_UBWC ? DROIDDECK_AHB_USAGE_VENDOR_UBWC : 0) |
+                     (tier == TIER_UBWC ? ALROOT_AHB_USAGE_VENDOR_UBWC : 0) |
                      (tier == TIER_LINEAR ? AHARDWAREBUFFER_USAGE_CPU_READ_RARELY : 0)};
         AHardwareBuffer *ahb = NULL;
         if (AHardwareBuffer_allocate(&d, &ahb) != 0 || !ahb) {
             if (tier < TIER_LINEAR) {
-                droiddeck_log("layer", "%s: gralloc refused a %dx%d pool buffer (%s): trying %s", l->name, w, h,
+                alroot_log("layer", "%s: gralloc refused a %dx%d pool buffer (%s): trying %s", l->name, w, h,
                            tier_name(tier), tier_name(tier + 1));
                 l->alloc_tier = tier + 1;
                 continue;
             }
-            droiddeck_log("error", "layer: %s: AHardwareBuffer_allocate %dx%d (format %#x) failed", l->name, w, h, fmt);
+            alroot_log("error", "layer: %s: AHardwareBuffer_allocate %dx%d (format %#x) failed", l->name, w, h, fmt);
             g_alloc_failed = 1;
             return -1;
         }
         AHardwareBuffer_Desc got; AHardwareBuffer_describe(ahb, &got);
-        const struct droiddeck_native_handle *nh = api.getNativeHandle(ahb);
+        const struct alroot_native_handle *nh = api.getNativeHandle(ahb);
         uint64_t mod = MOD_LINEAR;
         if (!sniff_modifier(nh, &mod)) {
             if (tier < TIER_LINEAR) {
                 AHardwareBuffer_release(ahb);
                 l->alloc_tier = TIER_LINEAR;
-                droiddeck_log("layer", "%s: gralloc handle layout unknown (%d fds, %d ints): using linear pool buffers",
+                alroot_log("layer", "%s: gralloc handle layout unknown (%d fds, %d ints): using linear pool buffers",
                            l->name, nh ? nh->numFds : -1, nh ? nh->numInts : -1);
                 continue;
             }
@@ -430,7 +430,7 @@ static int alloc_slot(struct layer *l, struct slot *s, int w, int h, uint32_t fm
         struct vkp_image *img = fd >= 0 ? vkp_image_import_dmabuf(fd, fmt == AHB_RGB10A2 ? DRM_ABGR2101010 : DRM_ABGR8888,
                                                                   mod, w, h, got.stride * 4, 0, 1) : NULL;
         if (!img) {
-            droiddeck_log("layer", "%s: import of a %s %dx%d pool buffer (stride %u px) into the compositor's Turnip failed",
+            alroot_log("layer", "%s: import of a %s %dx%d pool buffer (stride %u px) into the compositor's Turnip failed",
                        l->name, mod == MOD_QCOM_COMPRESSED ? "UBWC" : "linear", w, h, got.stride);
             AHardwareBuffer_release(ahb);
             if (tier < TIER_LINEAR) { l->alloc_tier = tier + 1; continue; }
@@ -442,7 +442,7 @@ static int alloc_slot(struct layer *l, struct slot *s, int w, int h, uint32_t fm
         if (l->logged_w != w || l->logged_h != h || l->logged_fmt != fmt || l->logged_mod != mod ||
             l->logged_tier != tier) {
             l->logged_w = w; l->logged_h = h; l->logged_fmt = fmt; l->logged_mod = mod; l->logged_tier = tier;
-            droiddeck_log("layer", "%s: pool buffers %dx%d%s: %s (%s), stride %u px, up to %d buffers (gralloc handle %d fds / %d ints)",
+            alroot_log("layer", "%s: pool buffers %dx%d%s: %s (%s), stride %u px, up to %d buffers (gralloc handle %d fds / %d ints)",
                        l->name, w, h, fmt == AHB_RGB10A2 ? " 10-bit RGBA1010102" : "",
                        mod == MOD_QCOM_COMPRESSED ? "UBWC (QCOM_COMPRESSED)" : "linear", tier_name(tier),
                        got.stride, l->pool_n, nh ? nh->numFds : -1, nh ? nh->numInts : -1);
@@ -512,10 +512,10 @@ void sc_layer_probe_dmabuf_fd(int fd) {
     struct { uint32_t flags; int32_t fd; } exp = {.flags = 1u  , .fd = -1};
 
     if (ioctl(fd, _IOWR('b', 2, exp), &exp) == 0) {
-        droiddeck_log("layer", "kernel exports sync_file fences from the game's dma-buf: zero-copy acquire fences can come from the buffer itself");
+        alroot_log("layer", "kernel exports sync_file fences from the game's dma-buf: zero-copy acquire fences can come from the buffer itself");
         if (exp.fd >= 0) close(exp.fd);
     } else {
-        droiddeck_log("layer", "DMA_BUF_IOCTL_EXPORT_SYNC_FILE on the game's dma-buf failed (%s): acquire fences must be exported by the game's driver (sync_fd) instead",
+        alroot_log("layer", "DMA_BUF_IOCTL_EXPORT_SYNC_FILE on the game's dma-buf failed (%s): acquire fences must be exported by the game's driver (sync_fd) instead",
                    strerror(errno));
     }
 }
@@ -527,7 +527,7 @@ static int ensure_sc(struct layer *l) {
     if (l->sc && l->win != win) retire_sc(l);
     if (!l->sc) {
         l->sc = api.createFromWindow(win, l->name);
-        if (!l->sc) { droiddeck_log("error", "layer: ASurfaceControl_createFromWindow(%s) failed", l->name); return -1; }
+        if (!l->sc) { alroot_log("error", "layer: ASurfaceControl_createFromWindow(%s) failed", l->name); return -1; }
         l->win = win;
         l->ds_applied = -1; l->md_applied = 0; l->hr_applied = -1.0f;
         ASurfaceTransaction *tx = api.txCreate();
@@ -537,7 +537,7 @@ static int ensure_sc(struct layer *l) {
             apply_frame_rate(tx, l);
             api.txApply(tx); api.txDelete(tx);
         }
-        droiddeck_log("layer", "SurfaceControl \"%s\" created as a child of the screen surface (z=%d)", l->name, (int)l->z);
+        alroot_log("layer", "SurfaceControl \"%s\" created as a child of the screen surface (z=%d)", l->name, (int)l->z);
     }
     return 0;
 }
@@ -558,7 +558,7 @@ static void apply_geometry(ASurfaceTransaction *tx, struct layer *l, const int r
         l->geo_src = srcR; l->geo_dst = dstR; l->geo_valid = 1;
         char cov[96] = "";
         if (l->ds_applied > 0) coverage_text(l, cov, sizeof(cov));
-        droiddeck_log("layer", "%s geometry: buffer %d,%d-%d,%d -> screen %d,%d-%d,%d%s%s%s", l->name,
+        alroot_log("layer", "%s geometry: buffer %d,%d-%d,%d -> screen %d,%d-%d,%d%s%s%s", l->name,
                    r[0], r[1], r[2], r[3], r[4], r[5], r[6], r[7], cov[0] ? " (HDR layer " : "", cov, cov[0] ? ")" : "");
     }
 }
@@ -574,8 +574,8 @@ static void apply_frame_rate(ASurfaceTransaction *tx, struct layer *l) {
     }
     int first = l->fps_applied < 0.0f;
     l->fps_applied = want;
-    if (want > 0.0f) droiddeck_log("layer", "display frame-rate vote on %s: %.2f Hz", l->name, want);
-    else if (!first) droiddeck_log("layer", "display frame-rate vote on %s cleared (panel runs free)", l->name);
+    if (want > 0.0f) alroot_log("layer", "display frame-rate vote on %s: %.2f Hz", l->name, want);
+    else if (!first) alroot_log("layer", "display frame-rate vote on %s cleared (panel runs free)", l->name);
 }
 
 static void coverage_text(const struct layer *l, char *out, size_t n) {
@@ -589,66 +589,66 @@ static void coverage_text(const struct layer *l, char *out, size_t n) {
     snprintf(out, n, "covers %.0f%% of the screen (%dx%d of %dx%d)", pct > 100.0 ? 100.0 : pct, w, h, ow, oh);
 }
 
-static void apply_headroom(ASurfaceTransaction *tx, struct layer *l, const struct droiddeck_color *c) {
+static void apply_headroom(ASurfaceTransaction *tx, struct layer *l, const struct alroot_color *c) {
     static int said_missing;
     if (!api.setDesiredHdrHeadroom) {
         if (c && c->dataspace && !said_missing) {
             said_missing = 1;
-            droiddeck_color_note_headroom_request(-1.0f);
-            droiddeck_log("color", "HDR headroom request not available on %s (Android < 15 has no "
+            alroot_color_note_headroom_request(-1.0f);
+            alroot_log("color", "HDR headroom request not available on %s (Android < 15 has no "
                        "ASurfaceTransaction_setDesiredHdrHeadroom): the layer relies on Android's default", l->name);
         }
         return;
     }
-    const float want = (c && c->dataspace) ? droiddeck_color_desired_headroom(c, NULL, 0) : 0.0f;
+    const float want = (c && c->dataspace) ? alroot_color_desired_headroom(c, NULL, 0) : 0.0f;
     if (l->hr_applied < 0.0f && want == 0.0f && !(c && c->dataspace)) return;
     if (l->hr_applied >= 0.0f && fabsf(want - l->hr_applied) < 0.005f) return;
     char why[200] = "";
-    if (c && c->dataspace) droiddeck_color_desired_headroom(c, why, sizeof(why));
+    if (c && c->dataspace) alroot_color_desired_headroom(c, why, sizeof(why));
     api.setDesiredHdrHeadroom(tx, l->sc, want);
     const int first = l->hr_applied < 0.0f;
     l->hr_applied = want;
-    droiddeck_color_note_headroom_request(want);
+    alroot_color_note_headroom_request(want);
     if (want > 0.0f)
-        droiddeck_log("color", "requested HDR headroom %.1fx on %s (%s)", want, l->name, why);
+        alroot_log("color", "requested HDR headroom %.1fx on %s (%s)", want, l->name, why);
     else if (c && c->dataspace)
-        droiddeck_log("color", "no HDR headroom requested on %s: %s", l->name, why);
+        alroot_log("color", "no HDR headroom requested on %s: %s", l->name, why);
     else if (!first)
-        droiddeck_log("color", "HDR headroom request on %s cleared (no preference): the frame on the layer is not HDR", l->name);
+        alroot_log("color", "HDR headroom request on %s cleared (no preference): the frame on the layer is not HDR", l->name);
 }
 
-static void apply_colour(ASurfaceTransaction *tx, struct layer *l, const struct droiddeck_color *c) {
-    int32_t want = c ? c->dataspace : DROIDDECK_ADATASPACE_UNKNOWN;
+static void apply_colour(ASurfaceTransaction *tx, struct layer *l, const struct alroot_color *c) {
+    int32_t want = c ? c->dataspace : ALROOT_ADATASPACE_UNKNOWN;
     uint32_t md = (c && c->dataspace) ? c->identity : 0;
     if (!api.setBufferDataSpace) return;
-    if (l->ds_applied < 0 && want == DROIDDECK_ADATASPACE_UNKNOWN) return;
+    if (l->ds_applied < 0 && want == ALROOT_ADATASPACE_UNKNOWN) return;
     apply_headroom(tx, l, want ? c : NULL);
     if (want == l->ds_applied && md == l->md_applied) return;
     api.setBufferDataSpace(tx, l->sc, want);
-    struct droiddeck_hdr_smpte2086 st;
-    struct droiddeck_hdr_cta861_3 cta;
+    struct alroot_hdr_smpte2086 st;
+    struct alroot_hdr_cta861_3 cta;
     int st_on = c && c->dataspace && c->has_st2086, cta_on = c && c->dataspace && c->has_cta861;
     if (st_on) {
-        st = (struct droiddeck_hdr_smpte2086){
+        st = (struct alroot_hdr_smpte2086){
             .displayPrimaryRed = {c->red[0], c->red[1]}, .displayPrimaryGreen = {c->green[0], c->green[1]},
             .displayPrimaryBlue = {c->blue[0], c->blue[1]}, .whitePoint = {c->white[0], c->white[1]},
             .maxLuminance = c->max_lum, .minLuminance = c->min_lum};
     }
-    if (cta_on) cta = (struct droiddeck_hdr_cta861_3){.maxContentLightLevel = c->max_cll, .maxFrameAverageLightLevel = c->max_fall};
+    if (cta_on) cta = (struct alroot_hdr_cta861_3){.maxContentLightLevel = c->max_cll, .maxFrameAverageLightLevel = c->max_fall};
     if (api.setHdrMetadata_smpte2086) api.setHdrMetadata_smpte2086(tx, l->sc, st_on ? &st : NULL);
     if (api.setHdrMetadata_cta861_3) api.setHdrMetadata_cta861_3(tx, l->sc, cta_on ? &cta : NULL);
     if (want) {
         char cov[96];
         coverage_text(l, cov, sizeof(cov));
-        droiddeck_log("color", "%s: dataspace %s (%#x) set on the display layer for image description #%u%s%s; SMPTE 2086 "
-                   "%s, CTA-861.3 %s [%s]", l->name, want == DROIDDECK_ADATASPACE_BT2020_PQ ? "BT2020_PQ" : "HDR",
+        alroot_log("color", "%s: dataspace %s (%#x) set on the display layer for image description #%u%s%s; SMPTE 2086 "
+                   "%s, CTA-861.3 %s [%s]", l->name, want == ALROOT_ADATASPACE_BT2020_PQ ? "BT2020_PQ" : "HDR",
                    (unsigned)want, c->identity, cov[0] ? ", " : "", cov,
                    st_on ? (api.setHdrMetadata_smpte2086 ? "sent" : "not supported by this Android") : "none given",
                    cta_on ? (api.setHdrMetadata_cta861_3 ? "sent" : "not supported by this Android") : "none given",
                    c->text);
     }
     else
-        droiddeck_log("color", "%s: dataspace back to UNKNOWN (sRGB), HDR metadata cleared - the frame on the layer is "
+        alroot_log("color", "%s: dataspace back to UNKNOWN (sRGB), HDR metadata cleared - the frame on the layer is "
                    "not an HDR frame", l->name);
     l->ds_applied = want;
     l->md_applied = md;
@@ -667,7 +667,7 @@ void sc_layer_hdr_symbols(char *out, size_t size) {
 static void log_layer_count(void) {
     if (g_two_logged) return;
     g_two_logged = 1;
-    droiddeck_log("layer", "%d display layers in use: \"%s\" (z=%d) and \"%s\" (z=%d) above it, both children of the "
+    alroot_log("layer", "%d display layers in use: \"%s\" (z=%d) and \"%s\" (z=%d) above it, both children of the "
                "screen surface; the app's own views (drawer, HUD, pointer) stay above both. %d is the cap - more "
                "would push SurfaceFlinger into GPU client composition",
                SC_LAYER_COUNT, g_layers[SC_LAYER_GAME].name, (int)g_layers[SC_LAYER_GAME].z,
@@ -682,7 +682,7 @@ static ASurfaceControl *swap_sc_begin(struct layer *l) {
     if (!win || win != l->win) return NULL;
     ASurfaceControl *fresh = api.createFromWindow(win, l->name);
     if (!fresh) {
-        droiddeck_log("error", "layer: %s: composition recovery could not create a new SurfaceControl", l->name);
+        alroot_log("error", "layer: %s: composition recovery could not create a new SurfaceControl", l->name);
         return NULL;
     }
     ASurfaceControl *old = l->sc;
@@ -691,12 +691,12 @@ static ASurfaceControl *swap_sc_begin(struct layer *l) {
     l->geo_valid = 0;
     l->fps_applied = -1.0f;
     l->ds_applied = -1; l->md_applied = 0; l->hr_applied = -1.0f;
-    droiddeck_log("layer", "composition recovery: %s got a fresh SurfaceControl now that nothing is above "
+    alroot_log("layer", "composition recovery: %s got a fresh SurfaceControl now that nothing is above "
                "the game (measured on this panel: hardware composition does NOT return from this alone)", l->name);
     return old;
 }
 
-static int present_slot(struct layer *l, int idx, const int r[8], const struct droiddeck_color *color,
+static int present_slot(struct layer *l, int idx, const int r[8], const struct alroot_color *color,
                         int translucent) {
     struct slot *s = &l->slots[idx];
     ASurfaceTransaction *tx = api.txCreate();
@@ -720,7 +720,7 @@ static int present_slot(struct layer *l, int idx, const int r[8], const struct d
     api.txDelete(tx);
     l->cur_slot = idx;
     l->cur_token = NULL;
-    if (!l->shown) { l->shown = 1; droiddeck_log("layer", "%s: layer shown", l->name); }
+    if (!l->shown) { l->shown = 1; alroot_log("layer", "%s: layer shown", l->name); }
     g_stat_layer_frames++;
     return 0;
 }
@@ -731,7 +731,7 @@ static void log_drop(struct layer *l) {
     l->drops_unlogged++;
     int64_t t = now_ns();
     if (!l->drop_logged_ns || t - l->drop_logged_ns > 30000000000LL) {
-        droiddeck_log("layer", "%s: no free layer buffer (display still holds all %d): %u frame%s dropped%s", l->name,
+        alroot_log("layer", "%s: no free layer buffer (display still holds all %d): %u frame%s dropped%s", l->name,
                    l->pool_n, l->drops_unlogged, l->drops_unlogged == 1 ? "" : "s",
                    l->drop_logged_ns ? " since the last such line" : "");
         l->drop_logged_ns = t;
@@ -746,7 +746,7 @@ unsigned sc_layer_drops_take(void) {
 }
 
 int sc_layer_present_ahb(AHardwareBuffer *ahb, int w, int h, int acquire_fd, void *token, int scene_w, int scene_h,
-                         const struct droiddeck_color *color, uint32_t ahb_format) {
+                         const struct alroot_color *color, uint32_t ahb_format) {
     struct layer *l = layer_of(SC_LAYER_GAME);
     int r[8];
     if (!ahb || !token || ensure_sc(l) != 0) goto unavailable;
@@ -785,17 +785,17 @@ int sc_layer_present_ahb(AHardwareBuffer *ahb, int w, int h, int acquire_fd, voi
     api.txDelete(tx);
     l->cur_slot = -1;
     l->cur_token = token;
-    if (!l->shown) { l->shown = 1; droiddeck_log("layer", "%s: layer shown", l->name); }
+    if (!l->shown) { l->shown = 1; alroot_log("layer", "%s: layer shown", l->name); }
     if (!l->first_logged) l->first_logged = 1;
     vkp_signal_first_frame();
-    if (color && color->dataspace) droiddeck_color_frame_shown(color, DROIDDECK_HDR_ZERO_COPY, ahb_format);
+    if (color && color->dataspace) alroot_color_frame_shown(color, ALROOT_HDR_ZERO_COPY, ahb_format);
     return 0;
 unavailable:
     if (acquire_fd >= 0) close(acquire_fd);
     return -1;
 }
 
-int sc_layer_present(struct vkp_image *src, int scene_w, int scene_h, const struct droiddeck_color *color) {
+int sc_layer_present(struct vkp_image *src, int scene_w, int scene_h, const struct alroot_color *color) {
     struct layer *l = layer_of(SC_LAYER_GAME);
     if (!src || ensure_sc(l) != 0) return -1;
     int sw = vkp_image_width(src), sh = vkp_image_height(src);
@@ -809,10 +809,10 @@ int sc_layer_present(struct vkp_image *src, int scene_w, int scene_h, const stru
     if (idx < 0) { log_drop(l); return 0; }
     if (vkp_blit_image(src, l->slots[idx].img, wait_fd) != 0) return -1;
     if (present_slot(l, idx, r, color, 0) != 0) return -1;
-    if (color && color->dataspace) droiddeck_color_frame_shown(color, DROIDDECK_HDR_LAYER_COPY, AHB_RGBA8);
+    if (color && color->dataspace) alroot_color_frame_shown(color, ALROOT_HDR_LAYER_COPY, AHB_RGBA8);
     if (!l->first_logged) {
         l->first_logged = 1;
-        droiddeck_log("layer", "presenting %dx%d game frames on their own SurfaceControl layer (%s pool, %d buffers); "
+        alroot_log("layer", "presenting %dx%d game frames on their own SurfaceControl layer (%s pool, %d buffers); "
                    "HUD and pointer stay Android views above it", sw, sh,
                    l->pool_modifier == MOD_QCOM_COMPRESSED ? "UBWC" : "linear", l->pool_n);
     }
@@ -834,7 +834,7 @@ int sc_layer_present_pass(const struct vkp_draw *draws, int n, int scene_w, int 
     if (present_slot(l, idx, r, NULL, 0) != 0) return -1;
     if (!l->first_logged) {
         l->first_logged = 1;
-        droiddeck_log("layer", "presenting %dx%d frames on their own SurfaceControl layer (%s pool, %d buffers); "
+        alroot_log("layer", "presenting %dx%d frames on their own SurfaceControl layer (%s pool, %d buffers); "
                    "HUD and pointer stay Android views above it", rw, rh,
                    l->pool_modifier == MOD_QCOM_COMPRESSED ? "UBWC" : "linear", l->pool_n);
     }
@@ -845,7 +845,7 @@ int sc_layer_present_pass(const struct vkp_draw *draws, int n, int scene_w, int 
 static uint32_t g_hdr_pool_fmt = AHB_RGB10A2;
 
 int sc_layer_present_hdr_scene(const struct vkp_draw *draws, int n, const struct vkp_hdr_frame *hf,
-                               int scene_w, int scene_h, const struct droiddeck_color *color) {
+                               int scene_w, int scene_h, const struct alroot_color *color) {
     struct layer *l = layer_of(SC_LAYER_GAME);
     int rw = 0, rh = 0, r[8];
     if (!draws || n <= 0 || !hf || ensure_sc(l) != 0) return -1;
@@ -859,7 +859,7 @@ int sc_layer_present_hdr_scene(const struct vkp_draw *draws, int n, const struct
     int idx = take_free_slot(l, rw, rh, fmt, &wait_fd);
     if (idx < 0 && g_alloc_failed && fmt == AHB_RGB10A2) {
         g_hdr_pool_fmt = AHB_RGBA8;
-        droiddeck_log("color", "%s: this device will not make a 10-bit layer buffer (RGBA1010102): the HDR picture goes "
+        alroot_log("color", "%s: this device will not make a 10-bit layer buffer (RGBA1010102): the HDR picture goes "
                    "on 8-bit buffers instead (still tagged BT2020_PQ; less precision)", l->name);
         idx = take_free_slot(l, rw, rh, g_hdr_pool_fmt, &wait_fd);
     }
@@ -867,21 +867,21 @@ int sc_layer_present_hdr_scene(const struct vkp_draw *draws, int n, const struct
     if (vkp_pass_copy_to(l->slots[idx].img, wait_fd) != 0) return -1;
     if (present_slot(l, idx, r, tm ? NULL : color, 0) != 0) return -1;
     if (color && color->dataspace)
-        droiddeck_color_frame_shown(color, tm ? DROIDDECK_HDR_TONEMAPPED : DROIDDECK_HDR_COMPOSED, tm ? AHB_RGBA8 : g_hdr_pool_fmt);
+        alroot_color_frame_shown(color, tm ? ALROOT_HDR_TONEMAPPED : ALROOT_HDR_COMPOSED, tm ? AHB_RGBA8 : g_hdr_pool_fmt);
     static int said = -1;
     if (said != tm) {
         said = tm;
         if (tm)
-            droiddeck_log("color", "tone-mapped picture on the game's display layer: %dx%d, %s 8-bit buffers, untagged "
+            alroot_log("color", "tone-mapped picture on the game's display layer: %dx%d, %s 8-bit buffers, untagged "
                        "(sRGB) - HDR output is switched off", rw, rh,
                        l->pool_modifier == MOD_QCOM_COMPRESSED ? "UBWC" : "linear");
         else {
             char cov[96];
             coverage_text(l, cov, sizeof(cov));
-            droiddeck_log("color", "HDR picture on its own display layer: %dx%d, %s %s buffers, tagged %s%s%s", rw, rh,
+            alroot_log("color", "HDR picture on its own display layer: %dx%d, %s %s buffers, tagged %s%s%s", rw, rh,
                        l->pool_modifier == MOD_QCOM_COMPRESSED ? "UBWC" : "linear",
                        g_hdr_pool_fmt == AHB_RGB10A2 ? "10-bit" : "8-bit",
-                       color && color->dataspace == DROIDDECK_ADATASPACE_BT2020_PQ ? "BT2020_PQ" : "HDR",
+                       color && color->dataspace == ALROOT_ADATASPACE_BT2020_PQ ? "BT2020_PQ" : "HDR",
                        cov[0] ? ", " : "", cov);
         }
     }
@@ -912,13 +912,13 @@ int sc_layer_overlay_affordable(void) {
         int first = g_overlay_declined < 0;
         g_overlay_declined = want;
         if (want)
-            droiddeck_log("layer", "overlay layer declined: this display rotates every layer %d° and the game "
+            alroot_log("layer", "overlay layer declined: this display rotates every layer %d° and the game "
                        "layer is scaled %dx%d -> %dx%d, and on that combination a second layer drops the "
                        "whole frame to GPU composition for the rest of the session (measured). The window "
                        "above the game goes on the copy path instead - same picture, one blit.",
                        deg, sr[0], sr[1], ds[0], ds[1]);
         else if (!first)
-            droiddeck_log("layer", "overlay layer allowed again: the game layer is no longer both rotated and "
+            alroot_log("layer", "overlay layer allowed again: the game layer is no longer both rotated and "
                        "scaled, so a second display layer costs nothing here");
     }
     return ok;
@@ -959,7 +959,7 @@ void sc_layer_hide(void) {
     int said = g_layers[SC_LAYER_GAME].shown || g_layers[SC_LAYER_OVERLAY].sc;
     if (g_layers[SC_LAYER_OVERLAY].sc) sc_layer_hide_overlay();
     if (g_layers[SC_LAYER_GAME].shown) hide_layer(&g_layers[SC_LAYER_GAME]);
-    if (said) droiddeck_log("layer", "layers hidden (scene is not a single fullscreen window)");
+    if (said) alroot_log("layer", "layers hidden (scene is not a single fullscreen window)");
 }
 
 void sc_layer_hide_overlay(void) {
@@ -968,7 +968,7 @@ void sc_layer_hide_overlay(void) {
     if (!l->sc) return;
     if (l->shown) hide_layer(l);
     retire_sc(l);
-    droiddeck_log("layer", "%s: gone (nothing is above the game any more)", l->name);
+    alroot_log("layer", "%s: gone (nothing is above the game any more)", l->name);
     if (g_layers[SC_LAYER_GAME].sc) g_layers[SC_LAYER_GAME].recreate_pending = 1;
 }
 

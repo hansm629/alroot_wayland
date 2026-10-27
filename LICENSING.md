@@ -3,8 +3,10 @@
 This APK includes portions of DroidDeck from commit
 0f839bef5d5cf109af614d0ff15844c95a8e16d0, licensed under GPLv3.
 See LICENSES/DroidDeck-GPL-3.0.txt. Source code is in native/waylandcomp,
-app/src/main/java/com/droiddeck/launcher/wayland, and native/shaders.
-Build-time standalone integration and Android front-end are Alroot changes.
+app/src/main/java/com/alroot/wayland/WaylandCompositor.java, and native/shaders.
+Build-time standalone integration, locally renamed JNI/runtime identifiers,
+and Android front-end are Alroot changes. Original DroidDeck copyright and
+GPLv3 provenance are preserved in LICENSES/ and this document.
 
 native/adrenotools is copied from the same pinned upstream source snapshot;
 its separate upstream license is preserved under LICENSES/adrenotools-LICENSE.
