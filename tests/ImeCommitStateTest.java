@@ -119,6 +119,15 @@ public final class ImeCommitStateTest {
         o.check("갸");
         check(o.deletions == 0, "Do not replace typed syllables in place");
     }
+    static void finishThenRepeatedCommit() {
+        ImeCommitState s = new ImeCommitState();
+        FakeSink o = new FakeSink();
+        s.composing("한", 100, o);
+        s.finished(130, o);
+        s.committed("한", 150, o);
+        o.check("한");
+        check(o.mutations == 1, "Do not replay text after finishComposing");
+    }
     public static void main(String[] args) {
         englishHangulSwitch();
         hangulEvolutionNoFlicker();
@@ -129,6 +138,7 @@ public final class ImeCommitStateTest {
         languagePrefixEcho();
         legitimateEnglishRepeat();
         differentVowelSameSyllable();
-        System.out.println("PASS: 9 real ImeCommitState scenarios; no destructive preedit");
+        finishThenRepeatedCommit();
+        System.out.println("PASS: 10 real ImeCommitState scenarios; no destructive preedit");
     }
 }

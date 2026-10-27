@@ -30,6 +30,8 @@ public final class ImeBridge {
     private static final HandlerThread ioThread = new HandlerThread("AlrootX11IME");
     private static final Handler io;
     private static final ImeCommitState composition = new ImeCommitState();
+    private static boolean asciiComposing;
+    private static String asciiDraft = "";
     private static final ImeCommitState.Sink compositionSink =
             new ImeCommitState.Sink() {
                 @Override public void committed(String text) {
@@ -82,30 +84,95 @@ public final class ImeBridge {
         }
     }
 
-    public static void composing(String text) {
+    private static boolean asciiOnly(String text) {
+        if (text == null || text.isEmpty()) return false;
+        for (int i = 0; i < text.length(); i++) {
+            if (text.charAt(i) > 0x7f) return false;
+        }
+        return true;
+    }
+
+    private static void finalizeNativeAscii(long ms) {
+        if (!asciiComposing) return;
+        composition.alreadyInsertedAscii(asciiDraft, ms);
+        asciiComposing = false;
+        asciiDraft = "";
+        io.post(() -> send('F', ""));
+    }
+
+    public static synchronized void composing(String text) {
+        long ms = SystemClock.elapsedRealtime();
+        if (asciiOnly(text)) {
+            // The original English path is already smooth: keep incremental
+            // ASCII composing in XTEST, rather than delaying it until space.
+            if (composition.hasDraft())
+                composition.finished(ms, compositionSink);
+            asciiComposing = true;
+            asciiDraft = text;
+            final String value = text;
+            io.post(() -> send('C', value));
+            return;
+        }
+        if (asciiComposing) {
+            // The visible English preedit is already present in X11.
+            // Finalize the native composing range without retransmitting it.
+            finalizeNativeAscii(ms);
+        }
         // Mutable Korean preedit stays in the Android IME. Only syllables
         // proven stable by a later event are transmitted to Xwayland.
         // This removes every speculative Backspace/insert repaint.
-        composition.composing(text, SystemClock.elapsedRealtime(), compositionSink);
+        composition.composing(text, ms, compositionSink);
     }
 
-    public static void commitComposed(String text) {
-        composition.committed(text, SystemClock.elapsedRealtime(), compositionSink);
+    public static synchronized void commitComposed(String text) {
+        long ms = SystemClock.elapsedRealtime();
+        if (asciiComposing && asciiOnly(text)) {
+            asciiComposing = false;
+            asciiDraft = "";
+            composition.alreadyInsertedAscii(text, ms);
+            final String value = text;
+            // Native 'T' finalizes the existing P06 ASCII preedit without
+            // reinserting the word, and leaves it visible at the X11 caret.
+            io.post(() -> send('T', value));
+            return;
+        }
+        finalizeNativeAscii(ms);
+        composition.committed(text, ms, compositionSink);
     }
 
     public static void commit(String text) { commitComposed(text); }
 
-    public static void finishComposing() {
+    public static synchronized void finishComposing() {
+        if (asciiComposing) {
+            finalizeNativeAscii(SystemClock.elapsedRealtime());
+            return;
+        }
         composition.finished(SystemClock.elapsedRealtime(), compositionSink);
         io.post(() -> send('F', ""));
     }
 
-    public static void resetComposing() {
+    public static synchronized void resetComposing() {
+        finalizeNativeAscii(SystemClock.elapsedRealtime());
         composition.reset();
         io.post(() -> send('R', ""));
     }
 
-    public static void delete(int before, int after) {
+    public static synchronized void delete(int before, int after) {
+        if (asciiComposing) {
+            // Preserve the English composing range that is already visible
+            // inside X11. Deleting one composing character is a native C
+            // revision, not a blind D+reset followed by duplicate retyping.
+            int cps = asciiDraft.codePointCount(0, asciiDraft.length());
+            int remain = Math.max(0, cps - Math.min(before, cps));
+            asciiDraft = asciiDraft.substring(0,
+                    asciiDraft.offsetByCodePoints(0, remain));
+            final String left = asciiDraft;
+            io.post(() -> send('C', left));
+            int remainingBefore = Math.max(0, before - cps);
+            if (remainingBefore + after > 0)
+                io.post(() -> send('D', remainingBefore + " " + after));
+            return;
+        }
         composition.delete(before, after, compositionSink);
     }
 

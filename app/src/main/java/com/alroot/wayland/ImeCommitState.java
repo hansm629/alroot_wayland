@@ -25,6 +25,8 @@ public final class ImeCommitState {
     private long recentAsciiMs;
     private long koreanTransitionMs = -1;
     private boolean transitioning;
+    private String mostRecentFinish = "";
+    private long mostRecentFinishMs = -1;
 
     private static boolean containsKorean(String text) {
         for (int i = 0; i < text.length(); i++) {
@@ -75,8 +77,21 @@ public final class ImeCommitState {
         }
     }
 
+    /**
+     * ASCII composing is rendered immediately by the existing native X11
+     * bridge (as in P06). Remember it for keyboard language-switch replay
+     * filtering without inserting a second copy of the English text.
+     */
+    public synchronized void alreadyInsertedAscii(String text, long ms) {
+        if (text == null || text.isEmpty() || !ascii(text)) return;
+        recentAscii = text.length() > 96
+                ? text.substring(text.length() - 96) : text;
+        recentAsciiMs = ms;
+    }
+
     public synchronized void composing(String incoming, long nowMs, Sink sink) {
         if (incoming == null) incoming = "";
+        if (!incoming.isEmpty()) mostRecentFinish = "";
         if (incoming.isEmpty()) {
             // The keyboard may be cancelling a draft on Backspace.
             draft = "";
@@ -120,6 +135,15 @@ public final class ImeCommitState {
 
     public synchronized void committed(String incoming, long nowMs, Sink sink) {
         if (incoming == null) incoming = "";
+        if (!incoming.isEmpty() && draft.isEmpty() &&
+                incoming.equals(mostRecentFinish) && mostRecentFinishMs >= 0 &&
+                nowMs >= mostRecentFinishMs && nowMs - mostRecentFinishMs < 600) {
+            // Some keyboards send commitText even after finishComposingText
+            // has already finalized that same glyph; do not duplicate it.
+            mostRecentFinish = "";
+            return;
+        }
+        mostRecentFinish = "";
         String text = stripPrefix(incoming, forwardedPrefix);
         if (text.isEmpty() && !draft.isEmpty() && incoming.isEmpty())
             text = draft;  // Samsung sometimes ends preedit with commitText("")
@@ -143,7 +167,11 @@ public final class ImeCommitState {
     }
 
     public synchronized void finished(long nowMs, Sink sink) {
-        if (!draft.isEmpty()) emit(sink, draft, nowMs);
+        if (!draft.isEmpty()) {
+            emit(sink, draft, nowMs);
+            mostRecentFinish = draft;
+            mostRecentFinishMs = nowMs;
+        }
         draft = "";
         forwardedPrefix = "";
         transitioning = false;

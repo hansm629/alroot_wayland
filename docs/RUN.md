@@ -457,7 +457,8 @@ and could replay already entered English when switching keyboard languages.
 
 P07 adds a pure-Java ImeCommitState in the Android app. The mutable Hangul
 preedit remains in the Samsung/Android IME; only explicit commits and
-immutable syllable prefixes are sent to X11. English text is immediate,
+immutable syllable prefixes are sent to X11. The existing incremental
+ASCII XTEST composing path is preserved so English remains immediate,
 and a narrowly scoped Korean-language-transition check suppresses
 accidental replay of the last already-committed ASCII run. Pending preedit
 Backspace is handled locally, so it cannot delete adjacent committed X11
