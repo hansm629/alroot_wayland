@@ -28,6 +28,11 @@ android {
     packaging {
         jniLibs { useLegacyPackaging true }
     }
+    lint {
+        // Termux's shared-UID executable bridge uses the legacy target for P01.
+        // Developer-only APK: other lint checks remain enabled.
+        disable 'ExpiredTargetSdkVersion'
+    }
 }
 
 def keyFile = System.getenv('ALROOT_SIGNING_KEYSTORE')
