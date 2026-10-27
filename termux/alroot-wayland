@@ -107,6 +107,31 @@ wait_nested_socket() {
     return 1
 }
 
+# A running XFCE PID is insufficient. On Xfce 4.20 some components may choose
+# Wayland instead of the rootful X11 session, leaving the Android view black.
+# Prove the actual X11 WM, xfdesktop and panel on the *isolated* DISPLAY.
+x11_desktop_ready() {
+    local display="" list="" id="" props="" wm="" desktop=0 panel=0
+    [[ -r "$STATE/display" && -r "$STATE/Xauthority" ]] || return 1
+    IFS= read -r display < "$STATE/display"
+    [[ "$display" =~ ^:[0-9]{1,3}$ && "$display" != :0 ]] || return 1
+    alive xwayland && alive xfce || return 1
+    wm="$(env -u WAYLAND_DISPLAY DISPLAY="$display" XAUTHORITY="$STATE/Xauthority" \
+            timeout 2 xprop -root _NET_SUPPORTING_WM_CHECK 2>/dev/null)" || return 1
+    [[ "$wm" == *"window id #"* ]] || return 1
+    list="$(env -u WAYLAND_DISPLAY DISPLAY="$display" XAUTHORITY="$STATE/Xauthority" \
+            timeout 2 xprop -root _NET_CLIENT_LIST 2>/dev/null)" || return 1
+    list="${list#*# }"
+    for id in ${list//,/ }; do
+        [[ "$id" =~ ^0x[0-9a-fA-F]+$ ]] || continue
+        props="$(env -u WAYLAND_DISPLAY DISPLAY="$display" XAUTHORITY="$STATE/Xauthority" \
+                timeout 2 xprop -id "$id" WM_CLASS 2>/dev/null)" || continue
+        [[ "$props" == *'"Xfdesktop"'* ]] && desktop=1
+        [[ "$props" == *'"Xfce4-panel"'* ]] && panel=1
+    done
+    ((desktop && panel))
+}
+
 xfce_start() {
     local display="$1"
     mkdir -p "$STATE/xfce-config" "$STATE/xfce-cache"
@@ -122,6 +147,11 @@ xfce_start() {
         export DISPLAY="$display" XAUTHORITY="$STATE/Xauthority"
         export XDG_RUNTIME_DIR="$RUNTIME" XDG_CONFIG_HOME="$STATE/xfce-config"
         export XDG_CACHE_HOME="$STATE/xfce-cache" XDG_SESSION_TYPE=x11
+        # Xfce 4.20/GTK4 can otherwise auto-select the available Wayland
+        # socket in this isolated runtime despite DISPLAY pointing at Xwayland.
+        # This is the *rootful X11 desktop*, NOT Labwc or the Android host.
+        export GDK_BACKEND=x11 QT_QPA_PLATFORM=xcb SDL_VIDEODRIVER=x11
+        export DESKTOP_SESSION=xfce XDG_CURRENT_DESKTOP=XFCE
         unset WAYLAND_DISPLAY DBUS_SESSION_BUS_ADDRESS SESSION_MANAGER
         export NO_AT_BRIDGE=1
         # Separate process group so explicit stop can target this session's
@@ -278,6 +308,11 @@ case "${1:-}" in
             if alive "$role"; then echo "$role: RUNNING $(cut -d' ' -f1 "$STATE/$role.pid")"
             else echo "$role: DOWN"; fi
         done
+        if x11_desktop_ready; then
+            echo 'x11_desktop: READY (xfwm4 + xfdesktop + xfce4-panel on isolated Xwayland)'
+        else
+            echo 'x11_desktop: INCOMPLETE (X11 window-manager/desktop/panel not verified)'
+        fi
         [[ ! -f "$STATE/profile" ]] || echo "profile: $(cat "$STATE/profile")"
         [[ ! -f "$STATE/display" ]] || echo "X DISPLAY: $(cat "$STATE/display")"
         ;;

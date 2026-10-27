@@ -16,6 +16,7 @@ import android.os.Looper;
 import android.view.Choreographer;
 import android.view.Gravity;
 import android.view.KeyEvent;
+import android.view.PixelCopy;
 import android.view.Surface;
 import android.view.SurfaceHolder;
 import android.view.View;
@@ -45,6 +46,53 @@ public final class MainActivity extends Activity implements SurfaceHolder.Callba
     private ClipboardManager clipboard;
     private ClipboardManager.OnPrimaryClipChangedListener clipboardObserver;
     private WaylandCompositor.ClipboardListener guestClipboardListener;
+    private boolean surfaceProbeInFlight;
+    private final Runnable surfaceProbe = new Runnable() {
+        @Override public void run() {
+            if (isFinishing() || isDestroyed()) return;
+            if (HelperService.running && hasWindowFocus() && view != null
+                    && view.isShown() && view.getHolder().getSurface().isValid()
+                    && !surfaceProbeInFlight) {
+                surfaceProbeInFlight = true;
+                final Bitmap sample = Bitmap.createBitmap(160, 90, Bitmap.Config.ARGB_8888);
+                try {
+                    // PixelCopy reads our own Android SurfaceView, not the
+                    // guest X framebuffer or a privileged device screenshot.
+                    PixelCopy.request(view, sample, result -> {
+                        surfaceProbeInFlight = false;
+                        if (result == PixelCopy.SUCCESS) {
+                            int nonblack = 0, minBrightness = 765, maxBrightness = 0;
+                            int total = sample.getWidth() * sample.getHeight();
+                            for (int y = 0; y < sample.getHeight(); y++) {
+                                for (int x = 0; x < sample.getWidth(); x++) {
+                                    int rgba = sample.getPixel(x, y);
+                                    int brightness = ((rgba >> 16) & 255)
+                                            + ((rgba >> 8) & 255) + (rgba & 255);
+                                    if (brightness > 36) nonblack++;
+                                    if (brightness < minBrightness) minBrightness = brightness;
+                                    if (brightness > maxBrightness) maxBrightness = brightness;
+                                }
+                            }
+                            android.util.Log.i("AlrootWayland", "PixelProbe SurfaceView"
+                                    + " copy=SUCCESS samples=" + total
+                                    + " nonblack=" + nonblack
+                                    + " brightness-range=" + minBrightness + ".." + maxBrightness
+                                    + " (not an assertion that the desktop is correctly displayed)");
+                        } else {
+                            android.util.Log.w("AlrootWayland",
+                                    "PixelProbe SurfaceView copy failed, result=" + result);
+                        }
+                        sample.recycle();
+                    }, main);
+                } catch (Exception e) {
+                    surfaceProbeInFlight = false;
+                    sample.recycle();
+                    android.util.Log.w("AlrootWayland", "PixelProbe unavailable", e);
+                }
+            }
+            main.postDelayed(this, 12000);
+        }
+    };
     private final int[] cursorSnapshot = new int[WaylandCompositor.CURSOR_BUF_INTS];
     private int lastCursorSerial = Integer.MIN_VALUE;
     private final Runnable cursorPoll = new Runnable() {
@@ -165,6 +213,7 @@ public final class MainActivity extends Activity implements SurfaceHolder.Callba
         startForegroundService(new Intent(this, HelperService.class));
         main.post(cursorPoll);
         main.post(clipboardPoll);
+        main.postDelayed(surfaceProbe, 8000);
         updateStatus();
         main.postDelayed(new Runnable() {
             @Override public void run() {
@@ -395,6 +444,7 @@ public final class MainActivity extends Activity implements SurfaceHolder.Callba
     @Override protected void onDestroy() {
         main.removeCallbacks(cursorPoll);
         main.removeCallbacks(clipboardPoll);
+        main.removeCallbacks(surfaceProbe);
         detach();
         if (clipboard != null && clipboardObserver != null)
             clipboard.removePrimaryClipChangedListener(clipboardObserver);

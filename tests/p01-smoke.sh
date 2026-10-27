@@ -23,6 +23,7 @@ doctor_output="$(alroot-wayland doctor)"
 status_output="$(alroot-wayland status)"
 grep -q 'labwc:' <<< "$doctor_output"
 grep -q 'xwayland:' <<< "$status_output"
+grep -q '^x11_desktop:' <<< "$status_output"
 echo 'PASS: CLI diagnostics without altering pre-existing session'
 help_output="$(awstart --help)"
 normal_preview="$(awstart --dry-run)"

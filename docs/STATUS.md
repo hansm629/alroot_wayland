@@ -36,3 +36,31 @@ Do not promote code existence or build success into screen/input PASS.
 - Actual default awstart --debug returned 0: foreground Activity acknowledged launch; host READY and Labwc/Xwayland/XFCE/clipboard RUNNING at isolated X DISPLAY :90.
 - The installer command now distinguishes opening the Android installer from confirmed installation and avoids reopening it when local and installed APKs match.
 - On-screen correctness, capture, Korean IME and clipboard remain TEST-PENDING.
+
+## Black-screen investigation: 2026-10-27
+
+- **Correction**: process and host frame counters were wrongly treated as
+  evidence of successful XFCE display. The user saw an actual black screen.
+- Isolated Xwayland :90 had no X11 window-manager registration. Its xfdesktop
+  and xfce4-panel processes selected native GTK Wayland and logged missing
+  layer-shell errors; the only xfwm4 was running for the unrelated original
+  Termux-X11 session on :0.
+- The project-only XFCE environment now forces GDK_BACKEND=x11,
+  QT_QPA_PLATFORM=xcb, SDL_VIDEODRIVER=x11, DESKTOP_SESSION=xfce and
+  XDG_CURRENT_DESKTOP=XFCE. No global environment or Mesa is changed.
+- After a project-only restart, xfwm4, xfdesktop and xfce4-panel were
+  registered on isolated :90 at 1280x720 with their actual X11 WM_CLASS;
+  prior GTK Wayland/layer-shell warnings disappeared.
+- An Xlib XGetImage probe read 576/576 nonblack sample pixels from each of
+  isolated X11 root, desktop and panel. This proves nonblack source X11
+  pixels, **not yet their presentation on the Android SurfaceView**.
+- x11_desktop: READY/INCOMPLETE now verifies the project's real X11 WM,
+  desktop and panel registration before awstart reports session readiness.
+  Mocked missing WM correctly reported INCOMPLETE.
+- Transient empty pm path queries can misreport an installed APK as missing.
+  awstart now falls back to package-list evidence, and the explicit --open
+  action relies on Android ActivityManager's actual result.
+- APK v0.1.2 adds lightweight PixelCopy sampling of the helper's own
+  SurfaceView, logging nonblack pixel counts and brightness range. A real
+  PixelCopy run and final display correctness remain TEST-PENDING until the
+  Android-approved APK update.

@@ -131,3 +131,29 @@ GitHub APK BUILD PASS, a matching signing certificate, and live process
 status do NOT prove on-screen frame correctness, IME or input PASS.
 Default awstart --topapp causes Activity-side spawn, but only actual child
 thread cgroup/cpuset measurements can establish performance policy in P02.
+
+## Black-screen correction and actual-pixel diagnostics
+
+Previous process-only success was incorrectly reported as successful desktop
+output. XFCE4 GTK components had auto-selected Wayland; xfwm4 was missing
+from the isolated project Xwayland. The launcher now forces X11 backends only
+for the project XFCE children.
+
+    awstart --stop
+    awstart --debug
+    awstart --status
+
+The new x11_desktop: READY indicator requires xfwm4, xfdesktop and panel
+registered in the actual isolated X DISPLAY. This is not independently proof
+of correct pixels on Android.
+
+APK v0.1.2 samples only its own Android SurfaceView through PixelCopy at
+160x90 every 12 seconds while in foreground (first sample after 8 seconds).
+After user-approved APK update and opening the helper, check:
+
+    logcat -d -s AlrootWayland | grep PixelProbe | tail -6
+
+Nonblack sample counts mean the actual Android SurfaceView contains color;
+zero nonblack or a PixelCopy error narrows investigation to the rendering or
+presentation layers beyond Xwayland. No raw screenshot is stored. The user
+still needs to visually verify desktop content and input.

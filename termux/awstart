@@ -53,9 +53,16 @@ installed_apk_path() {
     return 1
 }
 app_installed() {
-    local installed
-    installed="$(installed_apk_path)"
-    [[ -n "$installed" && -r "$installed" ]]
+    local installed packages
+    installed="$(installed_apk_path)" || true
+    if [[ -n "$installed" && -r "$installed" ]]; then
+        return 0
+    fi
+    # pm path may temporarily return no path during a package install/update.
+    # A second PackageManager view is useful, but absence in both is still
+    # UNKNOWN rather than definitive proof that the APK was uninstalled.
+    packages="$(cmd package list packages --user 0 2>/dev/null)" || return 1
+    grep -Fxq 'package:com.alroot.wayland' <<< "$packages"
 }
 app_matches_local_apk() {
     local installed
@@ -68,10 +75,20 @@ app_status() {
     if app_matches_local_apk; then
         msg 'Android helper APK: INSTALLED (matches latest locally signed APK)'
     elif app_installed; then
-        msg 'Android helper APK: INSTALLED (version differs from local signed APK)'
+        msg 'Android helper APK: INSTALLED (local signed APK version not verified)'
     else
-        msg 'Android helper APK: NOT INSTALLED (or installation still pending)'
+        msg 'Android helper APK: UNCONFIRMED (PackageManager has no current record)'
     fi
+}
+open_helper_activity() {
+    local response rc=0
+    response="$(am start -n "$APP" 2>&1)" || rc=$?
+    if ((rc != 0)) ||
+        grep -Eiq 'Error type [0-9]+|Activity class .* does not exist|Exception occurred' <<< "$response"; then
+        die "Android ActivityManager could not open $APP: $response"
+    fi
+    ((debug)) && printf '%s\n' "$response"
+    return 0
 }
 
 action=start
@@ -143,8 +160,11 @@ case "$action" in
         exit 0 ;;
     open)
         ((dry_run)) && { msg "Would execute: am start -n $APP"; exit 0; }
-        app_installed || die 'APK missing. Run awstart --install-apk first.'
-        am start -n "$APP"
+        # ActivityManager is the final authority for opening an Activity.
+        # Do not reject a valid installed APK merely because pm path briefly
+        # returned nothing during PackageManager installation transitions.
+        open_helper_activity
+        msg 'Helper Activity open requested; this does not prove XFCE pixels.'
         exit 0 ;;
     restart)
         ((dry_run)) || "$CLI" stop ;;
@@ -164,7 +184,9 @@ if [[ "${tracer:-0}" != 0 ]]; then
     [[ "${tracer_name:-}" != proot ]] ||
         die 'Run outside PRoot in the native Termux shell'
 fi
-app_installed || die 'Helper APK not installed or installer not yet finished. Approve Android installation, verify with awstart --status, then retry.'
+if ! app_installed; then
+    msg 'PackageManager lookup inconclusive; attempting the fixed helper Activity directly.'
+fi
 
 # Safe, idempotent default: reopening an existing profile does not spawn
 # a second XFCE or disturb existing Termux-X11. --restart is explicit.
@@ -175,7 +197,7 @@ if grep -q '^xfce: RUNNING ' <<< "$current_status"; then
        grep -q '^xwayland: RUNNING ' <<< "$current_status" &&
        { [[ "$profile" == xfce-shm-direct ]] ||
          grep -q '^labwc: RUNNING ' <<< "$current_status"; }; then
-        am start -n "$APP" >/dev/null || die 'Could not reopen the active helper Activity'
+        open_helper_activity
         msg "Already running: $profile. Reopened helper without starting another session."
         printf '%s\n' "$current_status"
         exit 0
@@ -197,7 +219,8 @@ if ((topapp)); then
     chmod 600 "$candidate"
     mv -f "$candidate" "$CONTROL/start-request"
     rm -f "$CONTROL/start-ack"
-    if ! am start -n "$APP" > "$CONTROL/open.log" 2>&1; then
+    if ! am start -n "$APP" > "$CONTROL/open.log" 2>&1 ||
+        grep -Eiq 'Error type [0-9]+|Activity class .* does not exist|Exception occurred' "$CONTROL/open.log"; then
         if [[ -f "$CONTROL/start-request" ]] &&
             grep -qF " $request_id" "$CONTROL/start-request"; then
             rm -f "$CONTROL/start-request"
@@ -222,7 +245,7 @@ if ((topapp)); then
     msg 'Foreground Activity accepted session spawn request (NOT yet graphical PASS).'
 else
     msg 'Shell-spawn mode does NOT ensure top-app CPU scheduling.'
-    am start -n "$APP" >/dev/null || die 'Failed to open helper Activity'
+    open_helper_activity
     "$CLI" start --profile "$profile"
     ((no_wait)) && exit 0
 fi
@@ -232,9 +255,10 @@ for ((attempt=0; attempt<40; ++attempt)); do
     if grep -q '^host: .* READY$' <<< "$report" &&
        grep -q '^xwayland: RUNNING ' <<< "$report" &&
        grep -q '^xfce: RUNNING ' <<< "$report" &&
+       grep -q '^x11_desktop: READY ' <<< "$report" &&
        { [[ "$profile" == xfce-shm-direct ]] ||
          grep -q '^labwc: RUNNING ' <<< "$report"; }; then
-        msg 'Host socket and desktop processes ready; verify real pixels and input in the APK.'
+        msg 'X11 WM, xfdesktop and panel registered on isolated Xwayland. Android image needs visual verification.'
         printf '%s\n' "$report"
         exit 0
     fi
