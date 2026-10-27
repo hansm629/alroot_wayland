@@ -379,7 +379,7 @@ public final class MainActivity extends Activity implements SurfaceHolder.Callba
 
     private void chooseResolution() {
         EditText input = new EditText(this);
-        int w = prefs().getInt("width", 1280), h = prefs().getInt("height", 720);
+        int w = prefs().getInt("width", 1920), h = prefs().getInt("height", 1080);
         input.setSingleLine(true);
         input.setText(w + "x" + h);
         new AlertDialog.Builder(this).setTitle("Output resolution: width x height")
@@ -391,8 +391,11 @@ public final class MainActivity extends Activity implements SurfaceHolder.Callba
                         if (width < 320 || width > 3840 || height < 240 || height > 2160)
                             throw new IllegalArgumentException("outside validated range");
                         prefs().edit().putInt("width", width).putInt("height", height).apply();
+                        SessionFiles.setResolution(width, height);
                         WaylandCompositor.nativeResizeOutput(width, height);
                         applyScale();
+                        toast("Guest output " + width + "x" + height
+                                + " @96 DPI. Restart Alroot XFCE for rootful Xwayland geometry.");
                     } catch (Exception e) { toast("Invalid dimensions (320..3840 x 240..2160)"); }
                 }).show();
     }
@@ -403,13 +406,18 @@ public final class MainActivity extends Activity implements SurfaceHolder.Callba
         new AlertDialog.Builder(this).setTitle("Output scale").setItems(names, (d, index) -> {
             prefs().edit().putInt("mode", values[index]).apply();
             applyScale();
+            if (prefs().getBoolean("fullscreen", true))
+                toast("Fullscreen uses aspect-preserving FIT. Windowed mode uses this scale setting.");
         }).show();
     }
 
     private void applyScale() {
-        int mode = prefs().getBoolean("fullscreen", true) ? 2 : prefs().getInt("mode", 1);
+        // Never stretch the XFCE desktop. 1920x1080 must remain 16:9/96 DPI.
+        // On a wider phone, FIT fills the entire height, with side margins.
+        int mode = prefs().getBoolean("fullscreen", true) ? 1 : prefs().getInt("mode", 1);
         WaylandCompositor.nativeSetScaleMode(mode, 0);
-        view.updateTransform(prefs().getInt("width", 1280), prefs().getInt("height", 720), mode);
+        view.updateTransform(prefs().getInt("width", 1920),
+                prefs().getInt("height", 1080), mode);
     }
 
     private void rotateMode() {

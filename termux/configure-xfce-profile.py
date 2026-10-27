@@ -10,26 +10,64 @@ PROJECT = HOME / "alroot_wayland"
 STATE = HOME / ".alroot-wayland"
 CONFIG = STATE / "xfce-config"
 
+def mirror_xfce():
+    # The first snapshot taken on P01 was never refreshed, so later XFCE
+    # panel/theme/desktop updates in the user's existing Termux-X11 were
+    # missing in Alroot. Always mirror those original files into the private
+    # project tree BEFORE starting this new XFCE session; originals are read
+    # only and the Alroot battery widget is re-added afterward.
+    xmlroot = Path("xfce4/xfconf/xfce-perchannel-xml")
+    originals = (
+        "xfce4-panel.xml",
+        "xfce4-desktop.xml",
+        "xfwm4.xml",
+        "xsettings.xml",
+        "xfce4-session.xml",
+        "xfce4-keyboard-shortcuts.xml",
+    )
+    for filename in originals:
+        rel = xmlroot / filename
+        src = HOME / ".config" / rel
+        dst = CONFIG / rel
+        if src.is_file():
+            dst.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copy2(src, dst)
+    for rel in (Path("xfce4/panel"), Path("xfce4/desktop")):
+        src = HOME / ".config" / rel
+        dst = CONFIG / rel
+        if src.is_dir():
+            shutil.copytree(src, dst, dirs_exist_ok=True, symlinks=False)
+    return "MIRRORED original Xfce panel/theme/desktop (isolated copy)"
+
 
 def install_plank():
     src = HOME / ".config/autostart/Plank dock.desktop"
     dest = CONFIG / "autostart/Plank dock.desktop"
     dest.parent.mkdir(parents=True, exist_ok=True)
-    if dest.exists():
-        return "PRESENT"
     if src.is_file():
         shutil.copy2(src, dest)
-    else:
+    elif not dest.exists():
         dest.write_text(
             "[Desktop Entry]\nType=Application\nName=Plank dock\n"
             "Exec=plank\nOnlyShowIn=XFCE;\n"
             "Terminal=false\nStartupNotify=false\n"
         )
+    # Plank keeps pinned icons, order, zoom, size and theme in DConf, NOT
+    # only in the .dockitem files. The old implementation copied launchers
+    # but left the isolated DConf with independently generated defaults.
     docksrc = HOME / ".config/plank"
     dockdest = CONFIG / "plank"
-    if docksrc.is_dir() and not dockdest.exists():
-        shutil.copytree(docksrc, dockdest, symlinks=False)
-    return "ADDED"
+    if docksrc.is_dir():
+        shutil.copytree(docksrc, dockdest, symlinks=False, dirs_exist_ok=True)
+    user_db = HOME / ".config/dconf/user"
+    project_db = CONFIG / "dconf/user"
+    if user_db.is_file():
+        project_db.parent.mkdir(parents=True, exist_ok=True)
+        target_tmp = project_db.with_name(".alroot-dconf.tmp")
+        shutil.copy2(user_db, target_tmp)
+        os.chmod(target_tmp, 0o600)
+        os.replace(target_tmp, project_db)
+    return "SYNCED (autostart, launchers, DConf ordering/theme/zoom)"
 
 
 def install_battery():
@@ -52,6 +90,11 @@ def install_battery():
             command = entry.find("./property[@name='command']")
             if entry.get("value") == "genmon" and command is not None \
                     and command.get("value") == widget:
+                period = entry.find("./property[@name='update-period']")
+                if period is not None and period.get("value") != "15":
+                    period.set("value", "15")
+                    xmlpath.write_bytes(ET.tostring(root, encoding="UTF-8", xml_declaration=True))
+                    return "UPDATED (15s Android battery cache)"
                 return "PRESENT"
     target = max([106, *existing]) + 1
     inserted = False
@@ -77,7 +120,7 @@ def install_battery():
                            "type": "string", "value": "genmon"})
     for name, kind, value in (
         ("command", "string", widget),
-        ("update-period", "int", "60"),
+        ("update-period", "int", "15"),
         ("use-label", "bool", "false"),
         ("enable-single-row", "bool", "true"),
         ("font", "string", "Sans 9"),
@@ -93,5 +136,6 @@ def install_battery():
 
 if __name__ == "__main__":
     assert CONFIG.is_dir(), "No isolated config tree"
+    print("Alroot XFCE: " + mirror_xfce())
     print("Alroot XFCE Plank: " + install_plank())
     print("Alroot XFCE battery GenMon: " + install_battery())

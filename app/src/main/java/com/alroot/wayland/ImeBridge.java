@@ -14,26 +14,27 @@ import java.util.concurrent.atomic.AtomicInteger;
 public final class ImeBridge {
     private static final File STATE = HelperService.runtimeDir().getParentFile();
     private static final File QUEUE = new File(STATE, "ipc/ime-requests");
+    private static final File READY = new File(STATE, "ime-active");
     private static final AtomicInteger NEXT = new AtomicInteger();
     private ImeBridge() {}
 
     public static boolean rootfulX11Active() {
         File display = new File(STATE, "display");
         File identity = new File(STATE, "xwayland.pid");
-        if (!display.isFile() || !identity.isFile()) return false;
+        if (!display.isFile() || !identity.isFile() || !READY.isFile()) return false;
         try {
-            String[] record = new String(Files.readAllBytes(identity.toPath()),
-                    StandardCharsets.UTF_8).trim().split("\\s+");
-            if (record.length < 3 || !"alroot-wayland".equals(record[2])) return false;
-            int pid = Integer.parseInt(record[0]);
-            if (pid <= 1) return false;
-            String stat = new String(Files.readAllBytes(new File("/proc/" + pid + "/stat").toPath()),
-                    StandardCharsets.US_ASCII);
-            int separator = stat.lastIndexOf(") ");
-            if (separator < 0) return false;
-            String[] fields = stat.substring(separator + 2).trim().split("\\s+");
-            return fields.length > 19 && record[1].equals(fields[19]);
+            String name = new String(Files.readAllBytes(display.toPath()),
+                    StandardCharsets.US_ASCII).trim();
+            String marker = new String(Files.readAllBytes(READY.toPath()),
+                    StandardCharsets.US_ASCII).trim();
+            String pidRecord = new String(Files.readAllBytes(identity.toPath()),
+                    StandardCharsets.US_ASCII).trim();
+            // The marker is removed on explicit stop and before every new
+            // session. This path uses no cross-process /proc reads.
+            return name.matches(":[0-9]{1,3}") && !":0".equals(name)
+                    && name.equals(marker) && pidRecord.endsWith(" alroot-wayland");
         } catch (Exception e) {
+            Log.w("AlrootWayland", "IME X11 readiness marker unavailable", e);
             return false;
         }
     }
@@ -46,6 +47,8 @@ public final class ImeBridge {
             return;
         }
         offer("commit", content);
+        Log.i("AlrootWayland", "IME X11 committed chars=" + value.length()
+                + " UTF8bytes=" + content.length);
     }
 
     public static void delete(int before, int after) {

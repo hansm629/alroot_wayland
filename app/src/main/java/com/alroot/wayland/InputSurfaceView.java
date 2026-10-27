@@ -7,6 +7,7 @@ import android.graphics.RectF;
 import android.os.Handler;
 import android.os.Looper;
 import android.text.InputType;
+import android.text.Editable;
 import android.view.KeyEvent;
 import android.view.MotionEvent;
 import android.view.PointerIcon;
@@ -169,6 +170,18 @@ public final class InputSurfaceView extends SurfaceView {
     }
 
     private int fallbackEvdev(int key) {
+        // Some Android software keyboards send KeyEvent rather than
+        // InputConnection.commitText (with scanCode=0). Map their logical
+        // AOSP keycodes to Linux evdev keycodes on our isolated X11 seat.
+        if (key >= KeyEvent.KEYCODE_A && key <= KeyEvent.KEYCODE_Z) {
+            final int[] qwerty = {30, 48, 46, 32, 18, 33, 34, 35, 23, 36, 37, 38, 50,
+                    49, 24, 25, 16, 19, 31, 20, 22, 47, 17, 45, 21, 44};
+            return qwerty[key - KeyEvent.KEYCODE_A];
+        }
+        if (key >= KeyEvent.KEYCODE_0 && key <= KeyEvent.KEYCODE_9) {
+            final int[] digits = {11, 2, 3, 4, 5, 6, 7, 8, 9, 10};
+            return digits[key - KeyEvent.KEYCODE_0];
+        }
         switch (key) {
             case KeyEvent.KEYCODE_ENTER: return 28;
             case KeyEvent.KEYCODE_DEL: return 14;
@@ -180,6 +193,16 @@ public final class InputSurfaceView extends SurfaceView {
             case KeyEvent.KEYCODE_DPAD_RIGHT: return 106;
             case KeyEvent.KEYCODE_DPAD_UP: return 103;
             case KeyEvent.KEYCODE_DPAD_DOWN: return 108;
+            case KeyEvent.KEYCODE_COMMA: return 51;
+            case KeyEvent.KEYCODE_PERIOD: return 52;
+            case KeyEvent.KEYCODE_MINUS: return 12;
+            case KeyEvent.KEYCODE_EQUALS: return 13;
+            case KeyEvent.KEYCODE_APOSTROPHE: return 40;
+            case KeyEvent.KEYCODE_SEMICOLON: return 39;
+            case KeyEvent.KEYCODE_SLASH: return 53;
+            case KeyEvent.KEYCODE_LEFT_BRACKET: return 26;
+            case KeyEvent.KEYCODE_RIGHT_BRACKET: return 27;
+            case KeyEvent.KEYCODE_BACKSLASH: return 43;
             default: return 0;
         }
     }
@@ -204,10 +227,14 @@ public final class InputSurfaceView extends SurfaceView {
 
     private void absolute(float x, float y) {
         android.content.SharedPreferences prefs = getContext().getSharedPreferences("display", Context.MODE_PRIVATE);
-        int w = prefs.getInt("width", 1280), h = prefs.getInt("height", 720);
-        updateTransform(w, h, prefs.getInt("mode", 1));
-        int px = Math.min(w - 1, Math.max(0, Math.round((x - picture.left) * pointerScaleX)));
-        int py = Math.min(h - 1, Math.max(0, Math.round((y - picture.top) * pointerScaleY)));
+        int w = prefs.getInt("width", 1920), h = prefs.getInt("height", 1080);
+        updateTransform(w, h, prefs.getBoolean("fullscreen", true)
+                ? 1 : prefs.getInt("mode", 1));
+        // Compositor JNI expects 1920x1080 *physical output* coordinates and
+        // itself inverts the aspect-fit map to logical X11 scene coordinates.
+        // Feeding a logical 1280/1920 guest pixel here would double-transform.
+        int px = Math.min(1920, Math.max(0, Math.round(x / Math.max(1, getWidth()) * 1920f)));
+        int py = Math.min(1080, Math.max(0, Math.round(y / Math.max(1, getHeight()) * 1080f)));
         WaylandCompositor.nativeSendSceneInput(2, px, py);
         lastX = Math.max(picture.left, Math.min(picture.right - 1, x));
         lastY = Math.max(picture.top, Math.min(picture.bottom - 1, y));
@@ -419,13 +446,24 @@ public final class InputSurfaceView extends SurfaceView {
     @Override public InputConnection onCreateInputConnection(EditorInfo outAttrs) {
         outAttrs.inputType = InputType.TYPE_CLASS_TEXT | InputType.TYPE_TEXT_FLAG_MULTI_LINE;
         outAttrs.imeOptions = EditorInfo.IME_FLAG_NO_EXTRACT_UI;
-        return new BaseInputConnection(this, false) {
+        return new BaseInputConnection(this, true) {
+            private final Editable composition = Editable.Factory.getInstance().newEditable("");
+            @Override public Editable getEditable() {
+                return composition;
+            }
             @Override public boolean commitText(CharSequence text, int newCursorPosition) {
-                if (ImeBridge.rootfulX11Active()) ImeBridge.commit(text.toString());
+                // Preserve Android IME's editable state for Hangul composition.
+                super.commitText(text, newCursorPosition);
+                boolean x11 = ImeBridge.rootfulX11Active();
+                android.util.Log.i("AlrootWayland", "IME Android commit route="
+                        + (x11 ? "rootful-X11" : "native-Wayland")
+                        + " chars=" + text.length());
+                if (x11) ImeBridge.commit(text.toString());
                 else WaylandCompositor.textInputCommit(text.toString());
                 return true;
             }
             @Override public boolean setComposingText(CharSequence text, int newCursorPosition) {
+                super.setComposingText(text, newCursorPosition);
                 if (!ImeBridge.rootfulX11Active()) {
                     WaylandCompositor.textInputPreedit(text.toString(), text.length());
                 }
@@ -433,9 +471,19 @@ public final class InputSurfaceView extends SurfaceView {
                 return true;
             }
             @Override public boolean deleteSurroundingText(int beforeLength, int afterLength) {
+                super.deleteSurroundingText(beforeLength, afterLength);
                 if (ImeBridge.rootfulX11Active()) ImeBridge.delete(beforeLength, afterLength);
                 else WaylandCompositor.textInputDelete(beforeLength, afterLength);
                 return true;
+            }
+            @Override public boolean sendKeyEvent(KeyEvent event) {
+                if (event.getAction() == KeyEvent.ACTION_DOWN ||
+                        event.getAction() == KeyEvent.ACTION_UP) {
+                    if (deliverKey(event, event.getAction() == KeyEvent.ACTION_DOWN)) {
+                        return true;
+                    }
+                }
+                return super.sendKeyEvent(event);
             }
         };
     }

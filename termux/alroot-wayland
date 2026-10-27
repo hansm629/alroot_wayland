@@ -197,14 +197,32 @@ start_xwayland() {
     unset cookie
     # Do not use -terminate: the xdpyinfo readiness probe is a short-lived
     # X11 client. With -terminate, the server exits before XFCE connects.
-    # P01 software baseline; advanced output-size synchronization is P02.
-    Xwayland ":$n" -geometry 1280x720 -auth "$XAUTHORITY" -nolisten tcp \
+    # Native host and rootful Xwayland must use the SAME guest resolution.
+    # Otherwise a 1280x720 desktop occupies only part of a 1920x1080 scene.
+    local guest_w=1920 guest_h=1080 candidate_w="" candidate_h=""
+    if [[ -r "$STATE/output-resolution" ]]; then
+        read -r candidate_w candidate_h < "$STATE/output-resolution" || true
+        if [[ "$candidate_w" =~ ^[0-9]{3,4}$ && "$candidate_h" =~ ^[0-9]{3,4}$ ]] &&
+            ((candidate_w >= 320 && candidate_w <= 3840 &&
+              candidate_h >= 240 && candidate_h <= 2160)); then
+            guest_w="$candidate_w"; guest_h="$candidate_h"
+        fi
+    fi
+    printf '%s %s\n' "$guest_w" "$guest_h" > "$STATE/x11-geometry"
+    Xwayland ":$n" -geometry "${guest_w}x${guest_h}" -dpi 96 \
+        -auth "$XAUTHORITY" -nolisten tcp \
         > "$LOGS/xwayland.log" 2>&1 &
     record_pid xwayland "$!"
     local i
     for ((i=0; i<90; ++i)); do
         if DISPLAY=":$n" xdpyinfo -display ":$n" >/dev/null 2>&1; then
             printf ':%d\n' "$n" > "$STATE/display"
+            # The Android app cannot reliably inspect another process's
+            # /proc PID start time under Android SELinux. Publish an owned,
+            # session-scoped marker only after the X socket really responds.
+            printf ':%d\n' "$n" > "$STATE/ime-active"
+            chmod 600 "$STATE/ime-active"
+            echo "Xwayland :$n ready at ${guest_w}x${guest_h} 96DPI"
             return 0
         fi
         if ! owned_pid_active xwayland; then
@@ -237,6 +255,7 @@ start_session() {
         fi
     done
     # Failed intermediate stages must not leave project-owned processes alive.
+    rm -f "$STATE/ime-active"
     trap 'rc=$?; if ((rc != 0)); then stop_one clipboard; stop_one xfce; stop_one xwayland; stop_one labwc; fi' EXIT
     if ! wait_socket wayland-0; then
         echo "BLOCKED: Android helper socket $RUNTIME/wayland-0 is not accepting connections" >&2
@@ -320,6 +339,7 @@ case "${1:-}" in
         [[ ! -f "$STATE/display" ]] || echo "X DISPLAY: $(cat "$STATE/display")"
         ;;
     stop)
+        rm -f "$STATE/ime-active"
         stop_one clipboard
         stop_one xfce
         stop_one xwayland

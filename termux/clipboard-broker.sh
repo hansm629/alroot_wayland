@@ -19,6 +19,36 @@ IME="$IPC/ime-requests"
 mkdir -p "$IME"
 chmod 700 "$IME"
 
+ime_paste_utf8() {
+    local request="$1" saved="" restored=0 shortcut="ctrl+v" classname=""
+    saved="$(mktemp "$IPC/.ime-clip-XXXXXXXX")" || return 1
+    if timeout 2 xclip -selection clipboard -out -t UTF8_STRING > "$saved" 2>/dev/null; then
+        restored=1
+    fi
+    if ! timeout 3 xclip -selection clipboard -in -t UTF8_STRING < "$request" 2>/dev/null; then
+        rm -f "$saved"
+        echo 'IME Unicode clipboard selection failed' >&2
+        return 1
+    fi
+    classname="$(timeout 2 xdotool getwindowfocus getwindowclassname 2>/dev/null || true)"
+    case "$classname" in
+        *[Tt]erminal*|*XTerm*|*xterm*|*Konsole*|*konsole*)
+            shortcut="ctrl+shift+v" ;;
+    esac
+    local code=0
+    timeout 3 xdotool key --clearmodifiers "$shortcut" >/dev/null 2>&1 || code=1
+    # X11 selection requests are asynchronous; do not restore before the
+    # destination receives the UTF-8 text. The old CLIPBOARD is then restored.
+    sleep .35
+    if ((restored)); then
+        timeout 3 xclip -selection clipboard -in -t UTF8_STRING < "$saved" 2>/dev/null || true
+    else
+        timeout 3 xclip -selection clipboard -in -t UTF8_STRING < /dev/null 2>/dev/null || true
+    fi
+    rm -f "$saved"
+    return "$code"
+}
+
 while :; do
     # Route completed Android IME text into this session's rootful Xwayland.
     # Preedit stays Android-side to avoid duplicate Hangul syllables.
@@ -26,9 +56,25 @@ while :; do
         [[ -f "$request" ]] || continue
         case "$request" in
             *.commit)
+                bytes="$(stat -c %s "$request" 2>/dev/null || echo 0)"
+                if ! [[ "$bytes" =~ ^[0-9]+$ ]] || ((bytes < 1 || bytes > 16384)); then
+                    echo "IME rejected invalid commit size" >&2
+                    rm -f "$request"
+                    continue
+                fi
                 if command -v xdotool >/dev/null 2>&1; then
-                    timeout 10 xdotool type --clearmodifiers --delay 0 --file "$request" \
-                        >/dev/null 2>&1 || echo 'IME commit delivery failed' >&2
+                    if LC_ALL=C grep -q '[^[:print:][:space:]]' "$request"; then
+                        if ime_paste_utf8 "$request"; then
+                            echo "IME Unicode paste delivered bytes=$bytes" >&2
+                        else
+                            echo "IME Unicode paste failed bytes=$bytes" >&2
+                        fi
+                    elif timeout 10 xdotool type --clearmodifiers --delay 0 --file "$request" \
+                            >/dev/null 2>&1; then
+                        echo "IME ASCII XTEST delivered bytes=$bytes" >&2
+                    else
+                        echo "IME XTEST delivery failed bytes=$bytes" >&2
+                    fi
                 else
                     echo 'IME unavailable: xdotool missing' >&2
                 fi

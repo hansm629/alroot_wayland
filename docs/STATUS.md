@@ -64,3 +64,13 @@ Do not promote code existence or build success into screen/input PASS.
   SurfaceView, logging nonblack pixel counts and brightness range. A real
   PixelCopy run and final display correctness remain TEST-PENDING until the
   Android-approved APK update.
+
+## 2026-10-28 P02 revision 2 (S26U)
+
+- User screenshot: distorted fullscreen 16:9, 96-DPI expectation not met, Android soft input missing, Plank layout different, battery widget BAT --%, stray cursor cross. These were treated as reproduction evidence, not resolved by old process counters.
+- Rootful Xwayland was hardcoded to 1280x720 despite Android guest setting 1920x1080. Separate server now starts with configured guest geometry, explicitly -dpi 96; isolated xdpyinfo verified 1920x1080 and 96x96 DPI. Fullscreen compositor changed from STRETCH to aspect-preserving FIT (landscape height fills, side margins may remain). Android visible result pending updated APK installation.
+- Termux-X11 Plank icon order/theme/zoom came from ~/.config/dconf/user, not merely .dockitem launchers; original and isolated DConf SHA256 matched in live scoped test. Refresh private Xfce panel/theme/desktop snapshot each start. Original user settings were not modified.
+- Battery GenMon's direct Termux API calls were unreliable in the panel; Android helper now publishes a bounded BatteryManager JSON snapshot periodically and GenMon reads it with a three-minute freshness check (Termux API fallback). Java cache production in newly installed APK remains unverified; battery fixture passed.
+- A disposable X11 test revealed `xdotool type` Korean produced keysym=0 despite successful XTEST send. New Unicode commit via X11 clipboard paste was verified in a GTK entry and XFCE terminal on isolated :90 (2 Korean chars / 6 UTF8 bytes); the previous CLIPBOARD hash matched after restoration. Android keyboard source path is not yet verified.
+- Removed temporary CursorOverlay white cross (the genuine Wayland cursor remains).
+- CI and Android visual validation statuses should be recorded only after each actual run.

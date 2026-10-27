@@ -9,6 +9,8 @@ import android.content.Intent;
 import android.content.pm.ServiceInfo;
 import android.os.Build;
 import android.os.IBinder;
+import android.os.Handler;
+import android.os.Looper;
 import android.util.Log;
 
 import com.droiddeck.launcher.wayland.WaylandCompositor;
@@ -20,6 +22,13 @@ public final class HelperService extends Service {
     private static final int NOTIFICATION = 30721;
     public static volatile boolean running;
     public static volatile String error;
+    private final Handler batteryHandler = new Handler(Looper.getMainLooper());
+    private final Runnable batteryPoll = new Runnable() {
+        @Override public void run() {
+            SessionFiles.snapshotBattery(HelperService.this);
+            batteryHandler.postDelayed(this, 60_000L);
+        }
+    };
 
     public static File runtimeDir() {
         return new File("/data/data/com.termux/files/home/.alroot-wayland/runtime");
@@ -27,6 +36,7 @@ public final class HelperService extends Service {
 
     @Override public void onCreate() {
         super.onCreate();
+        batteryHandler.post(batteryPoll);
         NotificationManager nm = getSystemService(NotificationManager.class);
         nm.createNotificationChannel(new NotificationChannel(
                 CHANNEL, "Alroot Wayland session", NotificationManager.IMPORTANCE_LOW));
@@ -67,8 +77,9 @@ public final class HelperService extends Service {
                         || !dir.setExecutable(true, true))
                     throw new IllegalStateException("Cannot secure Wayland runtime directory");
 
-                int w = getSharedPreferences("display", MODE_PRIVATE).getInt("width", 1280);
-                int h = getSharedPreferences("display", MODE_PRIVATE).getInt("height", 720);
+                int w = getSharedPreferences("display", MODE_PRIVATE).getInt("width", 1920);
+                int h = getSharedPreferences("display", MODE_PRIVATE).getInt("height", 1080);
+                SessionFiles.setResolution(w, h);
                 WaylandCompositor.nativeSetOutputSize(w, h);
                 WaylandCompositor.nativeSetZeroCopy(false);
                 WaylandCompositor.nativeStartWithSurface(null, dir.getAbsolutePath(),
@@ -85,6 +96,7 @@ public final class HelperService extends Service {
     }
 
     @Override public void onDestroy() {
+        batteryHandler.removeCallbacks(batteryPoll);
         if (running) {
             try { WaylandCompositor.nativeStop(); } catch (Throwable ignored) {}
         }
