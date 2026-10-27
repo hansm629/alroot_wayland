@@ -178,6 +178,34 @@ Do not promote code existence or build success into screen/input PASS.
 - Battery: restored original XFCE panel XML byte-for-byte, including
   battery plugin-7 and its exact position; both project :90 and native
   :0 loaded libbattery.so plugin 7. Visual percentage needs user test.
+
+## P07 2026-10-28 — IME composition, UPower, two-finger direction
+
+- User-reported Korean text entry and deletion flickered, and switching
+  from English input sometimes inserted old English a second time. Native
+  XTEST transport was fast but the Android bridge sent mutable composition
+  immediately, causing a destructive X11 Backspace+insert per preedit.
+- Added Android-independent Java ImeCommitState: only confirmed text and
+  immutable Hangul syllable prefixes reach the native X11 daemon. A
+  narrowly bounded recent-ASCII check removes English echoes at the first
+  Korean preedit transition. Local deletion of pending composition avoids
+  accidental X11 Backspace. Nine synthetic Java scenarios passed (including
+  English→Korean, sequential Hangul, 0-length commits and backspace).
+- This cannot produce fully inline animated GTK/XIM preedit: unfinished
+  Korean syllables remain in the Android IME until committed. Actual
+  Samsung keyboard UX and final-character preservation are TEST-PENDING.
+- Native battery plugin still appeared as '?' under isolated Xfce because
+  org.freedesktop.UPower proxy creation failed. The Android helper's battery
+  JSON cache contained fresh percentages. Implemented a project-private
+  UPower-compatible DBus service inside the isolated dbus-run-session.
+  Alroot's native libbattery.so now inherited its own mapped D-Bus system
+  address, and the live D-Bus Percentage equalled the Android cache.
+  Original Termux-X11 and DBus services were left unchanged.
+- Two-finger scroll uses the natural Android direction (negative Wayland
+  vertical axis for positive finger Y). TouchpadScrollState simulated
+  direction/dead-zone cases passed; actual finger acceptance is pending.
+- P07 smoke includes the above Java tests and the live Alroot private
+  UPower battery property check, plus retained P06 Xvfb Unicode tests.
 - P04 refresh stability: Choreographer measured timestamp jitter briefly
   caused the older code to advertise 122Hz despite the physical mode
   remaining 120Hz. This release retains the actual Android active physical

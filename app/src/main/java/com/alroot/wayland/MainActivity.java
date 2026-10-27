@@ -597,7 +597,12 @@ public final class MainActivity extends Activity implements SurfaceHolder.Callba
         InputMethodManager im = (InputMethodManager) getSystemService(INPUT_METHOD_SERVICE);
         boolean visible = Build.VERSION.SDK_INT >= 30 && view.getRootWindowInsets() != null
                 && view.getRootWindowInsets().isVisible(WindowInsets.Type.ime());
-        if (visible) im.hideSoftInputFromWindow(view.getWindowToken(), 0);
+        if (visible) {
+            // Samsung IME may hide without sending a final nonempty commit;
+            // finalize the last buffered Hangul syllable before dismissal.
+            ImeBridge.finishComposing();
+            im.hideSoftInputFromWindow(view.getWindowToken(), 0);
+        }
         else {
             view.requestFocus();
             ImeBridge.resetComposing();
@@ -692,6 +697,7 @@ public final class MainActivity extends Activity implements SurfaceHolder.Callba
         if (hasFocus && prefs().getBoolean("fullscreen", true))
             restoreWindowSettings();
         if (!hasFocus && view != null) {
+            ImeBridge.finishComposing();
             view.releaseAllKeys();
             view.releasePointerCapture();
         } else if (hasFocus && clipboardObserver != null) {

@@ -27,6 +27,7 @@ public final class InputSurfaceView extends SurfaceView {
     private final Set<Integer> keys = new HashSet<>();
     private final Handler gestures = new Handler(Looper.getMainLooper());
     private final float touchSlop;
+    private final TouchpadScrollState scrollState;
     private int inputMode;
     private int pointerSpeed;
     private int acceleration;
@@ -60,6 +61,8 @@ public final class InputSurfaceView extends SurfaceView {
     public InputSurfaceView(Context context) {
         super(context);
         touchSlop = ViewConfiguration.get(context).getScaledTouchSlop();
+        scrollState = new TouchpadScrollState(
+                touchSlop, getResources().getDisplayMetrics().density);
         SharedPreferences p = context.getSharedPreferences("display", Context.MODE_PRIVATE);
         inputMode = p.getInt("input_mode", MODE_TOUCHPAD);
         pointerSpeed = p.getInt("pointer_speed", 190);
@@ -106,6 +109,7 @@ public final class InputSurfaceView extends SurfaceView {
         pressed = dragStarted = touchMoved = multipleTouch = scrolled = overlayGesture = false;
         twoFingerScrollStarted = false;
         scrollResidualY = 0f;
+        scrollState.reset();
         primaryPointer = -1;
     }
     public void cancelPointerGesture() { cancelGesture(); }
@@ -349,7 +353,7 @@ public final class InputSurfaceView extends SurfaceView {
         int a = event.getActionMasked();
         int index = event.getActionIndex();
         if (a == MotionEvent.ACTION_DOWN)
-            ImeBridge.resetComposing();
+            ImeBridge.finishComposing();
         if (!overlayGesture && event.getPointerCount() >= 3 &&
                 a == MotionEvent.ACTION_POINTER_DOWN) {
             cancelGesture();
@@ -402,6 +406,7 @@ public final class InputSurfaceView extends SurfaceView {
             touchMoved = multipleTouch = scrolled = dragStarted = false;
             twoFingerScrollStarted = false;
             scrollResidualY = 0f;
+            scrollState.reset();
             gestures.postDelayed(longPress, 420);
         } else if (a == MotionEvent.ACTION_POINTER_DOWN) {
             gestures.removeCallbacks(longPress);
@@ -417,6 +422,7 @@ public final class InputSurfaceView extends SurfaceView {
                 prevCentroidY = (event.getY(0) + event.getY(1)) * .5f;
                 twoFingerScrollStarted = false;
                 scrollResidualY = 0f;
+                scrollState.reset();
             }
         } else if (a == MotionEvent.ACTION_POINTER_UP) {
             // Never reassign primaryPointer to the remaining finger.
@@ -426,24 +432,10 @@ public final class InputSurfaceView extends SurfaceView {
             if (event.getPointerCount() >= 2) {
                 float cy = (event.getY(0) + event.getY(1)) * .5f;
                 float delta = cy - prevCentroidY;
-                scrollResidualY += delta;
-                if (!twoFingerScrollStarted &&
-                        Math.abs(scrollResidualY) >= touchSlop) {
-                    twoFingerScrollStarted = true;
-                    scrolled = true;
-                    // Ignore the initial dead zone rather than sending a
-                    // burst as the second finger settles onto the display.
-                    scrollResidualY -= Math.signum(scrollResidualY) * touchSlop;
-                }
-                if (twoFingerScrollStarted) {
-                    float pixelsPerStep =
-                            32f * getResources().getDisplayMetrics().density;
-                    int units = (int)(scrollResidualY * 120f / pixelsPerStep);
-                    if (units != 0) {
-                        WaylandCompositor.nativeSendSceneInput(11, units, 0);
-                        scrollResidualY -= units * pixelsPerStep / 120f;
-                    }
-                }
+                int units = scrollState.move(delta);
+                if (scrollState.isScrolling()) scrolled = true;
+                if (units != 0)
+                    WaylandCompositor.nativeSendSceneInput(11, units, 0);
                 prevCentroidY = cy;
             } else if (primaryPointer >= 0) {
                 int slot = event.findPointerIndex(primaryPointer);
@@ -505,6 +497,7 @@ public final class InputSurfaceView extends SurfaceView {
         // SurfaceView has a real editable buffer; Samsung/Gboard otherwise
         // rely on stale cursor/selection state and send empty commitText.
         return new BaseInputConnection(this, false) {
+            private boolean consumedDraftBackspace;
             @Override public android.text.Editable getEditable() { return null; }
             @Override public CharSequence getTextBeforeCursor(int n, int flags) { return " "; }
             @Override public CharSequence getTextAfterCursor(int n, int flags) { return " "; }
@@ -549,6 +542,17 @@ public final class InputSurfaceView extends SurfaceView {
                 return true;
             }
             @Override public boolean sendKeyEvent(KeyEvent event) {
+                if (event.getKeyCode() == KeyEvent.KEYCODE_DEL) {
+                    if (event.getAction() == KeyEvent.ACTION_DOWN &&
+                            ImeBridge.rootfulX11Active()) {
+                        consumedDraftBackspace = ImeBridge.deletePendingPreedit();
+                        if (consumedDraftBackspace) return true;
+                    }
+                    if (event.getAction() == KeyEvent.ACTION_UP && consumedDraftBackspace) {
+                        consumedDraftBackspace = false;
+                        return true;
+                    }
+                }
                 if (event.getAction() == KeyEvent.ACTION_MULTIPLE) {
                     String chars = event.getCharacters();
                     if (chars != null && !chars.isEmpty()) {

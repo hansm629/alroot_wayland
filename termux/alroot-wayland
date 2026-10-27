@@ -166,7 +166,8 @@ xfce_start() {
         export NO_AT_BRIDGE=1
         # Separate process group so explicit stop can target this session's
         # descendants without signalling any pre-existing desktop session.
-        exec setsid dbus-run-session -- xfce4-session
+        exec setsid dbus-run-session -- "$PREFIX/bin/bash" \
+            "$HOME/alroot_wayland/termux/alroot-xfce-session.sh"
     ) > "$LOGS/xfce.log" 2>&1 &
     record_pid xfce "$!"
 }
@@ -389,7 +390,7 @@ case "${1:-}" in
         am start -n com.alroot.wayland/.MainActivity
         ;;
     logs)
-        for f in "$LOGS"/{labwc,xwayland,xfce,clipboard,ime-server,ime-build,refresh}.log "$STATE/spawn.log"; do
+        for f in "$LOGS"/{labwc,xwayland,xfce,clipboard,ime-server,ime-build,refresh,upower}.log "$STATE/spawn.log"; do
             if [[ -r "$f" ]]; then echo "--- $f"; tail -24 "$f"; fi
         done
         ;;

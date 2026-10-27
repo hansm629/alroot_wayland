@@ -29,8 +29,16 @@ public final class ImeBridge {
     private static final File QUEUE = new File(STATE, "ipc/ime-requests");
     private static final HandlerThread ioThread = new HandlerThread("AlrootX11IME");
     private static final Handler io;
-    private static final Object pendingLock = new Object();
-    private static String latestComposition;
+    private static final ImeCommitState composition = new ImeCommitState();
+    private static final ImeCommitState.Sink compositionSink =
+            new ImeCommitState.Sink() {
+                @Override public void committed(String text) {
+                    io.post(() -> send('T', text));
+                }
+                @Override public void delete(int before, int after) {
+                    io.post(() -> send('D', before + " " + after));
+                }
+            };
     private static LocalSocket socket;
     private static OutputStream stream;
     private static String fallbackComposition = "";
@@ -74,59 +82,42 @@ public final class ImeBridge {
         }
     }
 
-    private static final Runnable flushComposition = () -> {
-        final String text;
-        synchronized (pendingLock) {
-            text = latestComposition;
-            latestComposition = null;
-        }
-        if (text != null) send('C', text);
-    };
-
     public static void composing(String text) {
-        synchronized (pendingLock) {
-            latestComposition = text == null ? "" : text;
-            io.removeCallbacks(flushComposition);
-            io.postDelayed(flushComposition, 8);
-        }
-    }
-
-    private static void flushBefore(boolean preserve) {
-        final String text;
-        synchronized (pendingLock) {
-            text = latestComposition;
-            latestComposition = null;
-            io.removeCallbacks(flushComposition);
-        }
-        if (preserve && text != null) io.post(() -> send('C', text));
+        // Mutable Korean preedit stays in the Android IME. Only syllables
+        // proven stable by a later event are transmitted to Xwayland.
+        // This removes every speculative Backspace/insert repaint.
+        composition.composing(text, SystemClock.elapsedRealtime(), compositionSink);
     }
 
     public static void commitComposed(String text) {
-        if (text == null) text = "";
-        // Empty Samsung commit means previous preedit became the final text:
-        // never drop the coalesced preedit before sending that finalization.
-        flushBefore(text.isEmpty());
-        final String copy = text;
-        io.post(() -> send('T', copy));
+        composition.committed(text, SystemClock.elapsedRealtime(), compositionSink);
     }
 
     public static void commit(String text) { commitComposed(text); }
 
     public static void finishComposing() {
-        flushBefore(true);
+        composition.finished(SystemClock.elapsedRealtime(), compositionSink);
         io.post(() -> send('F', ""));
     }
 
     public static void resetComposing() {
-        flushBefore(false);
+        composition.reset();
         io.post(() -> send('R', ""));
     }
 
     public static void delete(int before, int after) {
-        flushBefore(true);
-        final int b = Math.max(0, Math.min(128, before));
-        final int a = Math.max(0, Math.min(128, after));
-        if (b + a > 0) io.post(() -> send('D', b + " " + a));
+        composition.delete(before, after, compositionSink);
+    }
+
+    public static boolean hasPendingPreedit() {
+        return composition.hasDraft();
+    }
+
+    /** A software-keyboard DEL of uncommitted preedit must not erase X11. */
+    public static boolean deletePendingPreedit() {
+        if (!composition.hasDraft()) return false;
+        composition.delete(1, 0, compositionSink);
+        return true;
     }
 
     private static boolean sendSocket(char operation, byte[] bytes) {

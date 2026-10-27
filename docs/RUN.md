@@ -446,3 +446,55 @@ Project-only regression tests:
 
     bash ~/alroot_wayland/tests/p06-ime-distinct.sh
     bash ~/alroot_wayland/tests/p06-smoke.sh
+
+## P07: Korean commit-only IME, private UPower and natural touchpad scroll
+
+The P06 native XTEST bridge corrected its Unicode keycode cache, but the
+Android bridge still sent EVERY mutable Hangul preedit to the remote
+application. Each preedit replacement required an X11 Backspace and then
+new key events. This caused visible caret flicker on input and deletion,
+and could replay already entered English when switching keyboard languages.
+
+P07 adds a pure-Java ImeCommitState in the Android app. The mutable Hangul
+preedit remains in the Samsung/Android IME; only explicit commits and
+immutable syllable prefixes are sent to X11. English text is immediate,
+and a narrowly scoped Korean-language-transition check suppresses
+accidental replay of the last already-committed ASCII run. Pending preedit
+Backspace is handled locally, so it cannot delete adjacent committed X11
+text. An empty Samsung commit finalizes the last pending syllable once.
+No X11 clipboard or speculative remote deletion is involved.
+
+This has an important UX limit: an unfinished Korean syllable is displayed
+in the Android keyboard's composition area until confirmed, not rewritten
+repeatedly inside the GTK application's actual caret. Real in-place
+non-flickering preedit would ultimately require native XIM/GTK input-method
+integration, beyond an XTEST-only compatibility bridge. Acceptance on
+the device must check that Korean text is neither lost nor duplicated and
+that the final character is committed when the keyboard is dismissed.
+
+The original XFCE battery plugin at plugin-7 remains in precisely the
+same position/size as the original Termux-X11 setup. Its UPower proxy
+previously failed because Android Termux has no system_bus_socket and
+the Alroot session bus is isolated. P07 starts a small project-private,
+read-only org.freedesktop.UPower-compatible provider using the Android
+helper BatteryManager JSON snapshot. Only the child Xfce session maps
+DBUS_SYSTEM_BUS_ADDRESS to its private DBus session. Neither the original
+Termux-X11 UPower service nor its DBus/system settings are changed.
+The project libbattery.so wrapper's UPower Percentage property was
+confirmed to match the Android battery cache in a live S26U test.
+
+Two-finger scroll has been reversed to Android-style natural scrolling:
+dragging fingers DOWN causes content to move DOWN, corresponding to a
+negative Wayland vertical scroll axis. Activation touchSlop, fractional
+accumulation and two-finger tap/right-click are otherwise preserved.
+
+P07 unit and live-session checks:
+
+    bash ~/alroot_wayland/tests/p07-smoke.sh
+    bash ~/alroot_wayland/tests/p07-upower-live.sh
+
+The tests validate actual Java IME state-machine scenarios, simulated
+touchpad scroll signs, Xwayland Unicode input, original XFCE panel
+settings, and live private UPower properties. They do NOT prove the
+actual Samsung keyboard's in-app appearance or finger gestures on
+the device. Test these after the signed APK update.
