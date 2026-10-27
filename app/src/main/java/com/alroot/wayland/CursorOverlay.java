@@ -36,7 +36,7 @@ public final class CursorOverlay extends View {
 
     @Override protected void onDraw(Canvas canvas) {
         super.onDraw(canvas);
-        if (!surface.isCaptured() || hidden) return;
+        if (!surface.isSoftwareCursorWanted() || hidden) return;
         float x = surface.pointerX(), y = surface.pointerY();
         canvas.save();
         canvas.translate(x, y);

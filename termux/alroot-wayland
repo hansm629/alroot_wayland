@@ -142,6 +142,9 @@ xfce_start() {
             cp -a "$HOME/.config/$config_name" "$STATE/xfce-config/"
         fi
     done
+    # Project-only XFCE panel integration: Termux:API battery + Plank launcher.
+    "$PREFIX/bin/python3" "$HOME/alroot_wayland/termux/configure-xfce-profile.py" \
+        > "$LOGS/profile.log" 2>&1
     (
         export HOME PREFIX PATH="$PREFIX/bin:$PREFIX/bin/applets"
         export DISPLAY="$display" XAUTHORITY="$STATE/Xauthority"

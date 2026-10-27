@@ -157,3 +157,54 @@ Nonblack sample counts mean the actual Android SurfaceView contains color;
 zero nonblack or a PixelCopy error narrows investigation to the rendering or
 presentation layers beyond Xwayland. No raw screenshot is stored. The user
 still needs to visually verify desktop content and input.
+
+## P02 usability update: fullscreen, pointer, power, dock, overlay
+
+Android fullscreen now requests immersive edge-to-edge layout with system
+bars hidden and fills the available SurfaceView using STRETCH mode at any
+guest resolution. The optional windowed mode still offers fit/stretch/fill.
+Some fullscreen content may be proportionally distorted when a 16:9 guest
+is stretched to a taller Android panel; matching the guest output ratio or
+using the windowed Fit mode avoids distortion.
+
+The Alroot menu defaults to a compact 44dp handle in the top-left with its
+status text hidden. Tap the handle for settings. Long-press the handle to
+temporarily show status. Select Hide Alroot handle to remove it entirely.
+Restore via a three-finger tap anywhere on the display, or Ctrl+Alt+M using
+a physical keyboard. Ctrl+Alt+Esc still releases pointer capture.
+
+Touch input mode choices are:
+1. Touchpad (default) — relative finger movement, tap=left click,
+   two-finger tap=right click, two-finger drag=scroll, long-press and
+   drag=left-drag.
+2. Virtual touchscreen — screen position moves/clicks the mouse directly.
+3. Direct touch — native Wayland touch events (Xwayland apps may use
+   compositor pointer fallback).
+
+The menu offers pointer speed 50–300 (default 190) and acceleration 0–200
+(default 110). Settings persist in the Android app's isolated preferences.
+
+In the project-specific XFCE session, the original battery plugin relies on
+unavailable UPower D-Bus, so it is replaced by a GenMon text widget sourced
+from Termux:API's termux-battery-status at a 60-second interval. The user's
+existing Plank autostart desktop entry and dock theme folder are copied to
+the project-only XDG_CONFIG_HOME. Only the Alroot panel config is edited.
+The original ~/.config/xfce4, ~/.config/autostart, Termux-X11 and Plank are
+untouched. The new package requirement is xfce4-genmon-plugin; no rootfs or
+system GPU changes are needed.
+
+Before testing a newly installed APK, stop only the Alroot XFCE session:
+
+    awstart --stop
+    awstart --install-apk
+
+Approve Android Update, then reopen and run:
+
+    awstart --debug
+    awstart --status
+    bash ~/alroot_wayland/tests/p02-ux-smoke.sh
+
+Verify full display coverage, cursor behavior under all three input modes,
+battery percentage, dock at screen bottom, status hide/reopen and the
+original Termux-X11 session separately. Java compilation and CLI checks
+alone do not prove the touch/display output on a physical S26U.

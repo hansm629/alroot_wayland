@@ -3,7 +3,7 @@ set -euo pipefail
 
 PROJECT=/data/data/com.termux/files/home/alroot_wayland
 cd "$PROJECT"
-for script in termux/alroot-wayland termux/awstart termux/clipboard-broker.sh \
+for script in termux/alroot-wayland termux/awstart termux/alroot-battery-genmon.sh termux/clipboard-broker.sh \
               packages/build-wlroots-termux.sh tools/install-cli.sh tools/sign-local.sh; do
     bash -n "$script"
 done

@@ -1,14 +1,18 @@
 package com.alroot.wayland;
 
 import android.content.Context;
+import android.content.SharedPreferences;
 import android.graphics.Bitmap;
 import android.graphics.RectF;
+import android.os.Handler;
+import android.os.Looper;
 import android.text.InputType;
 import android.view.KeyEvent;
 import android.view.MotionEvent;
 import android.view.PointerIcon;
 import android.view.SurfaceView;
 import android.view.View;
+import android.view.ViewConfiguration;
 import android.view.inputmethod.BaseInputConnection;
 import android.view.inputmethod.EditorInfo;
 import android.view.inputmethod.InputConnection;
@@ -17,9 +21,29 @@ import java.util.HashSet;
 import java.util.Set;
 
 public final class InputSurfaceView extends SurfaceView {
+    public static final int MODE_TOUCHPAD = 0;
+    public static final int MODE_VIRTUAL_TOUCHSCREEN = 1;
+    public static final int MODE_DIRECT_TOUCH = 2;
     private final Set<Integer> keys = new HashSet<>();
+    private final Handler gestures = new Handler(Looper.getMainLooper());
+    private final float touchSlop;
+    private int inputMode;
+    private int pointerSpeed;
+    private int acceleration;
+    private int primaryPointer = -1;
+    private long touchStarted;
+    private float touchStartX, touchStartY, prevX, prevY, prevCentroidY;
+    private boolean pressed, dragStarted, touchMoved, multipleTouch, scrolled, overlayGesture;
+    private Runnable overlayToggle;
+    private final Runnable longPress = () -> {
+        if (inputMode == MODE_TOUCHPAD && primaryPointer >= 0
+                && !touchMoved && !multipleTouch && !overlayGesture && !pressed) {
+            sendButton(272, true);
+            pressed = true;
+            dragStarted = true;
+        }
+    };
     private boolean captured;
-    private boolean primaryTouchDown;
     private float lastX, lastY;
     private boolean pointerInitialized;
     private float pointerScaleX = 1, pointerScaleY = 1;
@@ -30,6 +54,11 @@ public final class InputSurfaceView extends SurfaceView {
 
     public InputSurfaceView(Context context) {
         super(context);
+        touchSlop = ViewConfiguration.get(context).getScaledTouchSlop();
+        SharedPreferences p = context.getSharedPreferences("display", Context.MODE_PRIVATE);
+        inputMode = p.getInt("input_mode", MODE_TOUCHPAD);
+        pointerSpeed = p.getInt("pointer_speed", 190);
+        acceleration = p.getInt("pointer_accel", 110);
         setFocusable(true);
         setFocusableInTouchMode(true);
         setClickable(true);
@@ -39,9 +68,39 @@ public final class InputSurfaceView extends SurfaceView {
     public boolean isCaptured() { return captured; }
     public float pointerX() { return lastX; }
     public float pointerY() { return lastY; }
+    public boolean isSoftwareCursorWanted() {
+        return captured || (inputMode == MODE_TOUCHPAD && pointerInitialized);
+    }
     public float cursorScaleX() { return 1f / pointerScaleX; }
     public float cursorScaleY() { return 1f / pointerScaleY; }
     public void setCursorMoveListener(Runnable listener) { onCursorMove = listener; }
+    public void setOverlayToggle(Runnable action) { overlayToggle = action; }
+    public int getInputMode() { return inputMode; }
+    public int getPointerSpeed() { return pointerSpeed; }
+    public int getAcceleration() { return acceleration; }
+    public void configurePointer(int mode, int speed, int accel) {
+        if (mode < MODE_TOUCHPAD || mode > MODE_DIRECT_TOUCH) return;
+        cancelGesture();
+        inputMode = mode;
+        pointerSpeed = Math.max(50, Math.min(300, speed));
+        acceleration = Math.max(0, Math.min(200, accel));
+        getContext().getSharedPreferences("display", Context.MODE_PRIVATE).edit()
+                .putInt("input_mode", inputMode)
+                .putInt("pointer_speed", pointerSpeed)
+                .putInt("pointer_accel", acceleration).apply();
+    }
+    private void sendButton(int evdev, boolean down) {
+        WaylandCompositor.nativeSendSceneInput(3, evdev, down ? 1 : 0);
+    }
+    private void cancelGesture() {
+        gestures.removeCallbacks(longPress);
+        if (pressed) sendButton(272, false);
+        if (inputMode == MODE_DIRECT_TOUCH)
+            WaylandCompositor.nativeSendTouch(3, -1, 0, 0);
+        pressed = dragStarted = touchMoved = multipleTouch = scrolled = overlayGesture = false;
+        primaryPointer = -1;
+    }
+    public void cancelPointerGesture() { cancelGesture(); }
 
     public void setGuestCursor(Bitmap bitmap, int hotspotX, int hotspotY, boolean hidden) {
         guestCursorHidden = hidden;
@@ -81,6 +140,7 @@ public final class InputSurfaceView extends SurfaceView {
     }
 
     public void releaseAllKeys() {
+        cancelGesture();
         for (Integer code : new HashSet<>(keys)) WaylandCompositor.nativeSendKey(code, 0);
         keys.clear();
         for (int btn : new int[] {272, 273, 274}) WaylandCompositor.nativeSendSceneInput(3, btn, 0);
@@ -167,6 +227,26 @@ public final class InputSurfaceView extends SurfaceView {
                 Math.round(dy * pointerScaleY * 256f));
         if (onCursorMove != null) onCursorMove.run();
     }
+    private void acceleratedRelative(float dx, float dy) {
+        float distance = (float)Math.hypot(dx, dy);
+        float gain = (pointerSpeed / 100f) *
+                (1f + acceleration / 100f * Math.min(1f, distance / (35f * getResources().getDisplayMetrics().density)));
+        relative(dx * gain, dy * gain);
+    }
+
+    private int normalizeTouchX(float x) {
+        return Math.max(0, Math.min(1920, Math.round(x / Math.max(1, getWidth()) * 1920f)));
+    }
+    private int normalizeTouchY(float y) {
+        return Math.max(0, Math.min(1080, Math.round(y / Math.max(1, getHeight()) * 1080f)));
+    }
+    private void sendNativeTouch(int action, MotionEvent event, int index) {
+        if (index < 0 || index >= event.getPointerCount()) return;
+        int id = event.getPointerId(index);
+        if (id >= 0 && id < 16)
+            WaylandCompositor.nativeSendTouch(action, id,
+                    normalizeTouchX(event.getX(index)), normalizeTouchY(event.getY(index)));
+    }
 
     private static int evdevButton(int button) {
         if (button == MotionEvent.BUTTON_PRIMARY) return 272;
@@ -178,7 +258,7 @@ public final class InputSurfaceView extends SurfaceView {
     @Override public boolean onCapturedPointerEvent(MotionEvent event) {
         int action = event.getActionMasked();
         if (action == MotionEvent.ACTION_MOVE || action == MotionEvent.ACTION_HOVER_MOVE) {
-            relative(event.getX(), event.getY());
+            acceleratedRelative(event.getX(), event.getY());
             return true;
         }
         if (action == MotionEvent.ACTION_SCROLL) {
@@ -220,13 +300,109 @@ public final class InputSurfaceView extends SurfaceView {
 
     @Override public boolean onTouchEvent(MotionEvent event) {
         int a = event.getActionMasked();
-        absolute(event.getX(), event.getY());
+        int index = event.getActionIndex();
+        if (!overlayGesture && event.getPointerCount() >= 3 &&
+                a == MotionEvent.ACTION_POINTER_DOWN) {
+            cancelGesture();
+            overlayGesture = true;
+            if (overlayToggle != null) overlayToggle.run();
+            return true;
+        }
+        if (overlayGesture) {
+            if (a == MotionEvent.ACTION_UP || a == MotionEvent.ACTION_CANCEL) overlayGesture = false;
+            return true;
+        }
+        if (inputMode == MODE_DIRECT_TOUCH) {
+            switch (a) {
+                case MotionEvent.ACTION_DOWN:
+                case MotionEvent.ACTION_POINTER_DOWN: sendNativeTouch(0, event, index); break;
+                case MotionEvent.ACTION_MOVE:
+                    for (int i = 0; i < event.getPointerCount(); i++)
+                        sendNativeTouch(1, event, i);
+                    break;
+                case MotionEvent.ACTION_UP:
+                case MotionEvent.ACTION_POINTER_UP: sendNativeTouch(2, event, index); break;
+                case MotionEvent.ACTION_CANCEL:
+                    WaylandCompositor.nativeSendTouch(3, -1, 0, 0); break;
+            }
+            return true;
+        }
+        if (inputMode == MODE_VIRTUAL_TOUCHSCREEN) {
+            if (a == MotionEvent.ACTION_DOWN) {
+                absolute(event.getX(), event.getY());
+                sendButton(272, true);
+                pressed = true;
+            } else if (a == MotionEvent.ACTION_MOVE && pressed) {
+                absolute(event.getX(), event.getY());
+            } else if (a == MotionEvent.ACTION_UP || a == MotionEvent.ACTION_CANCEL) {
+                if (pressed) sendButton(272, false);
+                pressed = false;
+            }
+            return true;
+        }
+        // Relative touchpad mode: finger motion moves a persistent cursor,
+        // tap clicks, long hold drags, and two fingers scroll.
         if (a == MotionEvent.ACTION_DOWN) {
-            primaryTouchDown = true;
-            WaylandCompositor.nativeSendSceneInput(3, 272, 1);
-        } else if (a == MotionEvent.ACTION_UP || a == MotionEvent.ACTION_CANCEL) {
-            if (primaryTouchDown) WaylandCompositor.nativeSendSceneInput(3, 272, 0);
-            primaryTouchDown = false;
+            if (!pointerInitialized) absolute(getWidth() / 2f, getHeight() / 2f);
+            primaryPointer = event.getPointerId(0);
+            touchStarted = event.getEventTime();
+            prevX = touchStartX = event.getX(0);
+            prevY = touchStartY = event.getY(0);
+            touchMoved = multipleTouch = scrolled = dragStarted = false;
+            gestures.postDelayed(longPress, 420);
+        } else if (a == MotionEvent.ACTION_POINTER_DOWN) {
+            gestures.removeCallbacks(longPress);
+            multipleTouch = true;
+            if (pressed) { sendButton(272, false); pressed = false; }
+            if (event.getPointerCount() == 2)
+                prevCentroidY = (event.getY(0) + event.getY(1)) * .5f;
+        } else if (a == MotionEvent.ACTION_POINTER_UP) {
+            if (event.getPointerId(index) == primaryPointer && event.getPointerCount() > 1) {
+                int other = index == 0 ? 1 : 0;
+                primaryPointer = event.getPointerId(other);
+                prevX = event.getX(other);
+                prevY = event.getY(other);
+            }
+            multipleTouch = true;
+        } else if (a == MotionEvent.ACTION_MOVE) {
+            if (event.getPointerCount() >= 2) {
+                float cy = (event.getY(0) + event.getY(1)) * .5f;
+                float delta = cy - prevCentroidY;
+                int units = Math.round(delta / (32f * getResources().getDisplayMetrics().density) * 120f);
+                if (units != 0) {
+                    scrolled = true;
+                    WaylandCompositor.nativeSendSceneInput(11, units, 0);
+                }
+                prevCentroidY = cy;
+            } else if (primaryPointer >= 0) {
+                int slot = event.findPointerIndex(primaryPointer);
+                if (slot >= 0) {
+                    float x = event.getX(slot), y = event.getY(slot);
+                    if ((float)Math.hypot(x - touchStartX, y - touchStartY) > touchSlop) {
+                        touchMoved = true;
+                        gestures.removeCallbacks(longPress);
+                    }
+                    acceleratedRelative(x - prevX, y - prevY);
+                    prevX = x; prevY = y;
+                }
+            }
+        } else if (a == MotionEvent.ACTION_UP) {
+            gestures.removeCallbacks(longPress);
+            if (pressed) sendButton(272, false);
+            else if (multipleTouch && !scrolled &&
+                    event.getEventTime() - touchStarted < 450) {
+                sendButton(273, true);
+                sendButton(273, false);
+            }
+            else if (!multipleTouch && !touchMoved &&
+                    event.getEventTime() - touchStarted <= 500) {
+                sendButton(272, true);
+                sendButton(272, false);
+            }
+            pressed = false;
+            primaryPointer = -1;
+        } else if (a == MotionEvent.ACTION_CANCEL) {
+            cancelGesture();
         }
         return true;
     }

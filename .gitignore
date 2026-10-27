@@ -1,4 +1,6 @@
 .source/
+__pycache__/
+*.pyc
 artifacts/
 packages/prefix/
 .gradle/

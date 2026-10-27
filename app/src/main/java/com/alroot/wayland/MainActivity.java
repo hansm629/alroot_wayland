@@ -9,6 +9,7 @@ import android.content.Intent;
 import android.content.pm.ActivityInfo;
 import android.graphics.Bitmap;
 import android.graphics.Color;
+import android.graphics.drawable.GradientDrawable;
 import android.os.Build;
 import android.os.Bundle;
 import android.os.Handler;
@@ -20,7 +21,9 @@ import android.view.PixelCopy;
 import android.view.Surface;
 import android.view.SurfaceHolder;
 import android.view.View;
+import android.view.ViewGroup;
 import android.view.WindowInsets;
+import android.view.WindowInsetsController;
 import android.view.WindowManager;
 import android.view.inputmethod.InputMethodManager;
 import android.widget.Button;
@@ -28,6 +31,7 @@ import android.widget.EditText;
 import android.widget.FrameLayout;
 import android.widget.LinearLayout;
 import android.widget.PopupMenu;
+import android.widget.SeekBar;
 import android.widget.TextView;
 import android.widget.Toast;
 import com.droiddeck.launcher.wayland.WaylandCompositor;
@@ -37,6 +41,8 @@ public final class MainActivity extends Activity implements SurfaceHolder.Callba
     private final Handler main = new Handler(Looper.getMainLooper());
     private InputSurfaceView view;
     private CursorOverlay cursorOverlay;
+    private LinearLayout overlayRoot;
+    private Button menuHandle;
     private TextView status;
     private Surface attached;
     private static Surface activeSurface;
@@ -160,28 +166,53 @@ public final class MainActivity extends Activity implements SurfaceHolder.Callba
         view = new InputSurfaceView(this);
         view.getHolder().addCallback(this);
         FrameLayout root = new FrameLayout(this);
+        root.setBackgroundColor(Color.BLACK);
         root.addView(view, new FrameLayout.LayoutParams(-1, -1));
         cursorOverlay = new CursorOverlay(this, view);
         // Draw on top without stealing the mouse/touch events from SurfaceView.
         cursorOverlay.setEnabled(false);
         root.addView(cursorOverlay, new FrameLayout.LayoutParams(-1, -1));
         view.setCursorMoveListener(() -> cursorOverlay.invalidate());
-        LinearLayout overlay = new LinearLayout(this);
-        overlay.setOrientation(LinearLayout.VERTICAL);
-        overlay.setBackgroundColor(0xA8000000);
-        Button menu = new Button(this);
-        menu.setText("Alroot • ☰");
-        menu.setAllCaps(false);
-        menu.setOnClickListener(v -> showMenu(menu));
-        overlay.addView(menu);
+        overlayRoot = new LinearLayout(this);
+        overlayRoot.setOrientation(LinearLayout.VERTICAL);
+        overlayRoot.setGravity(Gravity.START);
+        menuHandle = new Button(this);
+        menuHandle.setText("☰");
+        menuHandle.setTextSize(16);
+        menuHandle.setTextColor(Color.WHITE);
+        menuHandle.setAllCaps(false);
+        menuHandle.setMinWidth(0);
+        menuHandle.setMinimumWidth(0);
+        menuHandle.setMinHeight(0);
+        menuHandle.setMinimumHeight(0);
+        GradientDrawable pill = new GradientDrawable();
+        pill.setColor(0xB6222830);
+        pill.setCornerRadius(dp(11));
+        menuHandle.setBackground(pill);
+        overlayRoot.addView(menuHandle, new LinearLayout.LayoutParams(dp(44), dp(40)));
+        menuHandle.setOnClickListener(v -> showMenu(menuHandle));
+        menuHandle.setOnLongClickListener(v -> { toggleStatusOverlay(); return true; });
         status = new TextView(this);
         status.setTextColor(Color.WHITE);
-        status.setTextSize(11);
-        status.setPadding(10, 0, 10, 6);
-        overlay.addView(status);
+        status.setTextSize(10);
+        status.setMaxWidth(dp(235));
+        status.setPadding(dp(8), dp(5), dp(8), dp(5));
+        status.setBackgroundColor(0xB6222830);
+        status.setVisibility(View.GONE);
+        overlayRoot.addView(status, new LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT));
         FrameLayout.LayoutParams params = new FrameLayout.LayoutParams(
                 -2, -2, Gravity.TOP | Gravity.START);
-        root.addView(overlay, params);
+        params.leftMargin = dp(6);
+        params.topMargin = dp(6);
+        root.addView(overlayRoot, params);
+        view.setOverlayToggle(() -> {
+            if (overlayRoot.getVisibility() == View.VISIBLE) {
+                overlayRoot.setVisibility(View.GONE);
+            } else {
+                overlayRoot.setVisibility(View.VISIBLE);
+            }
+        });
         setContentView(root);
 
         clipboard = (ClipboardManager) getSystemService(Context.CLIPBOARD_SERVICE);
@@ -234,6 +265,12 @@ public final class MainActivity extends Activity implements SurfaceHolder.Callba
                 + " | " + (view.isCaptured() ? "CAPTURED" : "FREE")
                 + (HelperService.error != null ? "\n" + HelperService.error : ""));
     }
+    private int dp(float size) {
+        return Math.round(size * getResources().getDisplayMetrics().density);
+    }
+    private void toggleStatusOverlay() {
+        status.setVisibility(status.getVisibility() == View.VISIBLE ? View.GONE : View.VISIBLE);
+    }
 
     private void toast(String msg) {
         Toast.makeText(this, msg, Toast.LENGTH_LONG).show();
@@ -246,7 +283,9 @@ public final class MainActivity extends Activity implements SurfaceHolder.Callba
                 "Release / capture mouse", "Show / hide keyboard",
                 "Resolution", "Scale: fit / stretch / fill", "Orientation",
                 "Fullscreen", "Keep screen on", "Session status", "Open logs",
-                "Stop this session", "Stop Wayland server"};
+                "Stop this session", "Stop Wayland server",
+                "Touch input mode", "Pointer speed", "Pointer acceleration",
+                "Show / hide status", "Hide Alroot handle (three-finger tap to restore)"};
         for (int i = 0; i < items.length; i++) pop.getMenu().add(0, i, i, items[i]);
         pop.setOnMenuItemClickListener(item -> {
             switch (item.getItemId()) {
@@ -264,12 +303,63 @@ public final class MainActivity extends Activity implements SurfaceHolder.Callba
                     break;
                 case 11: confirmStop(false); break;
                 case 12: confirmStop(true); break;
+                case 13: chooseInputMode(); break;
+                case 14: choosePointerSetting(false); break;
+                case 15: choosePointerSetting(true); break;
+                case 16: toggleStatusOverlay(); break;
+                case 17:
+                    status.setVisibility(View.GONE);
+                    overlayRoot.setVisibility(View.GONE);
+                    toast("Handle hidden. Three-finger tap or Ctrl+Alt+M restores it.");
+                    break;
                 default: break;
             }
             updateStatus();
             return true;
         });
         pop.show();
+    }
+    private void chooseInputMode() {
+        final String[] modes = {"Touchpad (relative + tap + two-finger scroll)",
+                "Virtual touchscreen (absolute mouse)",
+                "Direct touch (Wayland multi-touch)"};
+        new AlertDialog.Builder(this).setTitle("Touch input mode")
+                .setSingleChoiceItems(modes, view.getInputMode(), (dialog, selected) -> {
+                    view.configurePointer(selected, view.getPointerSpeed(), view.getAcceleration());
+                    dialog.dismiss();
+                    toast("Input mode: " + modes[selected]);
+                }).setNegativeButton("Cancel", null).show();
+    }
+    private void choosePointerSetting(boolean accelerationSetting) {
+        int min = accelerationSetting ? 0 : 50;
+        int max = accelerationSetting ? 200 : 300;
+        int initial = accelerationSetting ? view.getAcceleration() : view.getPointerSpeed();
+        LinearLayout layout = new LinearLayout(this);
+        layout.setOrientation(LinearLayout.VERTICAL);
+        layout.setPadding(dp(16), dp(8), dp(16), dp(4));
+        TextView value = new TextView(this);
+        value.setText(String.valueOf(initial));
+        SeekBar slider = new SeekBar(this);
+        slider.setMax(max - min);
+        slider.setProgress(initial - min);
+        layout.addView(value);
+        layout.addView(slider);
+        slider.setOnSeekBarChangeListener(new SeekBar.OnSeekBarChangeListener() {
+            @Override public void onProgressChanged(SeekBar bar, int progress, boolean fromUser) {
+                value.setText(String.valueOf(progress + min));
+            }
+            @Override public void onStartTrackingTouch(SeekBar bar) {}
+            @Override public void onStopTrackingTouch(SeekBar bar) {}
+        });
+        new AlertDialog.Builder(this)
+                .setTitle(accelerationSetting ? "Pointer acceleration (0–200)" : "Pointer speed (50–300)")
+                .setView(layout).setNegativeButton("Cancel", null)
+                .setPositiveButton("Apply", (d, n) -> {
+                    int target = slider.getProgress() + min;
+                    view.configurePointer(view.getInputMode(),
+                            accelerationSetting ? view.getPointerSpeed() : target,
+                            accelerationSetting ? target : view.getAcceleration());
+                }).show();
     }
 
     private void confirmStop(boolean server) {
@@ -317,7 +407,7 @@ public final class MainActivity extends Activity implements SurfaceHolder.Callba
     }
 
     private void applyScale() {
-        int mode = prefs().getInt("mode", 1);
+        int mode = prefs().getBoolean("fullscreen", true) ? 2 : prefs().getInt("mode", 1);
         WaylandCompositor.nativeSetScaleMode(mode, 0);
         view.updateTransform(prefs().getInt("width", 1280), prefs().getInt("height", 720), mode);
     }
@@ -349,9 +439,36 @@ public final class MainActivity extends Activity implements SurfaceHolder.Callba
         if (prefs().getBoolean("keep_screen", true))
             getWindow().addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON);
         else getWindow().clearFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON);
-        getWindow().getDecorView().setSystemUiVisibility(prefs().getBoolean("fullscreen", false)
+        boolean fullscreen = prefs().getBoolean("fullscreen", true);
+        if (fullscreen) {
+            getWindow().addFlags(WindowManager.LayoutParams.FLAG_FULLSCREEN);
+            if (Build.VERSION.SDK_INT >= 28) {
+                WindowManager.LayoutParams attributes = getWindow().getAttributes();
+                attributes.layoutInDisplayCutoutMode =
+                        WindowManager.LayoutParams.LAYOUT_IN_DISPLAY_CUTOUT_MODE_SHORT_EDGES;
+                getWindow().setAttributes(attributes);
+            }
+        } else getWindow().clearFlags(WindowManager.LayoutParams.FLAG_FULLSCREEN);
+        if (Build.VERSION.SDK_INT >= 30) {
+            getWindow().setDecorFitsSystemWindows(!fullscreen);
+            WindowInsetsController controller = getWindow().getInsetsController();
+            if (controller != null) {
+                if (fullscreen) {
+                    controller.hide(WindowInsets.Type.statusBars() | WindowInsets.Type.navigationBars());
+                    controller.setSystemBarsBehavior(
+                            WindowInsetsController.BEHAVIOR_SHOW_TRANSIENT_BARS_BY_SWIPE);
+                } else {
+                    controller.show(WindowInsets.Type.statusBars() | WindowInsets.Type.navigationBars());
+                }
+            }
+        }
+        getWindow().getDecorView().setSystemUiVisibility(fullscreen
                 ? View.SYSTEM_UI_FLAG_FULLSCREEN | View.SYSTEM_UI_FLAG_HIDE_NAVIGATION
-                    | View.SYSTEM_UI_FLAG_IMMERSIVE_STICKY : 0);
+                    | View.SYSTEM_UI_FLAG_IMMERSIVE_STICKY
+                    | View.SYSTEM_UI_FLAG_LAYOUT_FULLSCREEN
+                    | View.SYSTEM_UI_FLAG_LAYOUT_HIDE_NAVIGATION
+                    | View.SYSTEM_UI_FLAG_LAYOUT_STABLE : 0);
+        if (view != null) applyScale();
         int o = prefs().getInt("orientation", 0);
         setRequestedOrientation(o == 1 ? ActivityInfo.SCREEN_ORIENTATION_LANDSCAPE
                 : o == 2 ? ActivityInfo.SCREEN_ORIENTATION_PORTRAIT
@@ -372,6 +489,14 @@ public final class MainActivity extends Activity implements SurfaceHolder.Callba
     @Override public void onBackPressed() { toggleIme(); }
 
     @Override public boolean dispatchKeyEvent(KeyEvent event) {
+        if (event.getKeyCode() == KeyEvent.KEYCODE_M &&
+                event.isCtrlPressed() && event.isAltPressed()) {
+            if (event.getAction() == KeyEvent.ACTION_DOWN &&
+                    event.getRepeatCount() == 0 && overlayRoot != null)
+                overlayRoot.setVisibility(overlayRoot.getVisibility() == View.VISIBLE
+                        ? View.GONE : View.VISIBLE);
+            return true;
+        }
         if (event.getKeyCode() == KeyEvent.KEYCODE_ESCAPE) {
             if (event.getAction() == KeyEvent.ACTION_DOWN && event.isCtrlPressed() && event.isAltPressed()) {
                 suppressEscape = true;
@@ -431,6 +556,8 @@ public final class MainActivity extends Activity implements SurfaceHolder.Callba
 
     @Override public void onWindowFocusChanged(boolean hasFocus) {
         super.onWindowFocusChanged(hasFocus);
+        if (hasFocus && prefs().getBoolean("fullscreen", true))
+            restoreWindowSettings();
         if (!hasFocus && view != null) {
             view.releaseAllKeys();
             view.releasePointerCapture();
