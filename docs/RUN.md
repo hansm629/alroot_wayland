@@ -19,6 +19,19 @@ launcher. Android installation still requires approval:
 
     awstart --install-apk
 
+Android installation is asynchronous. An installer-requested message does
+not prove completion. Run awstart --status to query Android PackageManager.
+When the installed APK is byte-identical to the locally signed artifact,
+status reports INSTALLED (matches latest locally signed APK).
+The installer action will not launch again for the same already-installed APK.
+If installation is still pending, approve it on Android before starting.
+
+On 2026-10-27, the S26U's installed base.apk was byte-identical to the local
+signed P01 APK. Running the default awstart --debug was also verified:
+the foreground Activity accepted the launch, with the Alroot host READY and
+Labwc, rootful Xwayland, XFCE and clipboard processes RUNNING on isolated :90.
+Actual on-screen input/IME acceptance remains separately TEST-PENDING.
+
 Before upgrading an already active APK, stop this Alroot session and native
 server through its app menu. Never uninstall Termux or Termux-X11.
 

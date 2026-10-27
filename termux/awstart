@@ -39,7 +39,40 @@ HELP
 
 die() { printf '[awstart] ERROR: %s\n' "$*" >&2; exit 1; }
 msg() { printf '[awstart] %s\n' "$*"; }
-app_installed() { pm path com.alroot.wayland 2>/dev/null | grep -q '^package:'; }
+local_apk="$PROJECT/artifacts/alroot-wayland-p01-signed.apk"
+installed_apk_path() {
+    local found attempt
+    for attempt in 1 2 3; do
+        found="$(pm path com.alroot.wayland 2>/dev/null | sed -n '1s/^package://p')"
+        if [[ -n "$found" ]]; then
+            printf '%s\n' "$found"
+            return 0
+        fi
+        ((attempt < 3)) && sleep .3
+    done
+    return 1
+}
+app_installed() {
+    local installed
+    installed="$(installed_apk_path)"
+    [[ -n "$installed" && -r "$installed" ]]
+}
+app_matches_local_apk() {
+    local installed
+    [[ -r "$local_apk" ]] || return 1
+    installed="$(installed_apk_path)"
+    [[ -n "$installed" && -r "$installed" ]] || return 1
+    cmp -s "$installed" "$local_apk"
+}
+app_status() {
+    if app_matches_local_apk; then
+        msg 'Android helper APK: INSTALLED (matches latest locally signed APK)'
+    elif app_installed; then
+        msg 'Android helper APK: INSTALLED (version differs from local signed APK)'
+    else
+        msg 'Android helper APK: NOT INSTALLED (or installation still pending)'
+    fi
+}
 
 action=start
 profile=xfce-labwc
@@ -79,8 +112,7 @@ done
 
 case "$action" in
     status)
-        if app_installed; then msg 'Android helper APK: INSTALLED'
-        else msg 'Android helper APK: NOT INSTALLED'; fi
+        app_status
         exec "$PREFIX/bin/bash" "$CLI" status ;;
     logs)
         "$CLI" logs
@@ -88,8 +120,7 @@ case "$action" in
         exit 0 ;;
     doctor)
         "$CLI" doctor
-        if app_installed; then msg 'Helper APK: INSTALLED'
-        else msg 'Helper APK: NOT INSTALLED'; fi
+        app_status
         msg 'Client renderer: pixman; native Android host: Vulkan (not disabled)'
         exit 0 ;;
     smoke) exec "$PREFIX/bin/bash" "$PROJECT/tests/p01-smoke.sh" ;;
@@ -98,11 +129,17 @@ case "$action" in
         msg 'Project session stop requested; native Android host remains until explicitly stopped.'
         exit 0 ;;
     install-apk)
-        apk="$PROJECT/artifacts/alroot-wayland-p01-signed.apk"
-        [[ -r "$apk" ]] || die "Missing signed APK: $apk"
-        ((dry_run)) && { msg "Would open Android package installer for $apk"; exit 0; }
-        termux-open --view --content-type application/vnd.android.package-archive "$apk"
-        msg 'Installer requested; approve on Android (not silently installed).'
+        [[ -r "$local_apk" ]] || die "Missing signed APK: $local_apk"
+        if app_matches_local_apk; then
+            msg 'APK already installed: byte-for-byte identical to the latest locally signed build.'
+            msg 'No update needed. Run awstart.'
+            exit 0
+        fi
+        ((dry_run)) && { msg "Would open Android package installer for $local_apk"; exit 0; }
+        termux-open --view --content-type application/vnd.android.package-archive "$local_apk"
+        msg 'Android installer has been requested, NOT yet confirmed installed.'
+        msg 'Approve Install/Update on the device, then run: awstart --status'
+        msg 'Begin awstart when status reports INSTALLED (matches latest locally signed APK).'
         exit 0 ;;
     open)
         ((dry_run)) && { msg "Would execute: am start -n $APP"; exit 0; }
@@ -127,7 +164,7 @@ if [[ "${tracer:-0}" != 0 ]]; then
     [[ "${tracer_name:-}" != proot ]] ||
         die 'Run outside PRoot in the native Termux shell'
 fi
-app_installed || die 'Helper APK not installed. Run awstart --install-apk and approve installation.'
+app_installed || die 'Helper APK not installed or installer not yet finished. Approve Android installation, verify with awstart --status, then retry.'
 
 # Safe, idempotent default: reopening an existing profile does not spawn
 # a second XFCE or disturb existing Termux-X11. --restart is explicit.

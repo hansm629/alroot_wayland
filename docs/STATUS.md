@@ -29,3 +29,10 @@ Do not promote code existence or build success into screen/input PASS.
 - Android host logs have compositor/client frames but GUI/capture/IME/clipboard user confirmation is still TEST-PENDING.
 - New foreground Activity handoff requires app version 2 update; top-app cgroup/cpuset worker policy remains TEST-PENDING.
 - User's original Termux-X11 :0 and XFCE process survived session tests.
+
+## Installer status / failed-start follow-up
+- S26U PackageManager now returns com.alroot.wayland on shared UID 10400. Installed base.apk and the local signed P01 APK match byte-for-byte, including the intended Termux signing certificate.
+- The user's earlier awstart command saw NOT INSTALLED; installation was subsequently confirmed. The reason the earlier lookup was empty was not independently determined.
+- Actual default awstart --debug returned 0: foreground Activity acknowledged launch; host READY and Labwc/Xwayland/XFCE/clipboard RUNNING at isolated X DISPLAY :90.
+- The installer command now distinguishes opening the Android installer from confirmed installation and avoids reopening it when local and installed APKs match.
+- On-screen correctness, capture, Korean IME and clipboard remain TEST-PENDING.
