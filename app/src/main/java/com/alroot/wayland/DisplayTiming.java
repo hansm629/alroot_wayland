@@ -106,8 +106,17 @@ public final class DisplayTiming implements DisplayManager.DisplayListener {
         samples = 0;
         windowFirstNs = frameTimeNanos;
         if (!valid(actual)) return;
-        float nearest = Math.abs(actual - physicalRateHz) < 2.5f ? physicalRateHz : actual;
-        advertise(nearest, "measured-vsync");
+        // The physical Display.getRefreshRate() / active mode is the
+        // authority for wl_output refresh. Choreographer callback delivery
+        // can contain jitter or batched timestamps and must NOT promote a
+        // transient 122Hz measurement into a fake mode on a 120Hz panel.
+        // Dynamic physical mode switches arrive through DisplayListener.
+        if (Math.abs(actual - physicalRateHz) > 4f && lastLogMs > 0) {
+            Log.w(TAG, "DisplayTiming measured VSync differs from active panel rate"
+                    + " measured=" + actual + " active=" + physicalRateHz
+                    + " (keeping physical mode)");
+        }
+        advertise(physicalRateHz, "active-display+measured-vsync");
         long now = android.os.SystemClock.elapsedRealtime();
         if (now - lastLogMs > 2500) {
             lastLogMs = now;

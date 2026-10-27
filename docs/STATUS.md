@@ -124,3 +124,8 @@ Do not promote code existence or build success into screen/input PASS.
   gesture acceptance pending.
 - English and Korean Android resources cover menus, dialogs and
   foreground-service notification. UI screenshot/locale test pending.
+- P04 refresh stability: Choreographer measured timestamp jitter briefly
+  caused the older code to advertise 122Hz despite the physical mode
+  remaining 120Hz. This release retains the actual Android active physical
+  Display rate as the wl_output authority; timing measurements remain
+  diagnostic only, preventing transient nonphysical modes.
