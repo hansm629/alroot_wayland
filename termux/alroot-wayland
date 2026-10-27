@@ -1,0 +1,203 @@
+#!/data/data/com.termux/files/usr/bin/bash
+set -euo pipefail
+
+HOME=/data/data/com.termux/files/home
+PREFIX=/data/data/com.termux/files/usr
+STATE="$HOME/.alroot-wayland"
+RUNTIME="$STATE/runtime"
+LOGS="$STATE/logs"
+mkdir -p "$STATE" "$LOGS"
+chmod 700 "$STATE" "$LOGS"
+
+usage() {
+    echo 'usage: alroot-wayland start --profile xfce-labwc|xfce-shm-direct'
+    echo '       alroot-wayland status|open|stop|doctor|logs'
+}
+
+alive() {
+    local role="$1" pid="" expected=""
+    [[ -f "$STATE/$role.pid" ]] || return 1
+    read -r pid expected < "$STATE/$role.pid" || return 1
+    [[ "$pid" =~ ^[0-9]+$ && -r "/proc/$pid/stat" ]] || return 1
+    local cmd
+    cmd="$(tr '\0' ' ' < "/proc/$pid/cmdline" 2>/dev/null || true)"
+    case "$role" in
+        labwc) [[ "$cmd" == *"/labwc"* || "$cmd" == "labwc "* ]] ;;
+        xwayland) [[ "$cmd" == *"/Xwayland"* || "$cmd" == "Xwayland "* ]] ;;
+        xfce) [[ "$cmd" == *"dbus-run-session"* || "$cmd" == *"/xfce4-session"* ]] ;;
+        *) return 1 ;;
+    esac
+}
+
+record_pid() {
+    local name="$1" pid="$2"
+    printf '%s project-owned\n' "$pid" > "$STATE/$name.pid"
+}
+
+socket_ready() {
+    [[ -S "$1" ]] || return 1
+    python3 -c 'import socket,sys
+s=socket.socket(socket.AF_UNIX)
+s.settimeout(.3)
+try: s.connect(sys.argv[1])
+except OSError: sys.exit(1)
+finally: s.close()' "$1" >/dev/null 2>&1
+}
+
+wait_socket() {
+    local name="$1" i
+    for ((i=0; i<90; ++i)); do
+        if socket_ready "$RUNTIME/$name"; then return 0; fi
+        sleep .2
+    done
+    return 1
+}
+
+xfce_start() {
+    local display="$1"
+    mkdir -p "$STATE/xfce-config" "$STATE/xfce-cache"
+    (
+        export HOME PREFIX PATH="$PREFIX/bin:$PREFIX/bin/applets"
+        export DISPLAY="$display" XAUTHORITY="$STATE/Xauthority"
+        export XDG_RUNTIME_DIR="$RUNTIME" XDG_CONFIG_HOME="$STATE/xfce-config"
+        export XDG_CACHE_HOME="$STATE/xfce-cache" XDG_SESSION_TYPE=x11
+        unset WAYLAND_DISPLAY DBUS_SESSION_BUS_ADDRESS SESSION_MANAGER
+        export NO_AT_BRIDGE=1
+        exec dbus-run-session -- xfce4-session
+    ) > "$LOGS/xfce.log" 2>&1 &
+    record_pid xfce "$!"
+}
+
+start_xwayland() {
+    local parent_display="$1" n
+    export XDG_RUNTIME_DIR="$RUNTIME" WAYLAND_DISPLAY="$parent_display"
+    export XAUTHORITY="$STATE/Xauthority"
+    for n in $(seq 90 180); do
+        if [[ ! -e "$PREFIX/tmp/.X11-unix/X$n" && ! -e "$PREFIX/tmp/.X$n-lock" ]]; then
+            break
+        fi
+    done
+    [[ "$n" -le 180 ]] || { echo 'no unoccupied X DISPLAY' >&2; return 1; }
+    : > "$XAUTHORITY"
+    chmod 600 "$XAUTHORITY"
+    local cookie
+    cookie="$(od -An -N16 -tx1 /dev/urandom | tr -d ' \n')"
+    xauth -f "$XAUTHORITY" add ":$n" MIT-MAGIC-COOKIE-1 "$cookie" >/dev/null 2>&1
+    unset cookie
+    Xwayland ":$n" -auth "$XAUTHORITY" -nolisten tcp -terminate \
+        > "$LOGS/xwayland.log" 2>&1 &
+    record_pid xwayland "$!"
+    local i
+    for ((i=0; i<90; ++i)); do
+        if DISPLAY=":$n" xdpyinfo -display ":$n" >/dev/null 2>&1; then
+            printf ':%d\n' "$n" > "$STATE/display"
+            return 0
+        fi
+        if ! alive xwayland; then
+            tail -15 "$LOGS/xwayland.log" >&2
+            return 1
+        fi
+        sleep .2
+    done
+    echo 'Xwayland did not accept authenticated X11 connection' >&2
+    return 1
+}
+
+start_session() {
+    local profile="$1"
+    [[ "$profile" == xfce-labwc || "$profile" == xfce-shm-direct ]] || {
+        echo "Unsupported profile: $profile" >&2; return 2;
+    }
+    exec 8>"$STATE/start.lock"
+    flock -n 8 || { echo 'another Alroot startup is active' >&2; return 1; }
+    if alive xwayland || alive xfce || alive labwc; then
+        echo 'Existing Alroot session found; run status or stop first' >&2; return 1
+    fi
+    if ! wait_socket wayland-0; then
+        echo "BLOCKED: Android helper socket $RUNTIME/wayland-0 is not accepting connections" >&2
+        return 1
+    fi
+    echo "$profile" > "$STATE/profile"
+    local parent=wayland-0
+    if [[ "$profile" == xfce-labwc ]]; then
+        command -v labwc >/dev/null || { echo 'BLOCKED: no Termux labwc' >&2; return 1; }
+        mkdir -p "$STATE/labwc-config"
+        (
+            export HOME PREFIX PATH="$PREFIX/bin:$PREFIX/bin/applets"
+            export XDG_RUNTIME_DIR="$RUNTIME" WAYLAND_DISPLAY=wayland-0
+            export WLR_BACKENDS=wayland WLR_RENDERER=pixman WLR_NO_HARDWARE_CURSORS=1
+            export XDG_CONFIG_HOME="$STATE/xfce-config"
+            unset DISPLAY DBUS_SESSION_BUS_ADDRESS
+            exec labwc -C "$STATE/labwc-config"
+        ) > "$LOGS/labwc.log" 2>&1 &
+        record_pid labwc "$!"
+        parent=wayland-1
+        if ! wait_socket "$parent"; then
+            echo 'BLOCKED: Labwc Wayland backend did not start (nested socket missing)' >&2
+            tail -16 "$LOGS/labwc.log" >&2
+            return 1
+        fi
+    fi
+    start_xwayland "$parent"
+    xfce_start "$(cat "$STATE/display")"
+    sleep .6
+    if ! alive xfce; then
+        echo 'FAIL: XFCE exited immediately' >&2
+        tail -16 "$LOGS/xfce.log" >&2
+        return 1
+    fi
+    echo "Alroot $profile started on $(cat "$STATE/display")"
+}
+
+stop_one() {
+    local role="$1" pid=""
+    if alive "$role"; then
+        read -r pid _ < "$STATE/$role.pid"
+        kill -TERM "$pid" 2>/dev/null || true
+        echo "signalled Alroot $role pid $pid"
+    fi
+    rm -f "$STATE/$role.pid"
+}
+
+case "${1:-}" in
+    start)
+        [[ "${2:-}" == --profile && -n "${3:-}" ]] || { usage; exit 2; }
+        start_session "$3"
+        ;;
+    status)
+        echo "host: $RUNTIME/wayland-0 $(socket_ready "$RUNTIME/wayland-0" && echo READY || echo DOWN)"
+        for role in labwc xwayland xfce; do
+            if alive "$role"; then echo "$role: RUNNING $(cut -d' ' -f1 "$STATE/$role.pid")"
+            else echo "$role: DOWN"; fi
+        done
+        [[ ! -f "$STATE/profile" ]] || echo "profile: $(cat "$STATE/profile")"
+        [[ ! -f "$STATE/display" ]] || echo "X DISPLAY: $(cat "$STATE/display")"
+        ;;
+    stop)
+        stop_one xfce
+        stop_one xwayland
+        stop_one labwc
+        rm -f "$STATE/display"
+        ;;
+    open)
+        am start -n com.alroot.wayland/.MainActivity
+        ;;
+    logs)
+        for f in "$LOGS"/{labwc,xwayland,xfce}.log "$STATE/spawn.log"; do
+            if [[ -r "$f" ]]; then echo "--- $f"; tail -24 "$f"; fi
+        done
+        ;;
+    doctor)
+        echo "Termux uid: $(id -u)"
+        for tool in labwc Xwayland xfce4-session dbus-run-session xauth python3; do
+            if command -v "$tool" >/dev/null 2>&1; then echo "$tool: $(command -v "$tool")"
+            else echo "$tool: MISSING"; fi
+        done
+        if command -v labwc >/dev/null 2>&1; then
+            labwc -h 2>&1 | head -4 || true
+        fi
+        if [[ -d "$RUNTIME" ]]; then stat -c 'runtime permissions: %a' "$RUNTIME"; fi
+        ;;
+    *)
+        usage; exit 2 ;;
+esac

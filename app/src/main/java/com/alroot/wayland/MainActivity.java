@@ -1,0 +1,335 @@
+package com.alroot.wayland;
+
+import android.app.Activity;
+import android.app.AlertDialog;
+import android.content.ClipData;
+import android.content.ClipboardManager;
+import android.content.Context;
+import android.content.Intent;
+import android.content.pm.ActivityInfo;
+import android.graphics.Color;
+import android.os.Build;
+import android.os.Bundle;
+import android.os.Handler;
+import android.os.Looper;
+import android.view.Choreographer;
+import android.view.Gravity;
+import android.view.KeyEvent;
+import android.view.Surface;
+import android.view.SurfaceHolder;
+import android.view.View;
+import android.view.WindowInsets;
+import android.view.WindowManager;
+import android.view.inputmethod.InputMethodManager;
+import android.widget.Button;
+import android.widget.EditText;
+import android.widget.FrameLayout;
+import android.widget.LinearLayout;
+import android.widget.PopupMenu;
+import android.widget.TextView;
+import android.widget.Toast;
+import com.droiddeck.launcher.wayland.WaylandCompositor;
+import java.io.File;
+
+public final class MainActivity extends Activity implements SurfaceHolder.Callback {
+    private final Handler main = new Handler(Looper.getMainLooper());
+    private InputSurfaceView view;
+    private TextView status;
+    private Surface attached;
+    private static Surface activeSurface;
+    private boolean suppressEscape;
+    private boolean vsyncOn;
+    private String clipboardEcho;
+    private ClipboardManager clipboard;
+    private ClipboardManager.OnPrimaryClipChangedListener clipboardObserver;
+    private WaylandCompositor.ClipboardListener guestClipboardListener;
+
+    private final Choreographer.FrameCallback vsync = new Choreographer.FrameCallback() {
+        @Override public void doFrame(long frameTimeNanos) {
+            if (!vsyncOn) return;
+            if (HelperService.running)
+                WaylandCompositor.nativeVsync(frameTimeNanos);
+            Choreographer.getInstance().postFrameCallback(this);
+        }
+    };
+
+    @Override public void onCreate(Bundle state) {
+        super.onCreate(state);
+        view = new InputSurfaceView(this);
+        view.getHolder().addCallback(this);
+        FrameLayout root = new FrameLayout(this);
+        root.addView(view, new FrameLayout.LayoutParams(-1, -1));
+        LinearLayout overlay = new LinearLayout(this);
+        overlay.setOrientation(LinearLayout.VERTICAL);
+        overlay.setBackgroundColor(0xA8000000);
+        Button menu = new Button(this);
+        menu.setText("Alroot • ☰");
+        menu.setAllCaps(false);
+        menu.setOnClickListener(v -> showMenu(menu));
+        overlay.addView(menu);
+        status = new TextView(this);
+        status.setTextColor(Color.WHITE);
+        status.setTextSize(11);
+        status.setPadding(10, 0, 10, 6);
+        overlay.addView(status);
+        FrameLayout.LayoutParams params = new FrameLayout.LayoutParams(
+                -2, -2, Gravity.TOP | Gravity.START);
+        root.addView(overlay, params);
+        setContentView(root);
+
+        clipboard = (ClipboardManager) getSystemService(Context.CLIPBOARD_SERVICE);
+        clipboardObserver = () -> {
+            if (!hasWindowFocus() || clipboard == null || !clipboard.hasPrimaryClip()) return;
+            CharSequence text = clipboard.getPrimaryClip().getItemAt(0).coerceToText(this);
+            String s = text == null ? "" : text.toString();
+            if (s.equals(clipboardEcho)) { clipboardEcho = null; return; }
+            WaylandCompositor.setClipboardText(s);
+        };
+        clipboard.addPrimaryClipChangedListener(clipboardObserver);
+        guestClipboardListener = text -> runOnUiThread(() -> {
+            if (clipboard == null) return;
+            CharSequence old = clipboard.hasPrimaryClip()
+                    ? clipboard.getPrimaryClip().getItemAt(0).coerceToText(this) : "";
+            if (text.contentEquals(old)) return;
+            clipboardEcho = text;
+            clipboard.setPrimaryClip(ClipData.newPlainText("Linux", text));
+        });
+        WaylandCompositor.setClipboardListener(guestClipboardListener);
+
+        if (Build.VERSION.SDK_INT >= 33)
+            getOnBackInvokedDispatcher().registerOnBackInvokedCallback(
+                    android.window.OnBackInvokedDispatcher.PRIORITY_DEFAULT, this::toggleIme);
+
+        restoreWindowSettings();
+        startForegroundService(new Intent(this, HelperService.class));
+        updateStatus();
+        main.postDelayed(new Runnable() {
+            @Override public void run() {
+                if (isFinishing() || isDestroyed()) return;
+                attachIfReady();
+                updateStatus();
+                main.postDelayed(this, 1800);
+            }
+        }, 200);
+    }
+
+    private void updateStatus() {
+        if (status == null) return;
+        boolean socket = new File(HelperService.runtimeDir(), "wayland-0").exists();
+        status.setText(TermuxSession.uidAndSigning(this)
+                + "\nHost: " + (socket ? "SOCKET" : "STARTING")
+                + " | " + (view.isCaptured() ? "CAPTURED" : "FREE")
+                + (HelperService.error != null ? "\n" + HelperService.error : ""));
+    }
+
+    private void toast(String msg) {
+        Toast.makeText(this, msg, Toast.LENGTH_LONG).show();
+        android.util.Log.i("AlrootWayland", msg);
+    }
+
+    private void showMenu(View anchor) {
+        PopupMenu pop = new PopupMenu(this, anchor);
+        String[] items = {"Start XFCE (Labwc)", "Start XFCE (direct SHM, diagnostic)",
+                "Release / capture mouse", "Show / hide keyboard",
+                "Resolution", "Scale: fit / stretch / fill", "Orientation",
+                "Fullscreen", "Keep screen on", "Session status", "Open logs",
+                "Stop this session", "Stop Wayland server"};
+        for (int i = 0; i < items.length; i++) pop.getMenu().add(0, i, i, items[i]);
+        pop.setOnMenuItemClickListener(item -> {
+            switch (item.getItemId()) {
+                case 0: toast(TermuxSession.launch("start", "xfce-labwc")); break;
+                case 1: toast(TermuxSession.launch("start", "xfce-shm-direct")); break;
+                case 2: view.setCapture(!view.isCaptured()); break;
+                case 3: toggleIme(); break;
+                case 4: chooseResolution(); break;
+                case 5: chooseScale(); break;
+                case 6: rotateMode(); break;
+                case 7: toggleFullscreen(); break;
+                case 8: toggleScreenOn(); break;
+                case 9: toast(TermuxSession.launch("status", "")); break;
+                case 10: toast("Log: /data/data/com.termux/files/home/.alroot-wayland");
+                    break;
+                case 11: confirmStop(false); break;
+                case 12: confirmStop(true); break;
+                default: break;
+            }
+            updateStatus();
+            return true;
+        });
+        pop.show();
+    }
+
+    private void confirmStop(boolean server) {
+        new AlertDialog.Builder(this)
+                .setTitle(server ? "Stop Wayland host?" : "Stop this XFCE session?")
+                .setMessage("Only the Alroot Wayland project session is targeted; Termux-X11 remains untouched.")
+                .setNegativeButton("Cancel", null)
+                .setPositiveButton("Stop", (d, which) -> {
+                    toast(TermuxSession.launch("stop", ""));
+                    if (server) {
+                        view.setCapture(false);
+                        startService(new Intent(this, HelperService.class)
+                                .setAction(HelperService.ACTION_STOP));
+                    }
+                }).show();
+    }
+
+    private void chooseResolution() {
+        EditText input = new EditText(this);
+        int w = prefs().getInt("width", 1280), h = prefs().getInt("height", 720);
+        input.setSingleLine(true);
+        input.setText(w + "x" + h);
+        new AlertDialog.Builder(this).setTitle("Output resolution: width x height")
+                .setView(input).setNegativeButton("Cancel", null)
+                .setPositiveButton("Apply", (d, n) -> {
+                    try {
+                        String[] pair = input.getText().toString().trim().toLowerCase().split("x");
+                        int width = Integer.parseInt(pair[0]), height = Integer.parseInt(pair[1]);
+                        if (width < 320 || width > 3840 || height < 240 || height > 2160)
+                            throw new IllegalArgumentException("outside validated range");
+                        prefs().edit().putInt("width", width).putInt("height", height).apply();
+                        WaylandCompositor.nativeResizeOutput(width, height);
+                        applyScale();
+                    } catch (Exception e) { toast("Invalid dimensions (320..3840 x 240..2160)"); }
+                }).show();
+    }
+
+    private void chooseScale() {
+        String[] names = {"Fit (letterbox)", "Stretch", "Fill (crop)"};
+        int[] values = {1, 2, 3};
+        new AlertDialog.Builder(this).setTitle("Output scale").setItems(names, (d, index) -> {
+            prefs().edit().putInt("mode", values[index]).apply();
+            applyScale();
+        }).show();
+    }
+
+    private void applyScale() {
+        int mode = prefs().getInt("mode", 1);
+        WaylandCompositor.nativeSetScaleMode(mode, 0);
+        view.updateTransform(prefs().getInt("width", 1280), prefs().getInt("height", 720), mode);
+    }
+
+    private void rotateMode() {
+        int orientation = prefs().getInt("orientation", 0);
+        orientation = (orientation + 1) % 3;
+        prefs().edit().putInt("orientation", orientation).apply();
+        setRequestedOrientation(orientation == 1 ? ActivityInfo.SCREEN_ORIENTATION_LANDSCAPE
+                : orientation == 2 ? ActivityInfo.SCREEN_ORIENTATION_PORTRAIT
+                : ActivityInfo.SCREEN_ORIENTATION_UNSPECIFIED);
+    }
+
+    private void toggleFullscreen() {
+        prefs().edit().putBoolean("fullscreen", !prefs().getBoolean("fullscreen", false)).apply();
+        restoreWindowSettings();
+    }
+
+    private void toggleScreenOn() {
+        prefs().edit().putBoolean("keep_screen", !prefs().getBoolean("keep_screen", true)).apply();
+        restoreWindowSettings();
+    }
+
+    private android.content.SharedPreferences prefs() {
+        return getSharedPreferences("display", MODE_PRIVATE);
+    }
+
+    private void restoreWindowSettings() {
+        if (prefs().getBoolean("keep_screen", true))
+            getWindow().addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON);
+        else getWindow().clearFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON);
+        getWindow().getDecorView().setSystemUiVisibility(prefs().getBoolean("fullscreen", false)
+                ? View.SYSTEM_UI_FLAG_FULLSCREEN | View.SYSTEM_UI_FLAG_HIDE_NAVIGATION
+                    | View.SYSTEM_UI_FLAG_IMMERSIVE_STICKY : 0);
+        int o = prefs().getInt("orientation", 0);
+        setRequestedOrientation(o == 1 ? ActivityInfo.SCREEN_ORIENTATION_LANDSCAPE
+                : o == 2 ? ActivityInfo.SCREEN_ORIENTATION_PORTRAIT
+                : ActivityInfo.SCREEN_ORIENTATION_UNSPECIFIED);
+    }
+
+    private void toggleIme() {
+        InputMethodManager im = (InputMethodManager) getSystemService(INPUT_METHOD_SERVICE);
+        boolean visible = Build.VERSION.SDK_INT >= 30 && view.getRootWindowInsets() != null
+                && view.getRootWindowInsets().isVisible(WindowInsets.Type.ime());
+        if (visible) im.hideSoftInputFromWindow(view.getWindowToken(), 0);
+        else {
+            view.requestFocus();
+            view.post(() -> im.showSoftInput(view, InputMethodManager.SHOW_IMPLICIT));
+        }
+    }
+
+    @Override public void onBackPressed() { toggleIme(); }
+
+    @Override public boolean dispatchKeyEvent(KeyEvent event) {
+        if (event.getKeyCode() == KeyEvent.KEYCODE_ESCAPE) {
+            if (event.getAction() == KeyEvent.ACTION_DOWN && event.isCtrlPressed() && event.isAltPressed()) {
+                suppressEscape = true;
+                view.releaseAllKeys();
+                view.setCapture(false);
+                updateStatus();
+                return true;
+            }
+            if (suppressEscape) {
+                if (event.getAction() == KeyEvent.ACTION_UP) suppressEscape = false;
+                return true;
+            }
+        }
+        if (event.getKeyCode() == KeyEvent.KEYCODE_BACK) return super.dispatchKeyEvent(event);
+        return view.dispatchKeyEvent(event) || super.dispatchKeyEvent(event);
+    }
+
+    @Override public void surfaceCreated(SurfaceHolder holder) {
+        attached = holder.getSurface();
+        attachIfReady();
+    }
+
+    @Override public void surfaceChanged(SurfaceHolder holder, int format, int w, int h) {
+        attached = holder.getSurface();
+        attachIfReady();
+        applyScale();
+    }
+
+    private void attachIfReady() {
+        if (attached == null || !attached.isValid() || !HelperService.running) return;
+        if (activeSurface != attached) {
+            WaylandCompositor.nativeSetSurface(attached);
+            activeSurface = attached;
+        }
+        applyScale();
+        if (!vsyncOn) {
+            vsyncOn = true;
+            Choreographer.getInstance().postFrameCallback(vsync);
+        }
+    }
+
+    @Override public void surfaceDestroyed(SurfaceHolder holder) {
+        detach();
+        attached = null;
+    }
+
+    private void detach() {
+        vsyncOn = false;
+        Choreographer.getInstance().removeFrameCallback(vsync);
+        if (activeSurface == attached && HelperService.running) {
+            WaylandCompositor.nativeSetSurface(null);
+            activeSurface = null;
+        }
+        view.releaseAllKeys();
+        view.releasePointerCapture();
+    }
+
+    @Override public void onWindowFocusChanged(boolean hasFocus) {
+        super.onWindowFocusChanged(hasFocus);
+        if (!hasFocus && view != null) {
+            view.releaseAllKeys();
+            view.releasePointerCapture();
+        }
+        updateStatus();
+    }
+
+    @Override protected void onDestroy() {
+        detach();
+        if (clipboard != null && clipboardObserver != null)
+            clipboard.removePrimaryClipChangedListener(clipboardObserver);
+        WaylandCompositor.clearClipboardListener(guestClipboardListener);
+        super.onDestroy();
+    }
+}

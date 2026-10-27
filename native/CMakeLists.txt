@@ -1,0 +1,7 @@
+cmake_minimum_required(VERSION 3.22.1)
+project(alroot_wayland C CXX)
+set(CMAKE_C_STANDARD 11)
+set(CMAKE_C_FLAGS "-O2 -Wno-unused-function")
+set(CMAKE_SHARED_LINKER_FLAGS "-Wl,-z,max-page-size=16384")
+add_subdirectory(adrenotools)
+add_subdirectory(waylandcomp)

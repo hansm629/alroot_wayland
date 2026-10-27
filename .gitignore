@@ -1,0 +1,15 @@
+.source/
+artifacts/
+.gradle/
+.idea/
+**/build/
+.cxx/
+local.properties
+*.jks
+*.keystore
+*.apk
+*.aab
+termux/.runtime/
+*.log
+*.pid
+*.sock

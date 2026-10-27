@@ -1,0 +1,26 @@
+<?xml version="1.0" encoding="utf-8"?>
+<manifest xmlns:android="http://schemas.android.com/apk/res/android"
+    android:sharedUserId="com.termux">
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_SPECIAL_USE" />
+    <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
+    <uses-permission android:name="android.permission.WAKE_LOCK" />
+    <queries><package android:name="com.termux" /></queries>
+    <application android:label="Alroot Wayland" android:theme="@android:style/Theme.Material.Light.NoActionBar"
+        android:usesCleartextTraffic="false" android:extractNativeLibs="true"
+        android:enableOnBackInvokedCallback="true" android:allowBackup="false">
+        <activity android:name=".MainActivity" android:exported="true"
+            android:configChanges="orientation|screenSize|smallestScreenSize|density|keyboard|keyboardHidden|uiMode"
+            android:launchMode="singleTop">
+            <intent-filter>
+                <action android:name="android.intent.action.MAIN" />
+                <category android:name="android.intent.category.LAUNCHER" />
+            </intent-filter>
+        </activity>
+        <service android:name=".HelperService" android:exported="false"
+            android:foregroundServiceType="specialUse">
+            <property android:name="android.app.PROPERTY_SPECIAL_USE_FGS_SUBTYPE"
+                android:value="active_local_wayland_display_session" />
+        </service>
+    </application>
+</manifest>
