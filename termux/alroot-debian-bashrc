@@ -8,3 +8,7 @@ if [ -r /data/data/com.termux/files/home/.alroot-wayland/display ]; then
 fi
 export XAUTHORITY=/data/data/com.termux/files/home/.alroot-wayland/Xauthority
 unset WAYLAND_DISPLAY
+fastfetch() {
+    command /usr/bin/fastfetch --config \
+        /data/data/com.termux/files/home/.alroot-wayland/fastfetch/config.jsonc "$@"
+}

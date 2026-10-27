@@ -26,11 +26,13 @@
 
 #define MAX_TEXT 16384
 #define QUEUE_BYTES 131072
+#define KEY_POOL_CAP 32
 static volatile sig_atomic_t running = 1;
 static Display *display;
-static int mapping_code;
+static int key_codes[KEY_POOL_CAP], key_count;
+static KeySym key_symbols[KEY_POOL_CAP];
+static uint64_t key_recency[KEY_POOL_CAP], key_clock;
 static int map_width;
-static KeySym *original_map;
 static Window focus_at_composition = None;
 static int server = -1, client = -1;
 static unsigned char incoming[QUEUE_BYTES];
@@ -62,17 +64,20 @@ static bool find_unused_keycode(void) {
         for (int i=0;i<width;i++) {
             if (all[(k-min_code)*width+i]!=NoSymbol) mapped=true;
         }
-        if (!mapped) { mapping_code=k; break; }
+        if (!mapped && key_count < KEY_POOL_CAP) key_codes[key_count++]=k;
     }
-    if (!mapping_code) { XFree(all); return false; }
+    if (!key_count) { XFree(all); return false; }
     map_width=width;
-    original_map=calloc((size_t)width,sizeof(KeySym));
     XFree(all);
-    return original_map != NULL;
+    return true;
 }
 static void restore_keymap(void) {
-    if (display && mapping_code && original_map) {
-        XChangeKeyboardMapping(display,mapping_code,map_width,original_map,1);
+    if (display && key_count) {
+        KeySym empty[32]={0};
+        for (int i=0;i<key_count;i++) {
+            if (key_symbols[i]!=NoSymbol)
+                XChangeKeyboardMapping(display,key_codes[i],map_width,empty,1);
+        }
         XSync(display,False);
     }
 }
@@ -88,13 +93,37 @@ static bool unicode_scalar(uint32_t cp) {
     if (cp < 0x20 || cp == 0x7f || cp > 0x10ffff ||
         (cp>=0xd800 && cp<=0xdfff)) return false;
     KeySym sym=cp>=0x100 ? (KeySym)(0x01000000u|cp) : (KeySym)cp;
-    KeySym map[32]={0};
-    map[0]=sym;
-    /* XChangeKeyboardMapping returns a non-boolean status (normally zero),
-       not true on success. Errors are raised asynchronously by the server. */
-    XChangeKeyboardMapping(display,mapping_code,map_width,map,1);
-    XTestFakeKeyEvent(display,(unsigned)mapping_code,True,CurrentTime);
-    XTestFakeKeyEvent(display,(unsigned)mapping_code,False,CurrentTime);
+    // GTK interprets XTEST keypresses asynchronously. If a single spare
+    // keycode is remapped on every Korean syllable, the client can decode
+    // earlier events using the LAST syllable's map ("가나다" -> "가다다").
+    // Cache one keysym per spare keycode and do not recycle a code while
+    // other unused codes are available.
+    int slot=-1, empty=-1, oldest=0;
+    for (int i=0;i<key_count;i++) {
+        if (key_symbols[i]==sym) { slot=i; break; }
+        if (key_symbols[i]==NoSymbol && empty<0) empty=i;
+        if (key_recency[i]<key_recency[oldest]) oldest=i;
+    }
+    if (slot<0) {
+        slot=empty>=0 ? empty : oldest;
+        if (empty<0) {
+            // The cache is full. First flush the prior key events to the
+            // X server, then give the client a short bounded dispatch time
+            // before recycling a keycode. Real keyboard events are paced
+            // much more slowly than this synthetic stress-path fallback.
+            XSync(display,False);
+            usleep(1500);
+        }
+        KeySym map[32]={0};
+        map[0]=sym;
+        XChangeKeyboardMapping(display,key_codes[slot],map_width,map,1);
+        XSync(display,False);
+        key_symbols[slot]=sym;
+    }
+    key_recency[slot]=++key_clock;
+    XTestFakeKeyEvent(display,(unsigned)key_codes[slot],True,CurrentTime);
+    XTestFakeKeyEvent(display,(unsigned)key_codes[slot],False,CurrentTime);
+    XSync(display,False);
     return true;
 }
 static bool send_utf8(const char *s, size_t size) {
@@ -228,7 +257,7 @@ int main(int argc,char **argv) {
     signal(SIGTERM,shutdown_flag);
     display=XOpenDisplay(NULL);
     if(!display || !find_unused_keycode()) {
-        fprintf(stderr,"IME-SERVER no spare X11 keycode, refusing clipboard fallback\n");
+        fprintf(stderr,"IME-SERVER no spare X11 keycodes, refusing clipboard fallback\n");
         return 3;
     }
     server=socket(AF_UNIX,SOCK_STREAM|SOCK_CLOEXEC|SOCK_NONBLOCK,0);
@@ -241,7 +270,7 @@ int main(int argc,char **argv) {
     if(bind(server,(struct sockaddr*)&addr,sizeof(addr))<0 ||
         chmod(socket_path,0600)!=0 || listen(server,2)<0)
         return 3;
-    fprintf(stderr,"IME-SERVER XTEST Unicode ready spare-key=%d clipboard=UNTOUCHED\n",mapping_code);
+    fprintf(stderr,"IME-SERVER XTEST Unicode ready spare-keycodes=%d clipboard=UNTOUCHED\n",key_count);
     while(running) {
         struct pollfd fds[2]={
             {.fd=server,.events=POLLIN},
@@ -260,7 +289,6 @@ int main(int argc,char **argv) {
     if(server>=0)close(server);
     unlink(socket_path);
     restore_keymap();
-    free(original_map);
     XCloseDisplay(display);
     fprintf(stderr,"IME-SERVER stopped events=%llu failures=%llu\n",
             (unsigned long long)count_ok,(unsigned long long)count_err);

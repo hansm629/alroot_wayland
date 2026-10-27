@@ -401,3 +401,48 @@ standalone APK is possible, but requires bundling the runtime/rootfs
 and replacing the Termux app-data paths and shared-UID relationship.
 Do not remove sharedUserId or change signing until that independent
 product architecture is implemented.
+
+## P06: two-finger pointer, Hangul, neutral Display label and battery
+
+Touchpad: once a second finger lands, single-pointer relative motion
+remains disabled until all fingers lift and a fresh DOWN arrives.
+POINTER_UP no longer switches the primary pointer onto the surviving
+finger with stale touchStartX/Y. Two-finger scroll starts only outside
+Android touchSlop and accumulates fractional motion. Real touch gestures
+still need a physical S26U UI test.
+
+Hangul: the P05 XTEST bridge reused one blank X11 keycode for every new
+Unicode syllable. A rapid 가나다... burst previously produced the first
+syllable followed by copies of its last syllable because GTK decoded
+pending events with the newest key mapping. P06 caches Unicode symbols
+over a pool of unused Xwayland keycodes and reuses each mapping where
+possible. Rapid sequences of 10 and 24 DISTINCT syllables now matched
+exactly in isolated headless GTK, and P04 terminal tests still passed.
+This changes only project-owned Xwayland keymaps, never Termux-X11 :0.
+
+Display: Xwayland initially put the custom CVT timing under disconnected
+WL-1. The old refresh synchronizer searched all outputs and mistook it
+for an attached XWAYLAND0 mode. P06 filters connected-output modes and
+waits for a running XFCE window manager and panel before syncing.
+S26U then selected a 1920x1080_120Hz XRandR mode at 119.88Hz while
+the Android host wl_output was at 120000mHz. Real per-application
+presented FPS remains a separate measurement.
+
+Fastfetch: the Alroot-only Debian config preserves the user's module
+ordering but displays resolution and measured XRandR rate under the
+generic label Display, without XWAYLAND0 or Alroot branding. The native
+Wayland output now identifies generically as Android/Built-in display.
+The original Termux-X11 :0 Debian launcher and user fastfetch configs
+are unchanged. From native Termux use aw-debian fastfetch; in the Alroot
+XFCE shell use its project-specific debian command.
+
+Battery: use the original XFCE panel configuration, including plugin-7
+of type battery at the original index, instead of the tiny custom tray
+icon or GenMon plugin. Alroot and native Termux-X11 both loaded the
+same libbattery.so wrapper. Actual percentage visibility is a physical
+device UI acceptance item.
+
+Project-only regression tests:
+
+    bash ~/alroot_wayland/tests/p06-ime-distinct.sh
+    bash ~/alroot_wayland/tests/p06-smoke.sh

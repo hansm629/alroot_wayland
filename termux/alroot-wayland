@@ -148,6 +148,9 @@ xfce_start() {
         > "$LOGS/profile.log" 2>&1
     "$PREFIX/bin/bash" "$HOME/alroot_wayland/tools/install-alroot-proot-shims.sh" \
         >> "$LOGS/profile.log" 2>&1
+    "$PREFIX/bin/python3" "$HOME/alroot_wayland/termux/configure-fastfetch.py" \
+        >> "$LOGS/profile.log" 2>&1 ||
+        echo 'WARNING: project fastfetch format override could not be prepared' >&2
     (
         # Only this Alroot XFCE session gets private mpd/mprun/pdrun wrappers.
         export HOME PREFIX PATH="$STATE/bin:$PREFIX/bin:$PREFIX/bin/applets"
@@ -312,14 +315,6 @@ start_session() {
         fi
     fi
     start_xwayland "$parent"
-    if [[ -r "$HOME/alroot_wayland/termux/alroot-refresh-sync.py" ]]; then
-        # Match the *real Android host* wl_output refresh, not a hardcoded
-        # 120Hz label. The physical mode and actual VSync remain Android's
-        # responsibility; XrandR merely keeps this rootful X11 client in sync.
-        "$PREFIX/bin/python3" "$HOME/alroot_wayland/termux/alroot-refresh-sync.py" \
-            > "$LOGS/refresh.log" 2>&1 ||
-            echo 'WARNING: XRandR refresh sync failed; see refresh.log' >&2
-    fi
     ime_start "$(cat "$STATE/display")"
     xfce_start "$(cat "$STATE/display")"
     clipboard_start "$(cat "$STATE/display")"
@@ -328,6 +323,20 @@ start_session() {
         echo 'FAIL: XFCE exited immediately' >&2
         tail -16 "$LOGS/xfce.log" >&2
         return 1
+    fi
+    if [[ -r "$HOME/alroot_wayland/termux/alroot-refresh-sync.py" ]]; then
+        # Xwayland answers xdpyinfo before its RandR output lifecycle has
+        # settled. The old early --newmode could show up on disconnected
+        # WL-1 only and --addmode then failed. Wait until the isolated X11
+        # desktop has a real WM/panel before attaching its physical-rate mode.
+        local attempt
+        for ((attempt=0; attempt<35; ++attempt)); do
+            x11_desktop_ready && break
+            sleep .2
+        done
+        "$PREFIX/bin/python3" "$HOME/alroot_wayland/termux/alroot-refresh-sync.py" \
+            > "$LOGS/refresh.log" 2>&1 ||
+            echo 'WARNING: XRandR refresh sync failed; see refresh.log' >&2
     fi
     echo "Alroot $profile started on $(cat "$STATE/display")"
     trap - EXIT

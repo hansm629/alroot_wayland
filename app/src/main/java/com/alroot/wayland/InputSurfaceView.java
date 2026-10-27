@@ -34,6 +34,8 @@ public final class InputSurfaceView extends SurfaceView {
     private boolean touchpadCursorActive;
     private long touchStarted;
     private float touchStartX, touchStartY, prevX, prevY, prevCentroidY;
+    private float scrollResidualY;
+    private boolean twoFingerScrollStarted;
     private boolean pressed, dragStarted, touchMoved, multipleTouch, scrolled, overlayGesture;
     private Runnable overlayToggle;
     private final Runnable longPress = () -> {
@@ -102,6 +104,8 @@ public final class InputSurfaceView extends SurfaceView {
         if (inputMode == MODE_DIRECT_TOUCH)
             WaylandCompositor.nativeSendTouch(3, -1, 0, 0);
         pressed = dragStarted = touchMoved = multipleTouch = scrolled = overlayGesture = false;
+        twoFingerScrollStarted = false;
+        scrollResidualY = 0f;
         primaryPointer = -1;
     }
     public void cancelPointerGesture() { cancelGesture(); }
@@ -396,29 +400,49 @@ public final class InputSurfaceView extends SurfaceView {
             prevX = touchStartX = event.getX(0);
             prevY = touchStartY = event.getY(0);
             touchMoved = multipleTouch = scrolled = dragStarted = false;
+            twoFingerScrollStarted = false;
+            scrollResidualY = 0f;
             gestures.postDelayed(longPress, 420);
         } else if (a == MotionEvent.ACTION_POINTER_DOWN) {
             gestures.removeCallbacks(longPress);
             multipleTouch = true;
+            // A gesture involving multiple fingers is exclusively scroll or
+            // right-click. Do not resume single-finger relative movement
+            // until the NEXT fresh ACTION_DOWN after all fingers lift.
+            // Otherwise the surviving finger is compared to the original
+            // pointer's touchStartX/Y and causes large diagonal jumps.
+            primaryPointer = -1;
             if (pressed) { sendButton(272, false); pressed = false; }
-            if (event.getPointerCount() == 2)
+            if (event.getPointerCount() == 2) {
                 prevCentroidY = (event.getY(0) + event.getY(1)) * .5f;
-        } else if (a == MotionEvent.ACTION_POINTER_UP) {
-            if (event.getPointerId(index) == primaryPointer && event.getPointerCount() > 1) {
-                int other = index == 0 ? 1 : 0;
-                primaryPointer = event.getPointerId(other);
-                prevX = event.getX(other);
-                prevY = event.getY(other);
+                twoFingerScrollStarted = false;
+                scrollResidualY = 0f;
             }
+        } else if (a == MotionEvent.ACTION_POINTER_UP) {
+            // Never reassign primaryPointer to the remaining finger.
+            primaryPointer = -1;
             multipleTouch = true;
         } else if (a == MotionEvent.ACTION_MOVE) {
             if (event.getPointerCount() >= 2) {
                 float cy = (event.getY(0) + event.getY(1)) * .5f;
                 float delta = cy - prevCentroidY;
-                int units = Math.round(delta / (32f * getResources().getDisplayMetrics().density) * 120f);
-                if (units != 0) {
+                scrollResidualY += delta;
+                if (!twoFingerScrollStarted &&
+                        Math.abs(scrollResidualY) >= touchSlop) {
+                    twoFingerScrollStarted = true;
                     scrolled = true;
-                    WaylandCompositor.nativeSendSceneInput(11, units, 0);
+                    // Ignore the initial dead zone rather than sending a
+                    // burst as the second finger settles onto the display.
+                    scrollResidualY -= Math.signum(scrollResidualY) * touchSlop;
+                }
+                if (twoFingerScrollStarted) {
+                    float pixelsPerStep =
+                            32f * getResources().getDisplayMetrics().density;
+                    int units = (int)(scrollResidualY * 120f / pixelsPerStep);
+                    if (units != 0) {
+                        WaylandCompositor.nativeSendSceneInput(11, units, 0);
+                        scrollResidualY -= units * pixelsPerStep / 120f;
+                    }
                 }
                 prevCentroidY = cy;
             } else if (primaryPointer >= 0) {

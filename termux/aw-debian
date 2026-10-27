@@ -17,6 +17,11 @@ IFS= read -r display < "$STATE/display"
     exit 1
 }
 if (($#)); then
+    if [[ "$1" == fastfetch || "$1" == /usr/bin/fastfetch ]]; then
+        shift
+        exec "$PREFIX/bin/aw-pdrun" /usr/bin/fastfetch --config \
+            /data/data/com.termux/files/home/.alroot-wayland/fastfetch/config.jsonc "$@"
+    fi
     exec "$PREFIX/bin/aw-pdrun" "$@"
 fi
 # The private rc sources Debian's existing settings then restores the

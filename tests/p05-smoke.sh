@@ -17,10 +17,11 @@ profile = root / 'xfce-config'
 panel = profile / 'xfce4/xfconf/xfce-perchannel-xml/xfce4-panel.xml'
 items = ET.parse(panel).getroot()
 assert items.find("./property[@name='plugins']") is not None
-for entry, script in [('alroot-battery-tray.desktop','alroot-battery-tray.sh'),
-                      ('xfce4-notes-autostart.desktop','alroot-notes.sh')]:
-    text = (profile / 'autostart' / entry).read_text()
-    assert script in text, entry
+text = (profile / 'autostart/xfce4-notes-autostart.desktop').read_text()
+assert 'alroot-notes.sh' in text
+assert not (profile / 'autostart/alroot-battery-tray.desktop').exists()
+source = Path('/data/data/com.termux/files/home/.config/xfce4/xfconf/xfce-perchannel-xml/xfce4-panel.xml')
+assert source.read_bytes() == panel.read_bytes(), 'original XFCE panel order changed'
 assert (root / 'notes-data/notes').is_dir()
 
 # The Java/JNI/native output names must use Alroot. Upstream attribution
@@ -32,7 +33,7 @@ for path in paths:
     assert 'droiddeck' not in path.read_text(errors='replace').lower(), path
 assert 'DroidDeck' in Path('LICENSING.md').read_text()
 assert 'add_library(alrootwayland' in Path('native/waylandcomp/CMakeLists.txt').read_text()
-print('PASS: battery/notes private autostart + Alroot runtime rebranding')
+print('PASS: original XFCE battery plugin/position and private Notes/rebranding')
 PY
 test "$(readlink -f /data/data/com.termux/files/usr/bin/debian)" = \
     /data/data/com.termux/files/usr/bin/debian

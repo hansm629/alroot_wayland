@@ -190,6 +190,14 @@ if __name__ == "__main__":
     assert CONFIG.is_dir(), "No isolated config tree"
     print("Alroot XFCE: " + mirror_xfce())
     print("Alroot XFCE Plank: " + install_plank())
-    print("Alroot XFCE battery GenMon: " + install_battery())
-    print("Alroot XFCE battery tray: " + install_battery_tray())
+    # The original Termux-X11 panel puts the native 'battery' plugin at
+    # plugin-7 between separators 5 and 4. It does NOT use the UPower-backed
+    # xfce4-power-manager indicator. The custom GenMon 107 and the XEmbed
+    # 45px tray icon changed ordering/font size and looked miniature.
+    # Mirror the source XML unchanged and let the same native battery plugin
+    # run in the isolated Xfce panel at its original position.
+    stale = CONFIG / "autostart/alroot-battery-tray.desktop"
+    if stale.is_file() and "alroot-battery-tray.sh" in stale.read_text():
+        stale.unlink()
+    print("Alroot XFCE battery: native plugin-7, original position/size/settings")
     print("Alroot XFCE sticky notes: " + install_notes())

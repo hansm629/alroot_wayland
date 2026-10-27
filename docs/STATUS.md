@@ -154,6 +154,30 @@ Do not promote code existence or build success into screen/input PASS.
   android:sharedUserId=com.termux and relies on matching Termux signing
   key, UID and executable HOME. A true independent APK needs app-private
   runtime packaging and environment redesign.
+
+## P06 (2026-10-28): pre-release verification
+
+- Touchpad: root cause of two-finger release jump was assigning the
+  surviving pointer ID while keeping the departed pointer touchStartX/Y.
+  After POINTER_DOWN, multi-touch keeps primaryPointer=-1 until a new
+  gesture DOWN. Scroll has a touchSlop activation and fractional
+  accumulation. Physical touch validation remains pending.
+- Hangul: ten unique fast syllables were reproduced as the first syllable
+  plus nine copies of the last; XSync alone did not resolve this.
+  Using an X11 spare-keycode pool, 10 and 24 unique rapid Hangul glyphs
+  passed the same isolated GTK test. P04 terminal/clipboard checks pass.
+  Real Android Samsung IME testing remains pending updated APK.
+- Refresh: physical Android parent 120000mHz; rootful Xwayland previously
+  failed because custom 120Hz mode was created on disconnected WL-1.
+  Connected-output filtering and delayed synchronization now resulted
+  in selected XWAYLAND0 1920x1080_120Hz at 119.88Hz.
+- Debian fastfetch: project-only config now gives a neutral Display
+  label with actual rate, shown on S26U as 1920x1080 @ 120 Hz.
+  Native Wayland metadata is generic Android Built-in display.
+  The original Termux-X11 and user Debian settings remain intact.
+- Battery: restored original XFCE panel XML byte-for-byte, including
+  battery plugin-7 and its exact position; both project :90 and native
+  :0 loaded libbattery.so plugin 7. Visual percentage needs user test.
 - P04 refresh stability: Choreographer measured timestamp jitter briefly
   caused the older code to advertise 122Hz despite the physical mode
   remaining 120Hz. This release retains the actual Android active physical

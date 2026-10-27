@@ -10,6 +10,7 @@ import re
 import shlex
 import subprocess
 import sys
+import time
 from pathlib import Path
 
 HOME = Path("/data/data/com.termux/files/home")
@@ -22,6 +23,26 @@ PROBE = PROJECT / "packages/bin/wayland-refresh-probe"
 def run(args, **kwargs):
     return subprocess.run(args, check=True, capture_output=True, text=True,
                           timeout=6, **kwargs).stdout
+
+
+def connected_mode_listing(result, connected):
+    """Only modes of the actual connected screen, not Xwayland's WL-1.
+
+    A newly created custom mode first appears under disconnected WL-1.
+    The old global regex treated it as already attached to XWAYLAND0,
+    causing XRandR output mode selection to fail.
+    """
+    found = False
+    selected = []
+    for line in result.splitlines():
+        if line.startswith(connected + " connected"):
+            found = True
+            continue
+        if found and not line.startswith((" ", "\t")):
+            break
+        if found:
+            selected.append(line)
+    return "\n".join(selected)
 
 
 def main():
@@ -68,8 +89,11 @@ def main():
         # RRAddOutputMode (BadMatch), leaving the mode stuck at 59.96Hz.
         # At 120Hz CVT-RB is 119.88Hz; the actual frame pacing is still
         # provided by the Android host's physical VSync, not the modeline.
-        name = "Alroot-%dx%d-%dHz" % (w, h, round(hz))
-        if re.search(r"^\s*" + re.escape(name) + r"\s+[\d.]+\*", before, re.M):
+        # Neutral RandR mode name; product/vendor branding is unrelated to
+        # the measured display hardware, and need not enter fastfetch output.
+        name = "%dx%d_%dHz" % (w, h, round(hz))
+        if re.search(r"^\s*" + re.escape(name) + r"\s+[\d.]+\*",
+                     connected_mode_listing(before, output), re.M):
             print("Alroot XRandR already synchronized: %.3fHz" % hz)
             return 0
 
@@ -90,15 +114,31 @@ def main():
 
         if name not in before:
             run([str(PREFIX / "bin/xrandr"), "--newmode", *model], env=env)
-        # Adding an already-attached mode is harmless but emits BadMatch;
-        # only add if the listed output does not already include it.
-        if not re.search(r"^\s*" + re.escape(name) + r"\s", before, re.M):
-            run([str(PREFIX / "bin/xrandr"), "--addmode", output, name], env=env)
+        # Xwayland can defer publishing the newly created RandR mode until
+        # the next server dispatch iteration. Immediate --addmode previously
+        # failed with "cannot find mode" despite a successful --newmode.
+        # Retry only against this isolated DISPLAY and record the last error.
+        last_error = ""
+        for attempt in range(12):
+            state = run([str(PREFIX / "bin/xrandr"), "--query"], env=env)
+            if re.search(r"^\s*" + re.escape(name) + r"\s",
+                         connected_mode_listing(state, output), re.M):
+                break
+            result = subprocess.run([str(PREFIX / "bin/xrandr"), "--addmode",
+                                     output, name], env=env,
+                                    capture_output=True, text=True, timeout=4)
+            if result.returncode == 0:
+                break
+            last_error = result.stderr.strip()
+            time.sleep(.09)
+        else:
+            raise RuntimeError("XRandR refused isolated mode: " + last_error)
         run([str(PREFIX / "bin/xrandr"), "--output", output,
              "--mode", name], env=env)
         after = run([str(PREFIX / "bin/xrandr"), "--query"], env=env)
         selected = re.search(r"^\s*" + re.escape(name) +
-                             r"\s+([\d.]+)\*", after, re.M)
+                             r"\s+([\d.]+)\*",
+                             connected_mode_listing(after, output), re.M)
         if not selected or abs(float(selected.group(1)) - hz) >= 0.5:
             raise RuntimeError("XRandR selected mode did not match parent actual refresh")
         print("PASS: rootful Xwayland %dx%d at %.3fHz" % (w, h, hz))
