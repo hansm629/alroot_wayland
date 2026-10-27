@@ -56,6 +56,7 @@ alive() {
         xwayland) [[ "$cmd" == *"/Xwayland"* || "$cmd" == "Xwayland "* ]] ;;
         xfce) [[ "$cmd" == *"dbus-run-session"* || "$cmd" == *"/xfce4-session"* ]] ;;
         clipboard) [[ "$cmd" == *"/clipboard-broker.sh"* ]] ;;
+        ime) [[ "$cmd" == *"/alroot-ime-server"* ]] ;;
         *) return 1 ;;
     esac
 }
@@ -180,6 +181,21 @@ clipboard_start() {
     record_pid clipboard "$!"
 }
 
+ime_start() {
+    local display="$1" binary="$HOME/alroot_wayland/packages/bin/alroot-ime-server"
+    if ! "$PREFIX/bin/bash" "$HOME/alroot_wayland/termux/build-ime-server.sh" \
+            > "$LOGS/ime-build.log" 2>&1; then
+        echo 'WARNING: IME native build failed; legacy queue fallback is available' >&2
+        return 0
+    fi
+    (
+        export DISPLAY="$display" XAUTHORITY="$STATE/Xauthority" \
+               HOME PREFIX PATH="$PREFIX/bin:$PREFIX/bin/applets"
+        exec "$binary" "$STATE/ipc/ime.sock"
+    ) > "$LOGS/ime-server.log" 2>&1 &
+    record_pid ime "$!"
+}
+
 start_xwayland() {
     local parent_display="$1" n
     export XDG_RUNTIME_DIR="$RUNTIME" WAYLAND_DISPLAY="$parent_display"
@@ -245,7 +261,7 @@ start_session() {
     }
     exec 8>"$STATE/start.lock"
     flock -n 8 || { echo 'another Alroot startup is active' >&2; return 1; }
-    if alive xwayland || alive xfce || alive labwc || alive clipboard; then
+    if alive xwayland || alive xfce || alive labwc || alive clipboard || alive ime; then
         echo 'Existing Alroot session found; run status or stop first' >&2; return 1
     fi
     # Refuse to attach to an unexpected nested socket from a previous session.
@@ -259,7 +275,7 @@ start_session() {
     done
     # Failed intermediate stages must not leave project-owned processes alive.
     rm -f "$STATE/ime-active"
-    trap 'rc=$?; if ((rc != 0)); then stop_one clipboard; stop_one xfce; stop_one xwayland; stop_one labwc; fi' EXIT
+    trap 'rc=$?; if ((rc != 0)); then stop_one ime; stop_one clipboard; stop_one xfce; stop_one xwayland; stop_one labwc; fi' EXIT
     if ! wait_socket wayland-0; then
         echo "BLOCKED: Android helper socket $RUNTIME/wayland-0 is not accepting connections" >&2
         return 1
@@ -296,6 +312,15 @@ start_session() {
         fi
     fi
     start_xwayland "$parent"
+    if [[ -r "$HOME/alroot_wayland/termux/alroot-refresh-sync.py" ]]; then
+        # Match the *real Android host* wl_output refresh, not a hardcoded
+        # 120Hz label. The physical mode and actual VSync remain Android's
+        # responsibility; XrandR merely keeps this rootful X11 client in sync.
+        "$PREFIX/bin/python3" "$HOME/alroot_wayland/termux/alroot-refresh-sync.py" \
+            > "$LOGS/refresh.log" 2>&1 ||
+            echo 'WARNING: XRandR refresh sync failed; see refresh.log' >&2
+    fi
+    ime_start "$(cat "$STATE/display")"
     xfce_start "$(cat "$STATE/display")"
     clipboard_start "$(cat "$STATE/display")"
     sleep .6
@@ -329,7 +354,7 @@ case "${1:-}" in
         ;;
     status)
         echo "host: $RUNTIME/wayland-0 $(socket_ready "$RUNTIME/wayland-0" && echo READY || echo DOWN)"
-        for role in labwc xwayland xfce clipboard; do
+        for role in labwc xwayland xfce clipboard ime; do
             if alive "$role"; then echo "$role: RUNNING $(cut -d' ' -f1 "$STATE/$role.pid")"
             else echo "$role: DOWN"; fi
         done
@@ -343,6 +368,7 @@ case "${1:-}" in
         ;;
     stop)
         rm -f "$STATE/ime-active"
+        stop_one ime
         stop_one clipboard
         stop_one xfce
         stop_one xwayland
@@ -354,7 +380,7 @@ case "${1:-}" in
         am start -n com.alroot.wayland/.MainActivity
         ;;
     logs)
-        for f in "$LOGS"/{labwc,xwayland,xfce,clipboard}.log "$STATE/spawn.log"; do
+        for f in "$LOGS"/{labwc,xwayland,xfce,clipboard,ime-server,ime-build,refresh}.log "$STATE/spawn.log"; do
             if [[ -r "$f" ]]; then echo "--- $f"; tail -24 "$f"; fi
         done
         ;;

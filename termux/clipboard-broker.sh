@@ -94,6 +94,13 @@ while :; do
         esac
         rm -f "$request"
     done
+    # The persistent native IME server temporarily owns the X11 clipboard
+    # while delivering Unicode text. Never echo a transient syllable into
+    # the Android clipboard or overwrite the IME server's selection.
+    if [[ -e "$IPC/ime.sock.active" ]]; then
+        sleep .02
+        continue
+    fi
     if [[ -f "$ANDROID" ]]; then
         if [[ ! -f "$LAST" ]] || ! cmp -s "$ANDROID" "$LAST"; then
             bytes="$(stat -c %s "$ANDROID" 2>/dev/null || echo 99999999)"

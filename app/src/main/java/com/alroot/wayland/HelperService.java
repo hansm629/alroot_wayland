@@ -39,15 +39,15 @@ public final class HelperService extends Service {
         batteryHandler.post(batteryPoll);
         NotificationManager nm = getSystemService(NotificationManager.class);
         nm.createNotificationChannel(new NotificationChannel(
-                CHANNEL, "Alroot Wayland session", NotificationManager.IMPORTANCE_LOW));
+                CHANNEL, getString(R.string.notification_channel), NotificationManager.IMPORTANCE_LOW));
         Intent launch = new Intent(this, MainActivity.class)
                 .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK | Intent.FLAG_ACTIVITY_SINGLE_TOP);
         PendingIntent open = PendingIntent.getActivity(this, 0, launch,
                 PendingIntent.FLAG_UPDATE_CURRENT | PendingIntent.FLAG_IMMUTABLE);
         Notification notice = new Notification.Builder(this, CHANNEL)
                 .setSmallIcon(android.R.drawable.ic_menu_view)
-                .setContentTitle("Alroot Wayland")
-                .setContentText("Local display session — tap to reopen")
+                .setContentTitle(getString(R.string.notification_title))
+                .setContentText(getString(R.string.notification_text))
                 .setOngoing(true).setContentIntent(open).build();
         if (Build.VERSION.SDK_INT >= 34)
             startForeground(NOTIFICATION, notice, ServiceInfo.FOREGROUND_SERVICE_TYPE_SPECIAL_USE);

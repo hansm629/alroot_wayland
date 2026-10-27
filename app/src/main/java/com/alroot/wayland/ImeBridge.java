@@ -1,131 +1,239 @@
 package com.alroot.wayland;
 
+import android.net.LocalSocket;
+import android.net.LocalSocketAddress;
+import android.os.Handler;
+import android.os.HandlerThread;
 import android.os.SystemClock;
 import android.util.Log;
 import java.io.File;
 import java.io.FileOutputStream;
+import java.io.OutputStream;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.StandardCopyOption;
 import java.util.Locale;
-import java.util.concurrent.atomic.AtomicInteger;
 
-/** Android IME text commitments into the isolated rootful Xwayland XTEST worker. */
+/**
+ * Android IME -> dedicated persistent rootful-Xwayland input daemon.
+ *
+ * Compared with the old legacy per-keystroke xclip/xdotool bridge this avoids
+ * creating temp files, forking processes and sleeping 350-500ms on every
+ * Hangul composition change. All socket writes happen off Android's UI thread.
+ */
 public final class ImeBridge {
+    private static final String TAG = "AlrootWayland";
     private static final File STATE = HelperService.runtimeDir().getParentFile();
-    private static final File QUEUE = new File(STATE, "ipc/ime-requests");
     private static final File READY = new File(STATE, "ime-active");
-    private static final AtomicInteger NEXT = new AtomicInteger();
-    private static String pendingComposition = "";
+    private static final File SOCKET = new File(STATE, "ipc/ime.sock");
+    private static final File QUEUE = new File(STATE, "ipc/ime-requests");
+    private static final HandlerThread ioThread = new HandlerThread("AlrootX11IME");
+    private static final Handler io;
+    private static final Object pendingLock = new Object();
+    private static String latestComposition;
+    private static LocalSocket socket;
+    private static OutputStream stream;
+    private static String fallbackComposition = "";
+    private static long lastProbeMs;
+    private static boolean lastActive;
+    private static int delivered, fallbacks;
+    private static long totalTransportNs;
+    private static int fileSerial;
+
+    static {
+        ioThread.start();
+        io = new Handler(ioThread.getLooper());
+    }
+
     private ImeBridge() {}
 
     public static boolean rootfulX11Active() {
-        File display = new File(STATE, "display");
-        File identity = new File(STATE, "xwayland.pid");
-        if (!display.isFile() || !identity.isFile() || !READY.isFile()) return false;
+        final long now = SystemClock.elapsedRealtime();
+        synchronized (ImeBridge.class) {
+            if (now - lastProbeMs < 250) return lastActive;
+            lastProbeMs = now;
+            boolean okay = false;
+            try {
+                File display = new File(STATE, "display");
+                File identity = new File(STATE, "xwayland.pid");
+                if (display.isFile() && identity.isFile() && READY.isFile()) {
+                    String name = new String(Files.readAllBytes(display.toPath()),
+                            StandardCharsets.US_ASCII).trim();
+                    String marker = new String(Files.readAllBytes(READY.toPath()),
+                            StandardCharsets.US_ASCII).trim();
+                    String pidRecord = new String(Files.readAllBytes(identity.toPath()),
+                            StandardCharsets.US_ASCII).trim();
+                    okay = name.matches(":[0-9]{1,3}") && !":0".equals(name)
+                            && name.equals(marker) && pidRecord.endsWith(" alroot-wayland");
+                }
+            } catch (Exception e) {
+                Log.w(TAG, "IME X11 readiness state unavailable", e);
+            }
+            lastActive = okay;
+            return okay;
+        }
+    }
+
+    private static final Runnable flushComposition = () -> {
+        final String text;
+        synchronized (pendingLock) {
+            text = latestComposition;
+            latestComposition = null;
+        }
+        if (text != null) send('C', text);
+    };
+
+    public static void composing(String text) {
+        synchronized (pendingLock) {
+            latestComposition = text == null ? "" : text;
+            io.removeCallbacks(flushComposition);
+            io.postDelayed(flushComposition, 8);
+        }
+    }
+
+    private static void flushBefore(boolean preserve) {
+        final String text;
+        synchronized (pendingLock) {
+            text = latestComposition;
+            latestComposition = null;
+            io.removeCallbacks(flushComposition);
+        }
+        if (preserve && text != null) io.post(() -> send('C', text));
+    }
+
+    public static void commitComposed(String text) {
+        if (text == null) text = "";
+        // Empty Samsung commit means previous preedit became the final text:
+        // never drop the coalesced preedit before sending that finalization.
+        flushBefore(text.isEmpty());
+        final String copy = text;
+        io.post(() -> send('T', copy));
+    }
+
+    public static void commit(String text) { commitComposed(text); }
+
+    public static void finishComposing() {
+        flushBefore(true);
+        io.post(() -> send('F', ""));
+    }
+
+    public static void resetComposing() {
+        flushBefore(false);
+        io.post(() -> send('R', ""));
+    }
+
+    public static void delete(int before, int after) {
+        flushBefore(true);
+        final int b = Math.max(0, Math.min(128, before));
+        final int a = Math.max(0, Math.min(128, after));
+        if (b + a > 0) io.post(() -> send('D', b + " " + a));
+    }
+
+    private static boolean sendSocket(char operation, byte[] bytes) {
+        final long beginNs = SystemClock.elapsedRealtimeNanos();
         try {
-            String name = new String(Files.readAllBytes(display.toPath()),
-                    StandardCharsets.US_ASCII).trim();
-            String marker = new String(Files.readAllBytes(READY.toPath()),
-                    StandardCharsets.US_ASCII).trim();
-            String pidRecord = new String(Files.readAllBytes(identity.toPath()),
-                    StandardCharsets.US_ASCII).trim();
-            // The marker is removed on explicit stop and before every new
-            // session. This path uses no cross-process /proc reads.
-            return name.matches(":[0-9]{1,3}") && !":0".equals(name)
-                    && name.equals(marker) && pidRecord.endsWith(" alroot-wayland");
-        } catch (Exception e) {
-            Log.w("AlrootWayland", "IME X11 readiness marker unavailable", e);
+            if (stream == null) {
+                socket = new LocalSocket();
+                socket.connect(new LocalSocketAddress(
+                        SOCKET.getAbsolutePath(), LocalSocketAddress.Namespace.FILESYSTEM));
+                stream = socket.getOutputStream();
+                Log.i(TAG, "IME persistent Unix socket connected");
+            }
+            byte[] packet = new byte[bytes.length + 5];
+            packet[0] = (byte) operation;
+            int n = bytes.length;
+            packet[1] = (byte) (n >>> 24);
+            packet[2] = (byte) (n >>> 16);
+            packet[3] = (byte) (n >>> 8);
+            packet[4] = (byte) n;
+            System.arraycopy(bytes, 0, packet, 5, n);
+            stream.write(packet);
+            delivered++;
+            totalTransportNs += SystemClock.elapsedRealtimeNanos() - beginNs;
+            if (delivered % 64 == 0) {
+                Log.i(TAG, "IME socket sent=" + delivered +
+                        " average-transport-us=" + (totalTransportNs / delivered / 1000) +
+                        " fallback=" + fallbacks);
+            }
+            return true;
+        } catch (Exception ex) {
+            closeConnection();
+            if (fallbacks++ == 0 || fallbacks % 50 == 0)
+                Log.w(TAG, "IME daemon unavailable; using legacy X11 input fallback");
             return false;
         }
     }
 
-    public static void commit(String value) {
-        if (value == null || value.isEmpty()) return;
-        byte[] content = value.getBytes(StandardCharsets.UTF_8);
-        if (content.length > 16384) {
-            Log.w("AlrootWayland", "IME commit above bounded 16KiB limit");
+    private static void closeConnection() {
+        try { if (stream != null) stream.close(); } catch (Exception ignored) {}
+        try { if (socket != null) socket.close(); } catch (Exception ignored) {}
+        stream = null;
+        socket = null;
+        fallbackComposition = "";
+    }
+
+    private static void send(char operation, String payload) {
+        if (payload == null) payload = "";
+        byte[] data = payload.getBytes(StandardCharsets.UTF_8);
+        if (data.length > 16384) {
+            Log.w(TAG, "IME payload exceeds bounded 16KiB");
             return;
         }
-        offer("commit", content);
-        Log.i("AlrootWayland", "IME X11 committed chars=" + value.length()
-                + " UTF8bytes=" + content.length);
+        if (!sendSocket(operation, data))
+            legacy(operation, payload);
     }
 
-    /**
-     * Samsung/Gboard commonly send setComposingText repeatedly, then finish
-     * composing (or commitText with an empty string). Since rootful Xwayland
-     * doesn't understand Android text-input preedit, maintain exactly one
-     * replaceable X11 composing span. Never wait for a nonempty commitText.
-     */
-    public static synchronized void composing(String text) {
-        if (text == null) text = "";
-        if (text.equals(pendingComposition)) return;
-        if (!pendingComposition.isEmpty()) {
-            delete(pendingComposition.codePointCount(0, pendingComposition.length()), 0);
+    private static void legacy(char operation, String value) {
+        // Strict compatibility fallback only. A healthy P04 daemon never
+        // performs these old temp-file/xdotool/xclip operations.
+        if (operation == 'C') {
+            if (value.equals(fallbackComposition)) return;
+            if (!fallbackComposition.isEmpty())
+                enqueue("delete", fallbackComposition.codePointCount(
+                        0, fallbackComposition.length()) + " 0");
+            fallbackComposition = value;
+            if (!value.isEmpty()) enqueue("commit", value);
+        } else if (operation == 'T') {
+            if (!value.isEmpty()) {
+                if (!fallbackComposition.isEmpty() && !value.equals(fallbackComposition)) {
+                    enqueue("delete", fallbackComposition.codePointCount(
+                            0, fallbackComposition.length()) + " 0");
+                }
+                if (!value.equals(fallbackComposition))
+                    enqueue("commit", value);
+            }
+            fallbackComposition = "";
+        } else if (operation == 'D') {
+            fallbackComposition = "";
+            enqueue("delete", value);
+        } else if (operation == 'F' || operation == 'R') {
+            fallbackComposition = "";
         }
-        pendingComposition = text;
-        if (!text.isEmpty()) commit(text);
-        Log.i("AlrootWayland", "IME X11 composing length=" + text.length());
     }
 
-    public static synchronized void commitComposed(String text) {
-        if (text == null) text = "";
-        if (text.isEmpty()) {
-            // Samsung IME can terminate a composition with commitText("").
-            // The preedit was already drawn in the X11 app; do not erase it.
-            boolean hadComposition = !pendingComposition.isEmpty();
-            pendingComposition = "";
-            Log.i("AlrootWayland", "IME X11 empty-commit finalized preedit="
-                    + hadComposition);
-            return;
-        }
-        if (!pendingComposition.isEmpty() && !text.equals(pendingComposition)) {
-            delete(pendingComposition.codePointCount(0, pendingComposition.length()), 0);
-        }
-        boolean same = !pendingComposition.isEmpty() && text.equals(pendingComposition);
-        pendingComposition = "";
-        if (!same && !text.isEmpty()) commit(text);
-        Log.i("AlrootWayland", "IME X11 finalized length=" + text.length()
-                + " composition-reused=" + same);
-    }
-
-    public static synchronized void finishComposing() {
-        // The latest preedit has already been sent into the X11 text field.
-        pendingComposition = "";
-    }
-
-    public static synchronized void resetComposing() {
-        pendingComposition = "";
-    }
-
-    public static void delete(int before, int after) {
-        int b = Math.max(0, Math.min(128, before));
-        int a = Math.max(0, Math.min(128, after));
-        if (b > 0 || a > 0)
-            offer("delete", (b + " " + a).getBytes(StandardCharsets.US_ASCII));
-    }
-
-    private static void offer(String kind, byte[] data) {
-        File temp = null;
+    private static void enqueue(String kind, String value) {
+        if (value.isEmpty()) return;
+        File tmp = null;
         try {
             if (!QUEUE.isDirectory() && !QUEUE.mkdirs()) return;
-            if (!QUEUE.setReadable(false, false) || !QUEUE.setWritable(false, false)
-                    || !QUEUE.setExecutable(false, false)
-                    || !QUEUE.setReadable(true, true) || !QUEUE.setWritable(true, true)
-                    || !QUEUE.setExecutable(true, true)) return;
-            temp = File.createTempFile("ime-", ".tmp", QUEUE);
-            try (FileOutputStream stream = new FileOutputStream(temp)) {
-                stream.write(data);
+            QUEUE.setReadable(false, false);
+            QUEUE.setWritable(false, false);
+            QUEUE.setExecutable(false, false);
+            QUEUE.setReadable(true, true);
+            QUEUE.setWritable(true, true);
+            QUEUE.setExecutable(true, true);
+            tmp = File.createTempFile(".legacy-ime-", ".tmp", QUEUE);
+            try (FileOutputStream f = new FileOutputStream(tmp)) {
+                f.write(value.getBytes(StandardCharsets.UTF_8));
             }
             String filename = String.format(Locale.ROOT, "%013d-%010d.%s",
-                    SystemClock.elapsedRealtime(), NEXT.incrementAndGet(), kind);
-            Files.move(temp.toPath(), new File(QUEUE, filename).toPath(),
+                    SystemClock.elapsedRealtime(), fileSerial++, kind);
+            Files.move(tmp.toPath(), new File(QUEUE, filename).toPath(),
                     StandardCopyOption.ATOMIC_MOVE, StandardCopyOption.REPLACE_EXISTING);
         } catch (Exception e) {
-            Log.w("AlrootWayland", "IME queue unavailable", e);
+            Log.e(TAG, "IME legacy fallback enqueue failed", e);
         } finally {
-            if (temp != null) temp.delete();
+            if (tmp != null) tmp.delete();
         }
     }
 }

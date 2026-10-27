@@ -2,13 +2,17 @@ package com.alroot.wayland;
 
 import android.app.Activity;
 import android.app.AlertDialog;
+import android.app.PictureInPictureParams;
 import android.content.ClipData;
 import android.content.ClipboardManager;
 import android.content.Context;
+import android.content.res.Configuration;
+import android.content.pm.PackageManager;
 import android.content.Intent;
 import android.content.pm.ActivityInfo;
 import android.graphics.Bitmap;
 import android.graphics.Color;
+import android.util.Rational;
 import android.graphics.drawable.GradientDrawable;
 import android.os.Build;
 import android.os.Bundle;
@@ -45,6 +49,9 @@ public final class MainActivity extends Activity implements SurfaceHolder.Callba
     private LinearLayout overlayRoot;
     private Button menuHandle;
     private TextView status;
+    private boolean overlayWasVisibleBeforePip;
+    private boolean pipTransitionInProgress;
+    private boolean pipHostReadyPreviously;
     private Surface attached;
     private static Surface activeSurface;
     private boolean suppressEscape;
@@ -244,6 +251,7 @@ public final class MainActivity extends Activity implements SurfaceHolder.Callba
                     android.window.OnBackInvokedDispatcher.PRIORITY_DEFAULT, this::toggleIme);
 
         restoreWindowSettings();
+        refreshPiPParams();
         startForegroundService(new Intent(this, HelperService.class));
         main.post(cursorPoll);
         main.post(clipboardPoll);
@@ -253,6 +261,10 @@ public final class MainActivity extends Activity implements SurfaceHolder.Callba
             @Override public void run() {
                 if (isFinishing() || isDestroyed()) return;
                 attachIfReady();
+                if (pipHostReadyPreviously != HelperService.running) {
+                    pipHostReadyPreviously = HelperService.running;
+                    refreshPiPParams();
+                }
                 LaunchInbox.consume(MainActivity.this);
                 updateStatus();
                 main.postDelayed(this, 1800);
@@ -264,8 +276,9 @@ public final class MainActivity extends Activity implements SurfaceHolder.Callba
         if (status == null) return;
         boolean socket = new File(HelperService.runtimeDir(), "wayland-0").exists();
         status.setText(TermuxSession.uidAndSigning(this)
-                + "\nHost: " + (socket ? "SOCKET" : "STARTING")
-                + " | " + (view.isCaptured() ? "CAPTURED" : "FREE")
+                + "\n" + getString(R.string.status_host, socket ? "SOCKET" : "STARTING")
+                + " | " + getString(view.isCaptured() ? R.string.status_mouse_captured :
+                                                R.string.status_mouse_free)
                 + (HelperService.error != null ? "\n" + HelperService.error : ""));
     }
     private int dp(float size) {
@@ -282,13 +295,16 @@ public final class MainActivity extends Activity implements SurfaceHolder.Callba
 
     private void showMenu(View anchor) {
         PopupMenu pop = new PopupMenu(this, anchor);
-        String[] items = {"Start XFCE (Labwc)", "Start XFCE (direct SHM, diagnostic)",
-                "Release / capture mouse", "Show / hide keyboard",
-                "Resolution", "Scale: fit / stretch / fill", "Orientation",
-                "Fullscreen", "Keep screen on", "Session status", "Open logs",
-                "Stop this session", "Stop Wayland server",
-                "Touch input mode", "Pointer speed", "Pointer acceleration",
-                "Show / hide status", "Hide Alroot handle (three-finger tap to restore)"};
+        final int[] labels = {R.string.menu_start_xfce, R.string.menu_start_direct,
+                R.string.menu_pointer_capture, R.string.menu_keyboard,
+                R.string.menu_resolution, R.string.menu_scale, R.string.menu_orientation,
+                R.string.menu_fullscreen, R.string.menu_keep_screen, R.string.menu_status,
+                R.string.menu_logs, R.string.menu_stop_session, R.string.menu_stop_host,
+                R.string.menu_input_mode, R.string.menu_pointer_speed,
+                R.string.menu_pointer_accel, R.string.menu_toggle_status,
+                R.string.menu_hide_handle, R.string.menu_pip, R.string.menu_auto_pip};
+        String[] items = new String[labels.length];
+        for (int i = 0; i < labels.length; i++) items[i] = getString(labels[i]);
         for (int i = 0; i < items.length; i++) pop.getMenu().add(0, i, i, items[i]);
         pop.setOnMenuItemClickListener(item -> {
             switch (item.getItemId()) {
@@ -302,7 +318,7 @@ public final class MainActivity extends Activity implements SurfaceHolder.Callba
                 case 7: toggleFullscreen(); break;
                 case 8: toggleScreenOn(); break;
                 case 9: toast(TermuxSession.launch("status", "")); break;
-                case 10: toast("Log: /data/data/com.termux/files/home/.alroot-wayland");
+                case 10: toast(getString(R.string.toast_log_path));
                     break;
                 case 11: confirmStop(false); break;
                 case 12: confirmStop(true); break;
@@ -313,8 +329,10 @@ public final class MainActivity extends Activity implements SurfaceHolder.Callba
                 case 17:
                     status.setVisibility(View.GONE);
                     overlayRoot.setVisibility(View.GONE);
-                    toast("Handle hidden. Three-finger tap or Ctrl+Alt+M restores it.");
+                    toast(getString(R.string.toast_handle_hidden));
                     break;
+                case 18: enterPiP(false); break;
+                case 19: toggleAutomaticPiP(); break;
                 default: break;
             }
             updateStatus();
@@ -323,15 +341,14 @@ public final class MainActivity extends Activity implements SurfaceHolder.Callba
         pop.show();
     }
     private void chooseInputMode() {
-        final String[] modes = {"Touchpad (relative + tap + two-finger scroll)",
-                "Virtual touchscreen (absolute mouse)",
-                "Direct touch (Wayland multi-touch)"};
-        new AlertDialog.Builder(this).setTitle("Touch input mode")
+        final String[] modes = {getString(R.string.mode_touchpad),
+                getString(R.string.mode_virtual_touch), getString(R.string.mode_direct_touch)};
+        new AlertDialog.Builder(this).setTitle(R.string.title_input_mode)
                 .setSingleChoiceItems(modes, view.getInputMode(), (dialog, selected) -> {
                     view.configurePointer(selected, view.getPointerSpeed(), view.getAcceleration());
                     dialog.dismiss();
-                    toast("Input mode: " + modes[selected]);
-                }).setNegativeButton("Cancel", null).show();
+                    toast(getString(R.string.toast_input_mode, modes[selected]));
+                }).setNegativeButton(R.string.action_cancel, null).show();
     }
     private void choosePointerSetting(boolean accelerationSetting) {
         int min = accelerationSetting ? 0 : 50;
@@ -355,9 +372,9 @@ public final class MainActivity extends Activity implements SurfaceHolder.Callba
             @Override public void onStopTrackingTouch(SeekBar bar) {}
         });
         new AlertDialog.Builder(this)
-                .setTitle(accelerationSetting ? "Pointer acceleration (0–200)" : "Pointer speed (50–300)")
-                .setView(layout).setNegativeButton("Cancel", null)
-                .setPositiveButton("Apply", (d, n) -> {
+                .setTitle(accelerationSetting ? R.string.title_pointer_accel : R.string.title_pointer_speed)
+                .setView(layout).setNegativeButton(R.string.action_cancel, null)
+                .setPositiveButton(R.string.action_apply, (d, n) -> {
                     int target = slider.getProgress() + min;
                     view.configurePointer(view.getInputMode(),
                             accelerationSetting ? view.getPointerSpeed() : target,
@@ -367,10 +384,10 @@ public final class MainActivity extends Activity implements SurfaceHolder.Callba
 
     private void confirmStop(boolean server) {
         new AlertDialog.Builder(this)
-                .setTitle(server ? "Stop Wayland host?" : "Stop this XFCE session?")
-                .setMessage("Only the Alroot Wayland project session is targeted; Termux-X11 remains untouched.")
-                .setNegativeButton("Cancel", null)
-                .setPositiveButton("Stop", (d, which) -> {
+                .setTitle(server ? R.string.title_stop_host : R.string.title_stop_session)
+                .setMessage(R.string.msg_stop_session)
+                .setNegativeButton(R.string.action_cancel, null)
+                .setPositiveButton(R.string.action_stop, (d, which) -> {
                     toast(TermuxSession.launch("stop", ""));
                     if (server) {
                         view.setCapture(false);
@@ -385,9 +402,9 @@ public final class MainActivity extends Activity implements SurfaceHolder.Callba
         int w = prefs().getInt("width", 1920), h = prefs().getInt("height", 1080);
         input.setSingleLine(true);
         input.setText(w + "x" + h);
-        new AlertDialog.Builder(this).setTitle("Output resolution: width x height")
-                .setView(input).setNegativeButton("Cancel", null)
-                .setPositiveButton("Apply", (d, n) -> {
+        new AlertDialog.Builder(this).setTitle(R.string.title_resolution)
+                .setView(input).setNegativeButton(R.string.action_cancel, null)
+                .setPositiveButton(R.string.action_apply, (d, n) -> {
                     try {
                         String[] pair = input.getText().toString().trim().toLowerCase().split("x");
                         int width = Integer.parseInt(pair[0]), height = Integer.parseInt(pair[1]);
@@ -397,20 +414,21 @@ public final class MainActivity extends Activity implements SurfaceHolder.Callba
                         SessionFiles.setResolution(width, height);
                         WaylandCompositor.nativeResizeOutput(width, height);
                         applyScale();
-                        toast("Guest output " + width + "x" + height
-                                + " @96 DPI. Restart Alroot XFCE for rootful Xwayland geometry.");
-                    } catch (Exception e) { toast("Invalid dimensions (320..3840 x 240..2160)"); }
+                        refreshPiPParams();
+                        toast(getString(R.string.toast_resolution_applied, width, height));
+                    } catch (Exception e) { toast(getString(R.string.toast_bad_resolution)); }
                 }).show();
     }
 
     private void chooseScale() {
-        String[] names = {"Fit (letterbox)", "Stretch", "Fill (crop)"};
+        String[] names = {getString(R.string.mode_fit),
+                getString(R.string.mode_stretch), getString(R.string.mode_fill)};
         int[] values = {1, 2, 3};
-        new AlertDialog.Builder(this).setTitle("Output scale").setItems(names, (d, index) -> {
+        new AlertDialog.Builder(this).setTitle(R.string.title_scale).setItems(names, (d, index) -> {
             prefs().edit().putInt("mode", values[index]).apply();
             applyScale();
             if (prefs().getBoolean("fullscreen", true))
-                toast("Fullscreen uses aspect-preserving FIT. Windowed mode uses this scale setting.");
+                toast(getString(R.string.toast_fullscreen_fit));
         }).show();
     }
 
@@ -442,11 +460,101 @@ public final class MainActivity extends Activity implements SurfaceHolder.Callba
         restoreWindowSettings();
     }
 
+    private boolean pipSupported() {
+        return Build.VERSION.SDK_INT >= 26 &&
+                getPackageManager().hasSystemFeature(PackageManager.FEATURE_PICTURE_IN_PICTURE);
+    }
+
+    private PictureInPictureParams makePipParams(boolean autoEnter) {
+        int w = Math.max(320, prefs().getInt("width", 1920));
+        int h = Math.max(240, prefs().getInt("height", 1080));
+        PictureInPictureParams.Builder params = new PictureInPictureParams.Builder()
+                .setAspectRatio(new Rational(w, h));
+        if (Build.VERSION.SDK_INT >= 31) {
+            params.setAutoEnterEnabled(autoEnter);
+            params.setSeamlessResizeEnabled(true);
+        }
+        return params.build();
+    }
+
+    private void refreshPiPParams() {
+        if (!pipSupported()) return;
+        try {
+            setPictureInPictureParams(makePipParams(
+                    prefs().getBoolean("pip_auto", true) && HelperService.running));
+        } catch (Exception e) {
+            android.util.Log.w("AlrootWayland", "Cannot configure PiP parameters", e);
+        }
+    }
+
+    private void enterPiP(boolean automatic) {
+        if (!pipSupported() || isInPictureInPictureMode()) {
+            if (!automatic) toast(getString(R.string.toast_pip_unavailable));
+            return;
+        }
+        try {
+            view.releaseAllKeys();
+            view.releasePointerCapture();
+            InputMethodManager imm = (InputMethodManager)
+                    getSystemService(INPUT_METHOD_SERVICE);
+            if (imm != null) imm.hideSoftInputFromWindow(view.getWindowToken(), 0);
+            pipTransitionInProgress = true;
+            boolean accepted = enterPictureInPictureMode(makePipParams(false));
+            if (!accepted && !automatic) toast(getString(R.string.toast_pip_unavailable));
+            android.util.Log.i("AlrootWayland", "PiP request automatic=" + automatic
+                    + " accepted=" + accepted + " hostRunning=" + HelperService.running);
+        } catch (Exception e) {
+            android.util.Log.w("AlrootWayland", "PiP entry rejected by Android", e);
+            if (!automatic) toast(getString(R.string.toast_pip_unavailable));
+        } finally {
+            pipTransitionInProgress = false;
+        }
+    }
+
+    private void toggleAutomaticPiP() {
+        boolean enabled = !prefs().getBoolean("pip_auto", true);
+        prefs().edit().putBoolean("pip_auto", enabled).apply();
+        refreshPiPParams();
+        toast(getString(enabled ? R.string.toast_auto_pip_on : R.string.toast_auto_pip_off));
+    }
+
+    @Override protected void onUserLeaveHint() {
+        super.onUserLeaveHint();
+        // Android 12+ honors PictureInPictureParams.setAutoEnterEnabled.
+        // Pre-S (API 26-30) must explicitly enter when Home is pressed.
+        if (Build.VERSION.SDK_INT < 31 && !pipTransitionInProgress &&
+                prefs().getBoolean("pip_auto", true) && HelperService.running)
+            enterPiP(true);
+    }
+
+    @Override public void onPictureInPictureModeChanged(
+            boolean inPictureInPictureMode, Configuration newConfig) {
+        super.onPictureInPictureModeChanged(inPictureInPictureMode, newConfig);
+        if (inPictureInPictureMode) {
+            overlayWasVisibleBeforePip = overlayRoot != null &&
+                    overlayRoot.getVisibility() == View.VISIBLE;
+            if (overlayRoot != null) overlayRoot.setVisibility(View.GONE);
+            if (view != null) {
+                view.releaseAllKeys();
+                view.releasePointerCapture();
+            }
+        } else {
+            if (overlayRoot != null && overlayWasVisibleBeforePip)
+                overlayRoot.setVisibility(View.VISIBLE);
+            restoreWindowSettings();
+            refreshPiPParams();
+        }
+        main.post(this::applyScale);
+        android.util.Log.i("AlrootWayland", "PiP changed active=" + inPictureInPictureMode
+                + " compositor service retained=" + HelperService.running);
+    }
+
     private android.content.SharedPreferences prefs() {
         return getSharedPreferences("display", MODE_PRIVATE);
     }
 
     private void restoreWindowSettings() {
+        if (Build.VERSION.SDK_INT >= 26 && isInPictureInPictureMode()) return;
         if (prefs().getBoolean("keep_screen", true))
             getWindow().addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON);
         else getWindow().clearFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON);

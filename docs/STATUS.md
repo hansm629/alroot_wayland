@@ -103,3 +103,24 @@ Do not promote code existence or build success into screen/input PASS.
   Added DISPLAY post-login. Inherited DISPLAY (no override) was then :90,
   and a real disposable pdrun xmessage GUI window appeared on :90.
   X11 access control remained enabled before and after all three tests.
+
+## P04 2026-10-28 — next build
+
+- Prior IME path was bounded by a 350ms clipboard restore wait and
+  500ms shell polling, plus xclip/xdotool forks for every syllable.
+  A persistent Xlib/XTEST UNIX socket service and Android background
+  HandlerThread now handle IME events with short coalescing and delta text.
+- Initial live exploratory test revealed a race with clipboard selection
+  ownership. It was stopped immediately. All further testing was moved
+  to private Xvfb instances :190–:195, not the user's existing displays.
+- Synthetic 40-operation Hangul input passed with correct ten-character
+  GTK text and zero failures. Terminal Ctrl+Shift+V multi-stage selection
+  requests were fixed; isolated xfce4-terminal then passed its two-character
+  Hangul test. The old synthetic 8950-byte clipboard was restored.
+  Native handling averages roughly 1–6ms; Android end-to-end needs testing.
+- PiP Activity manifest, manual entry, automatic Home entry, UI hide,
+  pointer release and restore are implemented; screen testing pending.
+- Relative touchpad taps now ignore sub-touchSlop jitter. Device
+  gesture acceptance pending.
+- English and Korean Android resources cover menus, dialogs and
+  foreground-service notification. UI screenshot/locale test pending.

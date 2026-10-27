@@ -298,3 +298,59 @@ Each wrapper's inherited DISPLAY was checked without xdpyinfo -display,
 and disposable X11 GUI xmessage probes were opened on :90. A synthetic
 GUI app is not a full GPU-accelerated Linux application compatibility
 test; later stages will test real PRoot/Mesa workloads separately.
+
+## P04: low-latency software IME, PiP, touchpad and localization
+
+The legacy X11 IME bridge called xclip and xdotool for every Hangul
+composition update, waited 350ms to restore the clipboard, and polled
+every 500ms. P04 moves the hot path to a persistent UNIX-domain socket
+and Xlib/XTEST service. Android sends messages from a HandlerThread, not
+the UI thread, and coalesces redundant preedit updates over 8ms.
+The native service updates changed UTF-8 suffixes and handles actual
+SelectionRequests before restoring the previous plain-text clipboard.
+The legacy queue is retained as a logged fallback if the service fails.
+
+S26U standalone correctness and latency test in private Xvfb (not the
+user's running :0 or :90):
+- 40 rapid synthetic Hangul composition operations, GTK final output
+  exactly ten syllables, no delivery failures.
+- A disposable xfce4-terminal got exactly two synthetic Korean characters.
+  Its Ctrl+Shift+V path requires handling multiple SelectionRequests.
+- A synthetic 8950-byte clipboard was restored byte-for-byte.
+- Native bridge average operation processing time measured about
+  1–6ms across the tested paths. This excludes real Android IME delivery
+  and pixel presentation. The physical software keyboard must still be
+  tested with the newly installed APK.
+
+To run the safe noninteractive test (xorg-server-xvfb package required):
+
+    bash ~/alroot_wayland/tests/p04-ime-headless.sh
+
+Tap jitter is reduced: relative pointer motion inside Android's
+touchSlop is ignored, and initial movement beyond the threshold sends
+only the intentional excess. Pointer speed/acceleration remain user-set.
+
+PiP:
+- Native Android picture-in-picture and resizable Activity support,
+  manual PiP menu entry, 16:9 aspect ratio.
+- Auto-PiP when leaving for Home (enabled by default) can be toggled.
+  Android 12+ uses autoEnterEnabled; Android 8–11 uses onUserLeaveHint.
+- The overlay and pointer capture are hidden/released in PiP and
+  restored after exiting, without stopping the Wayland service.
+- Actual PiP creation and display continuity are pending device tests.
+
+Menu, dialog and notification strings use Android values (English) and
+values-ko (Korean). Android resolves Korean automatically according to
+the device/app language; English is the fallback.
+
+After updating to the latest signed APK, run:
+
+    awstart --status
+    awstart --debug
+    logcat -d -s AlrootWayland | grep -E 'IME persistent|IME socket sent|PiP'
+    awstart --logs
+
+Verify real Samsung keyboard Hangul composition and deletion in Mousepad
+and XFCE terminal, pointer behavior on short taps, PiP on Home/reopen and
+Korean menu text. An isolated test or successful APK build does not prove
+real-device UI correctness.

@@ -3,6 +3,7 @@ __pycache__/
 *.pyc
 artifacts/
 packages/prefix/
+packages/bin/
 .gradle/
 .idea/
 **/build/

@@ -49,6 +49,8 @@ public final class InputSurfaceView extends SurfaceView {
     private float lastX, lastY;
     private boolean pointerInitialized;
     private float pointerScaleX = 1, pointerScaleY = 1;
+    private int imeEventCount;
+    private int imeCharacterCount;
     private final RectF picture = new RectF();
     private PointerIcon guestIcon;
     private boolean guestCursorHidden;
@@ -167,6 +169,16 @@ public final class InputSurfaceView extends SurfaceView {
         } else keys.remove(code);
         WaylandCompositor.nativeSendKey(code, down ? 1 : 0);
         return true;
+    }
+
+    private void recordImeEvent(int characters) {
+        imeEventCount++;
+        imeCharacterCount += Math.max(0, characters);
+        if (imeEventCount % 64 == 0) {
+            android.util.Log.i("AlrootWayland", "IME Android event-count=" +
+                    imeEventCount + " character-count=" + imeCharacterCount +
+                    " X11-active=" + ImeBridge.rootfulX11Active());
+        }
     }
 
     private int fallbackEvdev(int key) {
@@ -414,11 +426,20 @@ public final class InputSurfaceView extends SurfaceView {
                 int slot = event.findPointerIndex(primaryPointer);
                 if (slot >= 0) {
                     float x = event.getX(slot), y = event.getY(slot);
-                    if ((float)Math.hypot(x - touchStartX, y - touchStartY) > touchSlop) {
-                        touchMoved = true;
-                        gestures.removeCallbacks(longPress);
+                    float distance = (float)Math.hypot(x - touchStartX, y - touchStartY);
+                    if (!touchMoved) {
+                        // Suppress sub-touchSlop jitter, especially while the
+                        // finger taps without any intentional pointer motion.
+                        if (distance > touchSlop) {
+                            touchMoved = true;
+                            gestures.removeCallbacks(longPress);
+                            float pass = (distance - touchSlop) / distance;
+                            acceleratedRelative((x - touchStartX) * pass,
+                                    (y - touchStartY) * pass);
+                        }
+                    } else {
+                        acceleratedRelative(x - prevX, y - prevY);
                     }
-                    acceleratedRelative(x - prevX, y - prevY);
                     prevX = x; prevY = y;
                 }
             }
@@ -472,18 +493,14 @@ public final class InputSurfaceView extends SurfaceView {
             @Override public boolean setSelection(int start, int end) { return true; }
             @Override public boolean commitText(CharSequence text, int newCursorPosition) {
                 boolean x11 = ImeBridge.rootfulX11Active();
-                android.util.Log.i("AlrootWayland", "IME Android commit route="
-                        + (x11 ? "rootful-X11" : "native-Wayland")
-                        + " chars=" + text.length());
+                recordImeEvent(text.length());
                 if (x11) ImeBridge.commitComposed(text.toString());
                 else WaylandCompositor.textInputCommit(text.toString());
                 return true;
             }
             @Override public boolean setComposingText(CharSequence text, int newCursorPosition) {
                 boolean x11 = ImeBridge.rootfulX11Active();
-                android.util.Log.i("AlrootWayland", "IME Android preedit route="
-                        + (x11 ? "rootful-X11" : "native-Wayland")
-                        + " chars=" + text.length());
+                recordImeEvent(text.length());
                 if (x11) {
                     ImeBridge.composing(text.toString());
                 } else {
