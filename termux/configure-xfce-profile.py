@@ -90,12 +90,25 @@ def install_battery():
             command = entry.find("./property[@name='command']")
             if entry.get("value") == "genmon" and command is not None \
                     and command.get("value") == widget:
-                period = entry.find("./property[@name='update-period']")
-                if period is not None and period.get("value") != "15":
-                    period.set("value", "15")
-                    xmlpath.write_bytes(ET.tostring(root, encoding="UTF-8", xml_declaration=True))
-                    return "UPDATED (15s Android battery cache)"
-                return "PRESENT"
+                # Keep a visible label even if a transient Android battery
+                # update fails. Otherwise the plugin can collapse to zero
+                # visible width although its XEmbed worker is running.
+                desired = {
+                    "update-period": ("int", "15"),
+                    "use-label": ("bool", "true"),
+                    "text": ("string", "BAT"),
+                    "font": ("string", "Sans 10"),
+                }
+                for setting, (kind, value) in desired.items():
+                    prop = entry.find("./property[@name='" + setting + "']")
+                    if prop is None:
+                        prop = ET.SubElement(entry, "property",
+                                             {"name": setting, "type": kind})
+                    prop.set("value", value)
+                temp = xmlpath.with_name(xmlpath.name + ".alroot-tmp")
+                ET.ElementTree(root).write(temp, encoding="UTF-8", xml_declaration=True)
+                os.replace(temp, xmlpath)
+                return "UPDATED (visible BAT label + 15s battery refresh)"
     target = max([106, *existing]) + 1
     inserted = False
     for panel in panels.findall("property"):
@@ -121,10 +134,10 @@ def install_battery():
     for name, kind, value in (
         ("command", "string", widget),
         ("update-period", "int", "15"),
-        ("use-label", "bool", "false"),
+        ("use-label", "bool", "true"),
         ("enable-single-row", "bool", "true"),
-        ("font", "string", "Sans 9"),
-        ("text", "string", "Battery"),
+        ("font", "string", "Sans 10"),
+        ("text", "string", "BAT"),
     ):
         ET.SubElement(genmon, "property",
                       {"name": name, "type": kind, "value": value})

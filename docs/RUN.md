@@ -238,3 +238,63 @@ soft-keyboard end-to-end still needs the updated APK and user testing.
 The temporary white cross drawn when the Wayland cursor bitmap was
 missing has been removed. Android on-screen final aspect correctness and
 software IME remain TEST-PENDING until physical device verification.
+
+## P03 fundamentals: real Android refresh, IME, battery visibility, PRoot
+
+The host previously ran Choreographer at roughly 1200 ticks per ten
+seconds but continued to advertise 60000 mHz through wl_output. Native
+WaylandCompositor already had a JNI method to update the output's refresh
+rate. P03 now connects Android Display.getRefreshRate() to that method,
+requests the active rate from the Surface (FIXED_SOURCE, seamless where
+supported), monitors real Choreographer frame timestamps and updates
+wl_output if measured VSync differs. It does not hardcode 120Hz and
+does not claim that setting the Xrandr label alone guarantees scanout.
+
+After Android APK update, use:
+
+    awstart --refresh-diag
+    logcat -d -s AlrootWayland | grep DisplayTiming | tail -15
+    logcat -d -s DroidDeckWayland | grep -E 'ticks|on screen' | tail -10
+
+The above reports the Android active physical display rate, measured
+Android VSync cadence, the advertised Wayland mode and actual host
+presentation counters. Xwayland should reflect the active physical rate,
+but a slow desktop workload can still present fewer distinct frames
+than that rate. On-device validation is required.
+
+For Samsung/Gboard soft input, the Android SurfaceView now uses a
+fake-text InputConnection comparable to the Termux-X11 design rather
+than pretending the remote X11 editor is a local editable buffer.
+Composing text is delivered incrementally (and replaced using X11
+Backspace) so clients do not have to wait for nonempty commitText.
+Empty commitText terminates composition without erasing prior preedit.
+The UTF-8 clipboard-based Unicode bridge and ASCII XTEST fallback
+remain project-only. No input text is written into Android logs.
+
+The XFCE GenMon plugin now shows a persistent BAT label even if battery
+reading temporarily fails. Android BatteryManager cache supplies the
+percentage and remains visible under the project-only panel configuration.
+The old UPower-based plugin is excluded from the Alroot panel's plugin ids
+without deleting it from original Termux-X11.
+
+For Debian PRoot, normal Termux-X11 mpd/mprun/pdrun still default to
+DISPLAY=:0. The Alroot-specific launchers install safely with:
+
+    bash ~/alroot_wayland/tools/install-cli.sh
+    aw-mpd /usr/bin/xdpyinfo
+    aw-mprun /usr/bin/xdpyinfo
+    aw-pdrun /usr/bin/xdpyinfo
+
+Inside the Alroot XFCE session, the original command names mpd, mprun,
+and pdrun are resolved through a project-only PATH directory before
+the global Termux binaries; they pass DISPLAY=:90 (or the actual isolated
+display number) and an Xauthority path visible within the Debian rootfs.
+The pdrun login environment sets DISPLAY=:0 unless overridden *after*
+login, which the project wrapper now does. Its unconditional xhost +
+invocation is replaced with a project-process-local no-op; the X11
+server ACL remains enabled and original Termux-X11 is unchanged.
+
+Each wrapper's inherited DISPLAY was checked without xdpyinfo -display,
+and disposable X11 GUI xmessage probes were opened on :90. A synthetic
+GUI app is not a full GPU-accelerated Linux application compatibility
+test; later stages will test real PRoot/Mesa workloads separately.

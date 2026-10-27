@@ -74,3 +74,32 @@ Do not promote code existence or build success into screen/input PASS.
 - A disposable X11 test revealed `xdotool type` Korean produced keysym=0 despite successful XTEST send. New Unicode commit via X11 clipboard paste was verified in a GTK entry and XFCE terminal on isolated :90 (2 Korean chars / 6 UTF8 bytes); the previous CLIPBOARD hash matched after restoration. Android keyboard source path is not yet verified.
 - Removed temporary CursorOverlay white cross (the genuine Wayland cursor remains).
 - CI and Android visual validation statuses should be recorded only after each actual run.
+
+## 2026-10-28 P03 fundamentals (awaiting the new APK)
+
+- Refresh: prior native output mode remained 60000 mHz despite Android
+  host perf reporting about 1200 VSync ticks/10 seconds. The native
+  Wayland compositor already supported dynamic mode notification.
+  Added Android active Display refresh lookup, a seamless FIXED_SOURCE
+  Surface rate request, and Choreographer measured-rate cross-check.
+  Real Xwayland >60Hz mode and sustained frame-rate validation require
+  installation of this new APK: do not call this PASS based on code alone.
+- Input: user Android log showed commitText chars=0 and no nonempty text.
+  The old fake Editable lost composing text. Replaced with synthetic
+  X11-compatible InputConnection and incremental composition delivery,
+  empty-commit finalization and Samsung/Gboard text-state responses.
+  Android soft-keyboard end-to-end remains TEST-PENDING.
+- Battery: Android BatteryManager cache was actually updated, and GenMon
+  plugin id 107 plus /plugins/plugin-107 command were registered live.
+  User still reported invisibility. Project-only panel now forces a
+  persistent BAT label and live 15-second percentage updates. On-screen
+  verification remains pending.
+- PRoot: original mpd and mprun on :0 worked, mpd targeting :90 failed
+  without explicit Xauthority. PRoot with an explicit rootfs-visible
+  Xauthority successfully connected. Explicit aw-mpd, aw-mprun, aw-pdrun
+  wrappers now target Alroot only; original binaries and :0 are intact.
+- Important test correction: the first pdrun probe forced -display :90,
+  hiding the original pdrun login profile resetting DISPLAY=:0.
+  Added DISPLAY post-login. Inherited DISPLAY (no override) was then :90,
+  and a real disposable pdrun xmessage GUI window appeared on :90.
+  X11 access control remained enabled before and after all three tests.

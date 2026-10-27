@@ -16,6 +16,7 @@ public final class ImeBridge {
     private static final File QUEUE = new File(STATE, "ipc/ime-requests");
     private static final File READY = new File(STATE, "ime-active");
     private static final AtomicInteger NEXT = new AtomicInteger();
+    private static String pendingComposition = "";
     private ImeBridge() {}
 
     public static boolean rootfulX11Active() {
@@ -49,6 +50,53 @@ public final class ImeBridge {
         offer("commit", content);
         Log.i("AlrootWayland", "IME X11 committed chars=" + value.length()
                 + " UTF8bytes=" + content.length);
+    }
+
+    /**
+     * Samsung/Gboard commonly send setComposingText repeatedly, then finish
+     * composing (or commitText with an empty string). Since rootful Xwayland
+     * doesn't understand Android text-input preedit, maintain exactly one
+     * replaceable X11 composing span. Never wait for a nonempty commitText.
+     */
+    public static synchronized void composing(String text) {
+        if (text == null) text = "";
+        if (text.equals(pendingComposition)) return;
+        if (!pendingComposition.isEmpty()) {
+            delete(pendingComposition.codePointCount(0, pendingComposition.length()), 0);
+        }
+        pendingComposition = text;
+        if (!text.isEmpty()) commit(text);
+        Log.i("AlrootWayland", "IME X11 composing length=" + text.length());
+    }
+
+    public static synchronized void commitComposed(String text) {
+        if (text == null) text = "";
+        if (text.isEmpty()) {
+            // Samsung IME can terminate a composition with commitText("").
+            // The preedit was already drawn in the X11 app; do not erase it.
+            boolean hadComposition = !pendingComposition.isEmpty();
+            pendingComposition = "";
+            Log.i("AlrootWayland", "IME X11 empty-commit finalized preedit="
+                    + hadComposition);
+            return;
+        }
+        if (!pendingComposition.isEmpty() && !text.equals(pendingComposition)) {
+            delete(pendingComposition.codePointCount(0, pendingComposition.length()), 0);
+        }
+        boolean same = !pendingComposition.isEmpty() && text.equals(pendingComposition);
+        pendingComposition = "";
+        if (!same && !text.isEmpty()) commit(text);
+        Log.i("AlrootWayland", "IME X11 finalized length=" + text.length()
+                + " composition-reused=" + same);
+    }
+
+    public static synchronized void finishComposing() {
+        // The latest preedit has already been sent into the X11 text field.
+        pendingComposition = "";
+    }
+
+    public static synchronized void resetComposing() {
+        pendingComposition = "";
     }
 
     public static void delete(int before, int after) {

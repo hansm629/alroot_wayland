@@ -1,0 +1,3 @@
+#!/data/data/com.termux/files/usr/bin/sh
+# Only used by aw-proot pdrun: avoid modifying any real X11 access controls.
+exit 0

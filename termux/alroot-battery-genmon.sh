@@ -24,12 +24,12 @@ plugged="$(printf '%s' "$json" | jq -r '.plugged // "UNKNOWN"' 2>/dev/null)"
 if [[ "$percentage" =~ ^[0-9]{1,3}$ ]] && ((percentage <= 100)); then
     if [[ "$status" == CHARGING || "$status" == FULL ||
           ( "$plugged" != UNKNOWN && "$plugged" != UNPLUGGED ) ]]; then
-        text="⚡ ${percentage}%"
+        text="${percentage}% ⚡"
     else
-        text="🔋 ${percentage}%"
+        text="${percentage}%"
     fi
     printf '<txt>%s</txt>\n' "$text"
     printf '<tool>Android battery: %s%% | %s</tool>\n' "$percentage" "$status"
 else
-    printf '<txt>BAT --%%</txt>\n<tool>Android battery cache unavailable</tool>\n'
+    printf '<txt>--%%</txt>\n<tool>Android battery cache unavailable</tool>\n'
 fi

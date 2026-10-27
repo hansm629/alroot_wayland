@@ -145,8 +145,11 @@ xfce_start() {
     # Project-only XFCE panel integration: Termux:API battery + Plank launcher.
     "$PREFIX/bin/python3" "$HOME/alroot_wayland/termux/configure-xfce-profile.py" \
         > "$LOGS/profile.log" 2>&1
+    "$PREFIX/bin/bash" "$HOME/alroot_wayland/tools/install-alroot-proot-shims.sh" \
+        >> "$LOGS/profile.log" 2>&1
     (
-        export HOME PREFIX PATH="$PREFIX/bin:$PREFIX/bin/applets"
+        # Only this Alroot XFCE session gets private mpd/mprun/pdrun wrappers.
+        export HOME PREFIX PATH="$STATE/bin:$PREFIX/bin:$PREFIX/bin/applets"
         export DISPLAY="$display" XAUTHORITY="$STATE/Xauthority"
         export XDG_RUNTIME_DIR="$RUNTIME" XDG_CONFIG_HOME="$STATE/xfce-config"
         export XDG_CACHE_HOME="$STATE/xfce-cache" XDG_SESSION_TYPE=x11

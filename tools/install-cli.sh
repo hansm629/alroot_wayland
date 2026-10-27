@@ -18,3 +18,19 @@ for name in alroot-wayland awstart; do
     fi
     echo "PASS: installed project-only command $destination"
 done
+
+# Explicit commands from native Termux use aw-* names.
+# Unprefixed commands remain unchanged in Termux-X11.
+for name in mpd mprun pdrun; do
+    source="$project/termux/aw-proot"
+    destination="$prefix/bin/aw-$name"
+    if [[ -e "$destination" || -L "$destination" ]]; then
+        [[ -L "$destination" && "$(readlink "$destination")" == "$source" ]] || {
+            echo "BLOCKED: refusing to overwrite $destination" >&2
+            exit 1
+        }
+    else
+        ln -s "$source" "$destination"
+    fi
+    echo "PASS: Alroot PRoot command $destination"
+done

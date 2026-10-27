@@ -1,0 +1,59 @@
+#!/data/data/com.termux/files/usr/bin/bash
+# Alroot-only PRoot bridge: never edits Termux-X11/PRoot original launchers.
+set -euo pipefail
+PREFIX=/data/data/com.termux/files/usr
+HOME=/data/data/com.termux/files/home
+STATE="$HOME/.alroot-wayland"
+PROJECT="$HOME/alroot_wayland"
+role="${0##*/}"
+case "$role" in
+    mpd|aw-mpd) role=mpd ;;
+    mprun|aw-mprun) role=mprun ;;
+    pdrun|aw-pdrun) role=pdrun ;;
+    *)
+        [[ "${1:-}" =~ ^(mpd|mprun|pdrun)$ ]] || {
+            echo "usage: aw-proot mpd|mprun|pdrun [options] program [args...]" >&2
+            exit 2
+        }
+        role="$1"; shift ;;
+esac
+[[ -r "$STATE/display" && -r "$STATE/Xauthority" &&
+    -r "$STATE/ime-active" ]] || {
+    echo "Alroot $role: project Xwayland not ready (awstart --status)" >&2
+    exit 1
+}
+IFS= read -r display < "$STATE/display"
+[[ "$display" =~ ^:[0-9]{1,3}$ && "$display" != ":0" ]] || {
+    echo "Alroot $role: refusing original Termux-X11 DISPLAY" >&2
+    exit 1
+}
+[[ "$(cat "$STATE/ime-active")" == "$display" ]] || {
+    echo "Alroot $role: display marker mismatch" >&2
+    exit 1
+}
+export DISPLAY="$display"
+export XAUTHORITY="$STATE/Xauthority"
+export PATH="$STATE/bin:$PREFIX/bin:$PREFIX/bin/applets"
+case "$role" in
+    mpd)
+        # mpd uses env -i and binds native HOME at /root. Pass the rootfs
+        # Xauthority explicitly, without using server-wide xhost +.
+        exec "$PREFIX/bin/mpd" /usr/bin/env \
+            XAUTHORITY=/root/.alroot-wayland/Xauthority "$@" ;;
+    mprun)
+        # The original mprun internally calls mpd from PATH. Resolve the
+        # project-private shim while preserving LibreOffice special cases.
+        exec "$PREFIX/bin/mprun" "$@" ;;
+    pdrun)
+        # The original pdrun calls xhost + unconditionally. A scoped no-op
+        # shim prevents ACL relaxation for only this child launch.
+        args=()
+        while [[ $# -gt 0 && "$1" == --* ]]; do
+            case "$1" in --root|--nogpu) args+=("$1"); shift ;;
+                *) break ;; esac
+        done
+        export PATH="$PROJECT/termux/shims:$PATH"
+        exec "$PREFIX/bin/pdrun" "${args[@]}" /usr/bin/env \
+            DISPLAY="$display" \
+            XAUTHORITY=/data/data/com.termux/files/home/.alroot-wayland/Xauthority "$@" ;;
+esac

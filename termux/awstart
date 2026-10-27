@@ -27,6 +27,7 @@ awstart --restart                 Stop project session and start again
 awstart --logs                    Show project-specific logs
 awstart --doctor                  Check APK, CLI, Labwc and Termux dependencies
 awstart --smoke                   Run safe local preflight checks
+awstart --refresh-diag            Check actual Xwayland mode and Android VSync logs
 awstart --install-apk             Open Android installer for signed P01 APK
 awstart --debug                   Show more launch and status information
 awstart --dry-run                 Preview without opening apps or changing files
@@ -111,7 +112,7 @@ while (($#)); do
         --no-wait) no_wait=1 ;;
         --debug) debug=1 ;;
         --dry-run) dry_run=1 ;;
-        --open|--stop|--status|--logs|--doctor|--smoke|--install-apk|--restart)
+        --open|--stop|--status|--logs|--doctor|--smoke|--refresh-diag|--install-apk|--restart)
             ((primary_action_count+=1))
             action="${1#--}" ;;
         --nogpu|--no-gpu)
@@ -141,6 +142,7 @@ case "$action" in
         msg 'Client renderer: pixman; native Android host: Vulkan (not disabled)'
         exit 0 ;;
     smoke) exec "$PREFIX/bin/bash" "$PROJECT/tests/p01-smoke.sh" ;;
+    refresh-diag) exec "$PREFIX/bin/bash" "$PROJECT/tests/p03-fundamentals.sh" ;;
     stop)
         "$CLI" stop
         msg 'Project session stop requested; native Android host remains until explicitly stopped.'

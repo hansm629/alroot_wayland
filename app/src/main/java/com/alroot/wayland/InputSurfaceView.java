@@ -7,7 +7,6 @@ import android.graphics.RectF;
 import android.os.Handler;
 import android.os.Looper;
 import android.text.InputType;
-import android.text.Editable;
 import android.view.KeyEvent;
 import android.view.MotionEvent;
 import android.view.PointerIcon;
@@ -17,6 +16,7 @@ import android.view.ViewConfiguration;
 import android.view.inputmethod.BaseInputConnection;
 import android.view.inputmethod.EditorInfo;
 import android.view.inputmethod.InputConnection;
+import android.view.inputmethod.SurroundingText;
 import com.droiddeck.launcher.wayland.WaylandCompositor;
 import java.util.HashSet;
 import java.util.Set;
@@ -333,6 +333,8 @@ public final class InputSurfaceView extends SurfaceView {
     @Override public boolean onTouchEvent(MotionEvent event) {
         int a = event.getActionMasked();
         int index = event.getActionIndex();
+        if (a == MotionEvent.ACTION_DOWN)
+            ImeBridge.resetComposing();
         if (!overlayGesture && event.getPointerCount() >= 3 &&
                 a == MotionEvent.ACTION_POINTER_DOWN) {
             cancelGesture();
@@ -444,39 +446,77 @@ public final class InputSurfaceView extends SurfaceView {
     @Override public boolean onCheckIsTextEditor() { return true; }
 
     @Override public InputConnection onCreateInputConnection(EditorInfo outAttrs) {
-        outAttrs.inputType = InputType.TYPE_CLASS_TEXT | InputType.TYPE_TEXT_FLAG_MULTI_LINE;
-        outAttrs.imeOptions = EditorInfo.IME_FLAG_NO_EXTRACT_UI;
-        return new BaseInputConnection(this, true) {
-            private final Editable composition = Editable.Factory.getInstance().newEditable("");
-            @Override public Editable getEditable() {
-                return composition;
+        outAttrs.inputType = InputType.TYPE_CLASS_TEXT |
+                InputType.TYPE_TEXT_FLAG_NO_SUGGESTIONS |
+                InputType.TYPE_TEXT_VARIATION_NORMAL;
+        // IME_ACTION_NONE can remove the enter/newline key on some on-device
+        // keyboards. Match the proven Termux-X11 input editor flags.
+        outAttrs.imeOptions = EditorInfo.IME_FLAG_NO_FULLSCREEN;
+        outAttrs.actionLabel = "↵";
+        outAttrs.initialSelStart = 1;
+        outAttrs.initialSelEnd = 1;
+        android.util.Log.i("AlrootWayland",
+                "IME InputConnection created focused=" + hasFocus() + " window=" + hasWindowFocus());
+        // X11 apps own the actual text. Android must never pretend this
+        // SurfaceView has a real editable buffer; Samsung/Gboard otherwise
+        // rely on stale cursor/selection state and send empty commitText.
+        return new BaseInputConnection(this, false) {
+            @Override public android.text.Editable getEditable() { return null; }
+            @Override public CharSequence getTextBeforeCursor(int n, int flags) { return " "; }
+            @Override public CharSequence getTextAfterCursor(int n, int flags) { return " "; }
+            @Override public boolean setComposingRegion(int start, int end) { return true; }
+            @Override public SurroundingText getSurroundingText(int before, int after, int flags) {
+                return new SurroundingText(before == 0 || after == 0 ? " " : "  ",
+                        1, 1, -1);
             }
+            @Override public boolean setSelection(int start, int end) { return true; }
             @Override public boolean commitText(CharSequence text, int newCursorPosition) {
-                // Preserve Android IME's editable state for Hangul composition.
-                super.commitText(text, newCursorPosition);
                 boolean x11 = ImeBridge.rootfulX11Active();
                 android.util.Log.i("AlrootWayland", "IME Android commit route="
                         + (x11 ? "rootful-X11" : "native-Wayland")
                         + " chars=" + text.length());
-                if (x11) ImeBridge.commit(text.toString());
+                if (x11) ImeBridge.commitComposed(text.toString());
                 else WaylandCompositor.textInputCommit(text.toString());
                 return true;
             }
             @Override public boolean setComposingText(CharSequence text, int newCursorPosition) {
-                super.setComposingText(text, newCursorPosition);
-                if (!ImeBridge.rootfulX11Active()) {
+                boolean x11 = ImeBridge.rootfulX11Active();
+                android.util.Log.i("AlrootWayland", "IME Android preedit route="
+                        + (x11 ? "rootful-X11" : "native-Wayland")
+                        + " chars=" + text.length());
+                if (x11) {
+                    ImeBridge.composing(text.toString());
+                } else {
                     WaylandCompositor.textInputPreedit(text.toString(), text.length());
                 }
-                // XTEST cannot transfer a preedit; insert only on commitText.
+                return true;
+            }
+            @Override public boolean finishComposingText() {
+                ImeBridge.finishComposing();
                 return true;
             }
             @Override public boolean deleteSurroundingText(int beforeLength, int afterLength) {
-                super.deleteSurroundingText(beforeLength, afterLength);
                 if (ImeBridge.rootfulX11Active()) ImeBridge.delete(beforeLength, afterLength);
                 else WaylandCompositor.textInputDelete(beforeLength, afterLength);
                 return true;
             }
+            @Override public boolean deleteSurroundingTextInCodePoints(int before, int after) {
+                return deleteSurroundingText(before, after);
+            }
+            @Override public boolean performEditorAction(int action) {
+                deliverKey(new KeyEvent(KeyEvent.ACTION_DOWN, KeyEvent.KEYCODE_ENTER), true);
+                deliverKey(new KeyEvent(KeyEvent.ACTION_UP, KeyEvent.KEYCODE_ENTER), false);
+                return true;
+            }
             @Override public boolean sendKeyEvent(KeyEvent event) {
+                if (event.getAction() == KeyEvent.ACTION_MULTIPLE) {
+                    String chars = event.getCharacters();
+                    if (chars != null && !chars.isEmpty()) {
+                        if (ImeBridge.rootfulX11Active()) ImeBridge.commitComposed(chars);
+                        else WaylandCompositor.textInputCommit(chars);
+                        return true;
+                    }
+                }
                 if (event.getAction() == KeyEvent.ACTION_DOWN ||
                         event.getAction() == KeyEvent.ACTION_UP) {
                     if (deliverKey(event, event.getAction() == KeyEvent.ACTION_DOWN)) {

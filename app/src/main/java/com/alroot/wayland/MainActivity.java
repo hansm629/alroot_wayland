@@ -40,6 +40,7 @@ import java.io.File;
 public final class MainActivity extends Activity implements SurfaceHolder.Callback {
     private final Handler main = new Handler(Looper.getMainLooper());
     private InputSurfaceView view;
+    private DisplayTiming displayTiming;
     private CursorOverlay cursorOverlay;
     private LinearLayout overlayRoot;
     private Button menuHandle;
@@ -155,6 +156,7 @@ public final class MainActivity extends Activity implements SurfaceHolder.Callba
     private final Choreographer.FrameCallback vsync = new Choreographer.FrameCallback() {
         @Override public void doFrame(long frameTimeNanos) {
             if (!vsyncOn) return;
+            if (displayTiming != null) displayTiming.frame(frameTimeNanos);
             if (HelperService.running)
                 WaylandCompositor.nativeVsync(frameTimeNanos);
             Choreographer.getInstance().postFrameCallback(this);
@@ -214,6 +216,7 @@ public final class MainActivity extends Activity implements SurfaceHolder.Callba
             }
         });
         setContentView(root);
+        displayTiming = new DisplayTiming(this);
 
         clipboard = (ClipboardManager) getSystemService(Context.CLIPBOARD_SERVICE);
         clipboardObserver = () -> {
@@ -490,7 +493,13 @@ public final class MainActivity extends Activity implements SurfaceHolder.Callba
         if (visible) im.hideSoftInputFromWindow(view.getWindowToken(), 0);
         else {
             view.requestFocus();
-            view.post(() -> im.showSoftInput(view, InputMethodManager.SHOW_IMPLICIT));
+            ImeBridge.resetComposing();
+            view.post(() -> {
+                im.restartInput(view);
+                boolean shown = im.showSoftInput(view, InputMethodManager.SHOW_IMPLICIT);
+                android.util.Log.i("AlrootWayland", "IME showSoftInput requested=" + shown
+                        + " viewFocused=" + view.hasFocus());
+            });
         }
     }
 
@@ -524,11 +533,16 @@ public final class MainActivity extends Activity implements SurfaceHolder.Callba
 
     @Override public void surfaceCreated(SurfaceHolder holder) {
         attached = holder.getSurface();
+        if (displayTiming != null) displayTiming.configureSurface(attached);
         attachIfReady();
     }
 
     @Override public void surfaceChanged(SurfaceHolder holder, int format, int w, int h) {
         attached = holder.getSurface();
+        if (displayTiming != null) {
+            displayTiming.refreshDisplay();
+            displayTiming.configureSurface(attached);
+        }
         attachIfReady();
         applyScale();
     }
@@ -538,6 +552,10 @@ public final class MainActivity extends Activity implements SurfaceHolder.Callba
         if (activeSurface != attached) {
             WaylandCompositor.nativeSetSurface(attached);
             activeSurface = attached;
+            if (displayTiming != null) {
+                displayTiming.refreshDisplay();
+                displayTiming.configureSurface(attached);
+            }
             applyScale();
         }
         if (!vsyncOn) {
@@ -577,6 +595,7 @@ public final class MainActivity extends Activity implements SurfaceHolder.Callba
     }
 
     @Override protected void onDestroy() {
+        if (displayTiming != null) displayTiming.close();
         main.removeCallbacks(cursorPoll);
         main.removeCallbacks(clipboardPoll);
         main.removeCallbacks(surfaceProbe);
