@@ -1,47 +1,120 @@
-# S26U run, diagnostics and safe recovery
+# Alroot Wayland P01 — awstart 실행 및 테스트
 
-Install the locally signed helper via Android system installer without deleting
-Termux or Termux-X11, then open Alroot Wayland. Verify UID/signature MATCH and
-the actual host socket status.
+This document is for the project-only Alroot Wayland helper, NOT tx11start.
+The normal path: Android helper → nested Labwc/pixman → separate rootful
+Xwayland → XFCE4/xfwm4. Direct SHM is a diagnostic-only profile.
 
-If default Termux Labwc aborts with libtermuxgui protobuf missing symbols, build
-the project-private wlroots library using
-`bash ~/alroot_wayland/packages/build-wlroots-termux.sh`.
-This does not overwrite system wlroots or protobuf; the Labwc profile
-sets an isolated LD_LIBRARY_PATH for its own process.
+## 0. Install or update the APK
 
-From the Termux shell (NOT inside PRoot):
+All commands below run in the NATIVE Termux shell, not Debian/PRoot.
 
-    bash ~/alroot_wayland/termux/alroot-wayland doctor
-    bash ~/alroot_wayland/termux/alroot-wayland status
-    bash ~/alroot_wayland/termux/alroot-wayland start --profile xfce-labwc
-    bash ~/alroot_wayland/termux/alroot-wayland logs
-    bash ~/alroot_wayland/termux/alroot-wayland open
+    cd ~/alroot_wayland
+    bash tools/install-cli.sh
+    awstart --doctor
+    awstart --smoke
 
-Diagnostic only: start --profile xfce-shm-direct (if Labwc fails).
-The Android menu provides controls for user capture, keyboard, output size,
-fit/stretch/fill, rotation, fullscreen, screen-on, and explicit stopping.
-Ctrl+Alt+Esc releases mouse capture and all injected key/button states.
+The helper must be signed with the installed Termux certificate. A newly
+built APK that includes LaunchInbox is required for the default --topapp
+launcher. Android installation still requires approval:
 
-Install a new, non-overwriting Termux command symlink and run diagnostics:
+    awstart --install-apk
 
-    bash ~/alroot_wayland/tools/install-cli.sh
-    alroot-wayland doctor
-    bash ~/alroot_wayland/tests/p01-smoke.sh
+Before upgrading an already active APK, stop this Alroot session and native
+server through its app menu. Never uninstall Termux or Termux-X11.
 
-X11 clipboard and Android committed IME text use a separate project-owned
-bridge under ~/.alroot-wayland/ipc. It uses only the isolated rootful X DISPLAY
-and pinned Termux xclip/xdotool packages. Clipboard is UTF-8 text only
-(maximum 1 MiB); X11 IME sends completed text via XTEST (up to 16 KiB
-per commit). Preedit remains Android-side until commit. Korean and multiline
-typing remain TEST-PENDING until live IDE verification.
+## 1. One-command startup
 
-Logs: ~/.alroot-wayland/logs, ~/.alroot-wayland/spawn.log;
-Android: logcat -s AlrootWayland DroidDeckWayland
+    awstart
 
-Stop only this project's session:
+Default is xfce-labwc. The APK Activity is brought to the foreground and
+consumes a private, single-use, fixed-profile request. No arbitrary Android
+broadcast command is used. A request acknowledgment is NOT desktop readiness.
 
-    bash ~/alroot_wayland/termux/alroot-wayland stop
+The guest compositor uses pixman/SHM; Android's native host still uses Vulkan.
+Begin with Android app output size set to 1280x720 so it matches the P01
+rootful Xwayland baseline. Output-size synchronization is part of P02.
 
-Then use the app menu to stop its server. Existing tx11start/Termux-X11 is
-untouched. Text composition and nested clipboard require real IDE testing.
+Older APK fallback (Termux-shell spawn, NOT top-app performance verified):
+
+    awstart --no-topapp
+
+If the same profile is already running, awstart only reopens the Activity.
+A restart that ends the existing Alroot session is always explicit.
+
+## 2. tx11start-style command options
+
+    awstart --help
+    awstart --status
+    awstart --logs
+    awstart --doctor
+    awstart --open
+    awstart --stop
+    awstart --restart
+    awstart --direct
+    awstart --no-topapp --direct
+    awstart --debug
+    awstart --dry-run
+
+--direct selects xfce-shm-direct: host → rootful Xwayland → XFCE4. It does
+NOT mean the normal nested Labwc profile works.
+
+--stop only signals project-recorded session PIDs, not Termux-X11 :0 and
+not the Android native host. Stop the native host explicitly in the APK menu.
+
+Unlike tx11start, awstart does not kill old desktops, set global Mesa
+variables, change GPU clocks, run a GPU keep-alive, or reset PulseAudio.
+Resolution, orientation, fullscreen, cursor capture and Android IME remain
+in the APK settings UI.
+
+## 3. Live XFCE verification
+
+    awstart --status
+    awstart --logs
+
+Expected: host READY, labwc RUNNING, xwayland RUNNING, xfce RUNNING,
+clipboard RUNNING. The normal nested Labwc creates its own Wayland socket
+(e.g. wayland-1); rootful Xwayland uses a separate free X DISPLAY (e.g. :90).
+NEVER assume :0.
+
+Read the actual project display, not the inherited Termux-X11 display:
+
+    display="$(cat ~/.alroot-wayland/display)"
+    DISPLAY="$display" XAUTHORITY="$HOME/.alroot-wayland/Xauthority" xdpyinfo | grep -E 'name of display|dimensions'
+    DISPLAY="$display" XAUTHORITY="$HOME/.alroot-wayland/Xauthority" xrandr --query | head -8
+
+In the APK visually confirm the XFCE panel, terminal and Thunar. Test
+mouse movement/buttons, scroll, drag-select, manual desktop capture,
+Ctrl+Alt+Esc release, Android Back keyboard toggle, shortcuts, Korean
+committed text/preedit, deletion, and bidirectional multiline clipboard.
+
+Then switch apps or rotate and reopen. The Wayland native host and guest
+session should remain alive. Actual screen/input tests are still required.
+
+## 4. Failure logs and safe recovery
+
+    awstart --logs
+    logcat -d -s AlrootWayland DroidDeckWayland | tail -60
+
+If normal Labwc fails, stop this session, then try the direct diagnostic:
+
+    awstart --stop
+    awstart --direct
+
+The project-private wlroots path fixes bionic SHM and Termux's X11 socket
+directory; it never replaces system wlroots/Mesa. Rebuild it if missing:
+
+    bash ~/alroot_wayland/packages/build-wlroots-termux.sh
+
+Stop project-owned desktop processes only:
+
+    awstart --stop
+
+The Android host stays active until stopped using its app menu. The user's
+original Termux-X11/tx11start remains untouched.
+
+## Acceptance boundary
+
+GitHub APK BUILD PASS, a matching signing certificate, and live process
+status do NOT prove on-screen frame correctness, IME or input PASS.
+Default awstart --topapp causes Activity-side spawn, but only actual child
+thread cgroup/cpuset measurements can establish performance policy in P02.

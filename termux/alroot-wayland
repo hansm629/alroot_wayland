@@ -148,6 +148,8 @@ start_xwayland() {
     local parent_display="$1" n
     export XDG_RUNTIME_DIR="$RUNTIME" WAYLAND_DISPLAY="$parent_display"
     export XAUTHORITY="$STATE/Xauthority"
+    # Never inherit a pre-existing Termux-X11 :0 DISPLAY from the caller.
+    unset DISPLAY
     for n in $(seq 90 180); do
         if [[ ! -e "$PREFIX/tmp/.X11-unix/X$n" && ! -e "$PREFIX/tmp/.X$n-lock" ]]; then
             break
@@ -160,7 +162,10 @@ start_xwayland() {
     cookie="$(od -An -N16 -tx1 /dev/urandom | tr -d ' \n')"
     xauth -f "$XAUTHORITY" add ":$n" MIT-MAGIC-COOKIE-1 "$cookie" >/dev/null 2>&1
     unset cookie
-    Xwayland ":$n" -auth "$XAUTHORITY" -nolisten tcp -terminate \
+    # Do not use -terminate: the xdpyinfo readiness probe is a short-lived
+    # X11 client. With -terminate, the server exits before XFCE connects.
+    # P01 software baseline; advanced output-size synchronization is P02.
+    Xwayland ":$n" -geometry 1280x720 -auth "$XAUTHORITY" -nolisten tcp \
         > "$LOGS/xwayland.log" 2>&1 &
     record_pid xwayland "$!"
     local i

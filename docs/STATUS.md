@@ -19,3 +19,13 @@
 | GPU-copy/zero-copy | NOT STARTED | P03-P08, not P01 |
 
 Do not promote code existence or build success into screen/input PASS.
+
+## S26U awstart actual shell integration
+- awstart installed as a new non-overwriting Termux CLI shortcut; help, doctor, dry run and smoke tests succeeded.
+- S26U nested Labwc: host socket READY, Labwc and project-owned rootful Xwayland :90, XFCE, clipboard processes RUNNING.
+- Private wlroots Android patch now also fixes Termux X11 socket paths (system lib untouched).
+- Rootful Xwayland now stays alive after readiness probe: removed -terminate.
+- Guest P01 initial rootful output size 1280x720; APK size synchronization is P02.
+- Android host logs have compositor/client frames but GUI/capture/IME/clipboard user confirmation is still TEST-PENDING.
+- New foreground Activity handoff requires app version 2 update; top-app cgroup/cpuset worker policy remains TEST-PENDING.
+- User's original Termux-X11 :0 and XFCE process survived session tests.

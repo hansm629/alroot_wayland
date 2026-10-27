@@ -1,0 +1,209 @@
+#!/data/data/com.termux/files/usr/bin/bash
+# Alroot Wayland P01 convenience launcher (tx11start-inspired, never calls it).
+set -euo pipefail
+
+HOME=/data/data/com.termux/files/home
+PREFIX=/data/data/com.termux/files/usr
+PROJECT="$HOME/alroot_wayland"
+STATE="$HOME/.alroot-wayland"
+CONTROL="$STATE/control"
+CLI="$PROJECT/termux/alroot-wayland"
+APP="com.alroot.wayland/.MainActivity"
+export TMPDIR="$PREFIX/tmp"
+
+usage() {
+    cat <<'HELP'
+awstart                           Start helper + XFCE4 (nested Labwc, software client)
+awstart --direct                  Diagnostic: host -> rootful Xwayland -> XFCE4
+awstart --profile xfce-labwc      Explicit normal profile (default)
+awstart --profile xfce-shm-direct
+awstart --topapp                  Spawn from foreground helper Activity (default)
+awstart --no-topapp               Spawn from Termux shell (CPU policy may differ)
+awstart --no-wait                 Queue request without waiting for session startup
+awstart --status                  Show installed APK and this project's session
+awstart --open                    Reopen helper Activity, do not start a session
+awstart --stop                    Stop only project-owned desktop processes
+awstart --restart                 Stop project session and start again
+awstart --logs                    Show project-specific logs
+awstart --doctor                  Check APK, CLI, Labwc and Termux dependencies
+awstart --smoke                   Run safe local preflight checks
+awstart --install-apk             Open Android installer for signed P01 APK
+awstart --debug                   Show more launch and status information
+awstart --dry-run                 Preview without opening apps or changing files
+awstart --help                    Display this help
+
+P01 rendering: nested Labwc uses pixman/SHM; Android host still uses Vulkan.
+No Termux-X11 pkill, no global Mesa change, no GPU keep-alive/clock overrides.
+HELP
+}
+
+die() { printf '[awstart] ERROR: %s\n' "$*" >&2; exit 1; }
+msg() { printf '[awstart] %s\n' "$*"; }
+app_installed() { pm path com.alroot.wayland 2>/dev/null | grep -q '^package:'; }
+
+action=start
+profile=xfce-labwc
+topapp=1
+no_wait=0
+debug=0
+dry_run=0
+primary_action_count=0
+while (($#)); do
+    case "$1" in
+        -h|--help) usage; exit 0 ;;
+        --start) ((primary_action_count+=1)); action=start ;;
+        --direct|--shm-direct) profile=xfce-shm-direct ;;
+        --profile)
+            (($# >= 2)) || die '--profile requires a name'
+            profile="$2"; shift ;;
+        --topapp) topapp=1 ;;
+        --no-topapp) topapp=0 ;;
+        --no-wait) no_wait=1 ;;
+        --debug) debug=1 ;;
+        --dry-run) dry_run=1 ;;
+        --open|--stop|--status|--logs|--doctor|--smoke|--install-apk|--restart)
+            ((primary_action_count+=1))
+            action="${1#--}" ;;
+        --nogpu|--no-gpu)
+            die 'P01 guest uses pixman already; --nogpu would incorrectly imply Android Vulkan is disabled.' ;;
+        --xstartup|--nodbus|--legacy)
+            die "$1 is not a supported P01 mode (only XFCE4 is validated)." ;;
+        *) die "Unknown option $1 (awstart --help)" ;;
+    esac
+    shift
+done
+((primary_action_count <= 1)) || die 'Specify only one primary action'
+[[ "$profile" == xfce-labwc || "$profile" == xfce-shm-direct ]] ||
+    die "Invalid profile: $profile"
+[[ -r "$CLI" ]] || die "Missing Alroot session CLI: $CLI"
+
+case "$action" in
+    status)
+        if app_installed; then msg 'Android helper APK: INSTALLED'
+        else msg 'Android helper APK: NOT INSTALLED'; fi
+        exec "$PREFIX/bin/bash" "$CLI" status ;;
+    logs)
+        "$CLI" logs
+        ((debug)) && { logcat -d -s AlrootWayland DroidDeckWayland 2>/dev/null | tail -25 || true; }
+        exit 0 ;;
+    doctor)
+        "$CLI" doctor
+        if app_installed; then msg 'Helper APK: INSTALLED'
+        else msg 'Helper APK: NOT INSTALLED'; fi
+        msg 'Client renderer: pixman; native Android host: Vulkan (not disabled)'
+        exit 0 ;;
+    smoke) exec "$PREFIX/bin/bash" "$PROJECT/tests/p01-smoke.sh" ;;
+    stop)
+        "$CLI" stop
+        msg 'Project session stop requested; native Android host remains until explicitly stopped.'
+        exit 0 ;;
+    install-apk)
+        apk="$PROJECT/artifacts/alroot-wayland-p01-signed.apk"
+        [[ -r "$apk" ]] || die "Missing signed APK: $apk"
+        ((dry_run)) && { msg "Would open Android package installer for $apk"; exit 0; }
+        termux-open --view --content-type application/vnd.android.package-archive "$apk"
+        msg 'Installer requested; approve on Android (not silently installed).'
+        exit 0 ;;
+    open)
+        ((dry_run)) && { msg "Would execute: am start -n $APP"; exit 0; }
+        app_installed || die 'APK missing. Run awstart --install-apk first.'
+        am start -n "$APP"
+        exit 0 ;;
+    restart)
+        ((dry_run)) || "$CLI" stop ;;
+    start) ;;
+esac
+
+if ((dry_run)); then
+    msg "profile=$profile, spawn=$([[ "$topapp" == 1 ]] && echo 'helper-Activity' || echo 'Termux-shell'), no-wait=$no_wait"
+    msg 'Would open Alroot Wayland APK and start only the selected XFCE4 profile.'
+    exit 0
+fi
+
+[[ "$(id -u)" != 0 ]] || die 'Run as Termux native user, not root'
+tracer="$(sed -n 's/^TracerPid:[[:space:]]*//p' "/proc/$$/status" | head -1)"
+if [[ "${tracer:-0}" != 0 ]]; then
+    tracer_name="$(sed -n 's/^Name:[[:space:]]*//p' "/proc/$tracer/status" 2>/dev/null | head -1)"
+    [[ "${tracer_name:-}" != proot ]] ||
+        die 'Run outside PRoot in the native Termux shell'
+fi
+app_installed || die 'Helper APK not installed. Run awstart --install-apk and approve installation.'
+
+# Safe, idempotent default: reopening an existing profile does not spawn
+# a second XFCE or disturb existing Termux-X11. --restart is explicit.
+current_status="$("$CLI" status)"
+if grep -q '^xfce: RUNNING ' <<< "$current_status"; then
+    active_profile="$(sed -n 's/^profile: //p' <<< "$current_status" | head -1)"
+    if [[ "$active_profile" == "$profile" ]] &&
+       grep -q '^xwayland: RUNNING ' <<< "$current_status" &&
+       { [[ "$profile" == xfce-shm-direct ]] ||
+         grep -q '^labwc: RUNNING ' <<< "$current_status"; }; then
+        am start -n "$APP" >/dev/null || die 'Could not reopen the active helper Activity'
+        msg "Already running: $profile. Reopened helper without starting another session."
+        printf '%s\n' "$current_status"
+        exit 0
+    fi
+    die "Another Alroot session is active: $active_profile. Use awstart --stop or --restart."
+fi
+
+if ((topapp)); then
+    umask 077
+    mkdir -p "$CONTROL"
+    chmod 700 "$STATE" "$CONTROL"
+    exec 8>"$CONTROL/request.lock"
+    flock -n 8 || die 'Another awstart request is active'
+    [[ ! -L "$CONTROL/start-request" ]] || die 'Untrusted request symlink'
+    stamp="$(date +%s)"
+    request_id="$stamp-$$"
+    candidate="$(mktemp "$CONTROL/.request.XXXXXXXX")"
+    printf 'start %s %s %s\n' "$profile" "$stamp" "$request_id" > "$candidate"
+    chmod 600 "$candidate"
+    mv -f "$candidate" "$CONTROL/start-request"
+    rm -f "$CONTROL/start-ack"
+    if ! am start -n "$APP" > "$CONTROL/open.log" 2>&1; then
+        if [[ -f "$CONTROL/start-request" ]] &&
+            grep -qF " $request_id" "$CONTROL/start-request"; then
+            rm -f "$CONTROL/start-request"
+        fi
+        die "Cannot open helper Activity. See $CONTROL/open.log"
+    fi
+    msg "Foreground helper requested: $profile"
+    ((debug)) && { cat "$CONTROL/open.log"; msg "Request ID: $request_id"; }
+    ((no_wait)) && { msg 'Queued; check awstart --status / --logs.'; exit 0; }
+    accepted=0
+    for ((attempt=0; attempt<30; ++attempt)); do
+        if [[ -f "$CONTROL/start-ack" ]]; then
+            IFS=' ' read -r ack_id ack_state < "$CONTROL/start-ack" || true
+            if [[ "${ack_id:-}" == "$request_id" ]]; then
+                if [[ "${ack_state:-}" == REQUESTED ]]; then accepted=1; break; fi
+                die "Helper rejected request: $ack_state (awstart --logs)"
+            fi
+        fi
+        sleep .5
+    done
+    ((accepted)) || die 'Foreground helper did not acknowledge. Check app screen and Android logs.'
+    msg 'Foreground Activity accepted session spawn request (NOT yet graphical PASS).'
+else
+    msg 'Shell-spawn mode does NOT ensure top-app CPU scheduling.'
+    am start -n "$APP" >/dev/null || die 'Failed to open helper Activity'
+    "$CLI" start --profile "$profile"
+    ((no_wait)) && exit 0
+fi
+
+for ((attempt=0; attempt<40; ++attempt)); do
+    report="$("$CLI" status)"
+    if grep -q '^host: .* READY$' <<< "$report" &&
+       grep -q '^xwayland: RUNNING ' <<< "$report" &&
+       grep -q '^xfce: RUNNING ' <<< "$report" &&
+       { [[ "$profile" == xfce-shm-direct ]] ||
+         grep -q '^labwc: RUNNING ' <<< "$report"; }; then
+        msg 'Host socket and desktop processes ready; verify real pixels and input in the APK.'
+        printf '%s\n' "$report"
+        exit 0
+    fi
+    sleep .5
+done
+msg 'Desktop did not reach process readiness; latest status:'
+"$CLI" status
+msg 'Collect logs: awstart --logs'
+exit 1

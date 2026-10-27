@@ -19,6 +19,21 @@ public final class TermuxSession {
 
     private TermuxSession() {}
 
+    public static boolean isCompatible(Activity activity) {
+        try {
+            PackageManager pm = activity.getPackageManager();
+            int installedUid = pm.getApplicationInfo("com.termux", 0).uid;
+            byte[] theirs = certificate(pm, "com.termux");
+            byte[] ours = certificate(pm, activity.getPackageName());
+            return installedUid == android.os.Process.myUid()
+                    && theirs != null && ours != null
+                    && MessageDigest.isEqual(theirs, ours);
+        } catch (Exception e) {
+            return false;
+        }
+    }
+
+
     public static String uidAndSigning(Activity activity) {
         try {
             PackageManager pm = activity.getPackageManager();

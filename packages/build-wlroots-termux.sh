@@ -5,7 +5,7 @@ PROJECT=/data/data/com.termux/files/home/alroot_wayland
 SOURCE="$PROJECT/.source/wlroots-0.18.2"
 BUILD="$PROJECT/.source/wlroots-build"
 PREFIX="$PROJECT/packages/prefix"
-PATCH="$PROJECT/packages/patches/wlroots-0.18.2-bionic-runtime-shm.patch"
+PATCH="$PROJECT/packages/patches/wlroots-0.18.2-bionic-shm-xwayland-sockets.patch"
 EXPECTED=cda69b696d65a53d5d5e75dfed059a3803e0d700
 UPSTREAM=https://gitlab.freedesktop.org/wlroots/wlroots.git
 

@@ -170,6 +170,7 @@ public final class MainActivity extends Activity implements SurfaceHolder.Callba
             @Override public void run() {
                 if (isFinishing() || isDestroyed()) return;
                 attachIfReady();
+                LaunchInbox.consume(MainActivity.this);
                 updateStatus();
                 main.postDelayed(this, 1800);
             }

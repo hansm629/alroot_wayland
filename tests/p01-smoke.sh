@@ -3,7 +3,7 @@ set -euo pipefail
 
 PROJECT=/data/data/com.termux/files/home/alroot_wayland
 cd "$PROJECT"
-for script in termux/alroot-wayland termux/clipboard-broker.sh \
+for script in termux/alroot-wayland termux/awstart termux/clipboard-broker.sh \
               packages/build-wlroots-termux.sh tools/install-cli.sh tools/sign-local.sh; do
     bash -n "$script"
 done
@@ -22,8 +22,18 @@ echo 'PASS: pinned private wlroots / Labwc dynamic linking'
 doctor_output="$(alroot-wayland doctor)"
 status_output="$(alroot-wayland status)"
 grep -q 'labwc:' <<< "$doctor_output"
-grep -q 'xwayland: DOWN' <<< "$status_output"
+grep -q 'xwayland:' <<< "$status_output"
 echo 'PASS: CLI diagnostics without altering pre-existing session'
+help_output="$(awstart --help)"
+normal_preview="$(awstart --dry-run)"
+direct_preview="$(awstart --direct --dry-run)"
+grep -q 'Start helper + XFCE4' <<< "$help_output"
+grep -q 'profile=xfce-labwc' <<< "$normal_preview"
+grep -q 'profile=xfce-shm-direct' <<< "$direct_preview"
+if awstart --profile unsupported --dry-run >/dev/null 2>&1; then
+    echo 'FAIL: launcher accepted an unapproved profile' >&2; exit 1
+fi
+echo 'PASS: tx11start-style awstart parsing and no-side-effect previews'
 
 if [[ -r artifacts/alroot-wayland-p01-signed.apk ]]; then
     apk="$(pm path com.termux | sed -n '1s/^package://p')"
