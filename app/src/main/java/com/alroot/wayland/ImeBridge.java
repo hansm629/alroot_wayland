@@ -136,7 +136,10 @@ public final class ImeBridge {
             io.post(() -> send('T', value));
             return;
         }
+        boolean directKoreanSwitch = asciiComposing && text != null &&
+                !text.isEmpty() && !asciiOnly(text);
         finalizeNativeAscii(ms);
+        if (directKoreanSwitch) composition.keyboardSwitchedToKorean(ms);
         composition.committed(text, ms, compositionSink);
     }
 

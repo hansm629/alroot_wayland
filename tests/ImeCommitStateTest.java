@@ -128,6 +128,16 @@ public final class ImeCommitStateTest {
         o.check("한");
         check(o.mutations == 1, "Do not replay text after finishComposing");
     }
+    static void directKoreanCommitAfterAscii() {
+        ImeCommitState state = new ImeCommitState();
+        FakeSink out = new FakeSink();
+        out.committed("hello"); // already displayed via the native ASCII path
+        state.alreadyInsertedAscii("hello", 100);
+        state.keyboardSwitchedToKorean(150);
+        state.committed("hello한", 160, out);
+        out.check("hello한");
+        check(out.deletions == 0, "No English text replacement on direct switch");
+    }
     public static void main(String[] args) {
         englishHangulSwitch();
         hangulEvolutionNoFlicker();
@@ -139,6 +149,7 @@ public final class ImeCommitStateTest {
         legitimateEnglishRepeat();
         differentVowelSameSyllable();
         finishThenRepeatedCommit();
-        System.out.println("PASS: 10 real ImeCommitState scenarios; no destructive preedit");
+        directKoreanCommitAfterAscii();
+        System.out.println("PASS: 11 ImeCommitState scenarios; no destructive preedit");
     }
 }

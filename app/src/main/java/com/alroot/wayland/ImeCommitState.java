@@ -89,6 +89,12 @@ public final class ImeCommitState {
         recentAsciiMs = ms;
     }
 
+    /** Direct non-ASCII commits can arrive without a preceding preedit. */
+    public synchronized void keyboardSwitchedToKorean(long nowMs) {
+        transitioning = true;
+        koreanTransitionMs = nowMs;
+    }
+
     public synchronized void composing(String incoming, long nowMs, Sink sink) {
         if (incoming == null) incoming = "";
         if (!incoming.isEmpty()) mostRecentFinish = "";

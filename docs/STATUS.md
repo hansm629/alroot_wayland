@@ -189,9 +189,10 @@ Do not promote code existence or build success into screen/input PASS.
   immutable Hangul syllable prefixes reach the native X11 daemon. A
   narrowly bounded recent-ASCII check removes English echoes at the first
   Korean preedit transition. Local deletion of pending composition avoids
-  accidental X11 Backspace. Ten synthetic Java scenarios passed (including
+  accidental X11 Backspace. Eleven synthetic Java scenarios passed (including
   English→Korean, sequential Hangul, 0-length commits, finish/replay and
-  backspace). The legacy ASCII preedit renderer remains immediate in X11
+  backspace and direct no-preedit keyboard switching). The legacy ASCII
+  preedit renderer remains immediate in X11
   so English composition responsiveness does not regress.
 - This cannot produce fully inline animated GTK/XIM preedit: unfinished
   Korean syllables remain in the Android IME until committed. Actual
