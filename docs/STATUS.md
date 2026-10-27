@@ -132,7 +132,10 @@ Do not promote code existence or build success into screen/input PASS.
   Source diagnosis: persistent native IME used X11 CLIPBOARD as paste
   transport. P05 rewrites native Unicode input using a blank XKB/X11
   keycode and XTEST with no CLIPBOARD involvement. Private Xvfb GTK and
-  terminal tests passed. On-device Samsung IME acceptance is pending.
+  terminal tests passed. Android now refuses Unicode clipboard fallback
+  if the persistent XTEST daemon is unavailable, preventing a recurrence
+  of Android copy notifications and unintended pasted selections.
+  On-device Samsung IME acceptance is pending.
 - XFCE panel: GenMon is registered under plugin-107 and is running, but
   user reports missing visual output. Project-private GTK battery tray
   icon was confirmed XEmbed-embedded on the Alroot :90 XFCE panel.

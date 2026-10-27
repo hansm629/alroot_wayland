@@ -179,8 +179,21 @@ public final class ImeBridge {
             Log.w(TAG, "IME payload exceeds bounded 16KiB");
             return;
         }
-        if (!sendSocket(operation, data))
+        if (!sendSocket(operation, data)) {
+            // Never revive the old Unicode->X11-CLIPBOARD fallback. It
+            // generated the Android "copied to connected device" toast and
+            // could paste an unrelated clipboard selection into the editor.
+            // Preserve plain-ASCII input via legacy XTEST, but report a
+            // bounded failure for Unicode until the native daemon recovers.
+            boolean unicode = false;
+            for (byte b : data) if ((b & 0x80) != 0) { unicode = true; break; }
+            if (unicode && (operation == 'C' || operation == 'T')) {
+                Log.e(TAG, "IME Unicode temporarily unavailable: XTEST daemon is down; "
+                        + "clipboard fallback is prohibited");
+                return;
+            }
             legacy(operation, payload);
+        }
     }
 
     private static void legacy(char operation, String value) {
