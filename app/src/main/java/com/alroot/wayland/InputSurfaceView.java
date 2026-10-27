@@ -31,6 +31,7 @@ public final class InputSurfaceView extends SurfaceView {
     private int pointerSpeed;
     private int acceleration;
     private int primaryPointer = -1;
+    private boolean touchpadCursorActive;
     private long touchStarted;
     private float touchStartX, touchStartY, prevX, prevY, prevCentroidY;
     private boolean pressed, dragStarted, touchMoved, multipleTouch, scrolled, overlayGesture;
@@ -69,7 +70,7 @@ public final class InputSurfaceView extends SurfaceView {
     public float pointerX() { return lastX; }
     public float pointerY() { return lastY; }
     public boolean isSoftwareCursorWanted() {
-        return captured || (inputMode == MODE_TOUCHPAD && pointerInitialized);
+        return captured || (inputMode == MODE_TOUCHPAD && touchpadCursorActive);
     }
     public float cursorScaleX() { return 1f / pointerScaleX; }
     public float cursorScaleY() { return 1f / pointerScaleY; }
@@ -82,6 +83,7 @@ public final class InputSurfaceView extends SurfaceView {
         if (mode < MODE_TOUCHPAD || mode > MODE_DIRECT_TOUCH) return;
         cancelGesture();
         inputMode = mode;
+        touchpadCursorActive = false;
         pointerSpeed = Math.max(50, Math.min(300, speed));
         acceleration = Math.max(0, Math.min(200, accel));
         getContext().getSharedPreferences("display", Context.MODE_PRIVATE).edit()
@@ -144,7 +146,6 @@ public final class InputSurfaceView extends SurfaceView {
         for (Integer code : new HashSet<>(keys)) WaylandCompositor.nativeSendKey(code, 0);
         keys.clear();
         for (int btn : new int[] {272, 273, 274}) WaylandCompositor.nativeSendSceneInput(3, btn, 0);
-        primaryTouchDown = false;
     }
 
     @Override public boolean onKeyDown(int keyCode, KeyEvent event) {
@@ -277,6 +278,10 @@ public final class InputSurfaceView extends SurfaceView {
 
     @Override public boolean onGenericMotionEvent(MotionEvent event) {
         if (event.isFromSource(android.view.InputDevice.SOURCE_MOUSE)) {
+            if (touchpadCursorActive) {
+                touchpadCursorActive = false;
+                if (onCursorMove != null) onCursorMove.run();
+            }
             if (event.getActionMasked() == MotionEvent.ACTION_HOVER_MOVE ||
                     event.getActionMasked() == MotionEvent.ACTION_MOVE) {
                 absolute(event.getX(), event.getY());
@@ -344,6 +349,8 @@ public final class InputSurfaceView extends SurfaceView {
         // tap clicks, long hold drags, and two fingers scroll.
         if (a == MotionEvent.ACTION_DOWN) {
             if (!pointerInitialized) absolute(getWidth() / 2f, getHeight() / 2f);
+            touchpadCursorActive = true;
+            if (onCursorMove != null) onCursorMove.run();
             primaryPointer = event.getPointerId(0);
             touchStarted = event.getEventTime();
             prevX = touchStartX = event.getX(0);

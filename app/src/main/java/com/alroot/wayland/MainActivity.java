@@ -422,7 +422,7 @@ public final class MainActivity extends Activity implements SurfaceHolder.Callba
     }
 
     private void toggleFullscreen() {
-        prefs().edit().putBoolean("fullscreen", !prefs().getBoolean("fullscreen", false)).apply();
+        prefs().edit().putBoolean("fullscreen", !prefs().getBoolean("fullscreen", true)).apply();
         restoreWindowSettings();
     }
 
