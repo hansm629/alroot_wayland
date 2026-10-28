@@ -262,6 +262,35 @@ Do not promote code existence or build success into screen/input PASS.
   This is NOT physical Samsung keyboard-to-pixel evidence.
 - Native IO HandlerThread queue delay now logged in aggregate without
   typed text. Physical keyboard acceptance is TEST-PENDING after APK.
+
+## P10 2026-10-28 — residual Korean cursor redraw smoothing
+
+- User confirms P09 critical Hangul input delay fixed, but occasional
+  caret flicker/stutter remains, especially during composition delete.
+  Battery, wallpaper, PiP, native Termux-X11 and input responsiveness
+  must not regress.
+- Native IME socket queue measured ~0.1ms Java worker latency and native
+  processing averages well under 2ms, so simply increasing timeouts
+  or reverting to commit-only Hangul would worsen actual responsiveness.
+- A private Xvfb/GTK visual-state test reproduced an empty *redraw*
+  when C("") was dispatched between C("한") and C("하").
+  Direct replacement preserved the correct text without an empty
+  GTK draw, even though multiple internal changed events occur.
+- P10 defers only an empty Korean composing/delete revision for 9ms
+  (about one 120Hz frame). Any following revised preedit cancels that
+  temporary erase; all nonempty Korean composing and English events
+  remain immediate. Ordered flush on committed-DEL, finish/focus and
+  a second Backspace avoids stale events and accidental extra deletion.
+- Removed per-Unicode-key XSync round trips, preserving necessary
+  keymap synchronization and one operation-level flush.
+- Headless tests of both deletion APIs yielded final correct Korean
+  glyph and zero painted intermediate blank frames. Previous P09
+  Java/native/GTK, P04 terminal and P06 10/24 distinct Korean tests
+  still passed. Physical Samsung/One UI acceptance is TEST-PENDING.
+- XTEST remains a keypress compatibility layer, not true XIM preedit.
+  It cannot guarantee zero GTK internal change notifications or
+  eliminate every possible visual cursor animation. True inline
+  composition would require later XIM/GTK bridge work.
 - P04 refresh stability: Choreographer measured timestamp jitter briefly
   caused the older code to advertise 122Hz despite the physical mode
   remaining 120Hz. This release retains the actual Android active physical

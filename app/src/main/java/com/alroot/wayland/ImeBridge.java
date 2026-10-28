@@ -32,6 +32,12 @@ public final class ImeBridge {
     private static final ImeCommitState composition = new ImeCommitState();
     private static final ImeBackspaceGuard backspaceGuard =
             new ImeBackspaceGuard();
+    private static final ImeCompositionSmoother deletionSmoother =
+            new ImeCompositionSmoother();
+    // At 120Hz this is roughly one frame. ONLY an empty Korean deletion is
+    // deferred; English and every nonempty composing change remain immediate.
+    private static final long EMPTY_PREEDIT_MERGE_MS = 9L;
+    private static int mergedEmptyDeletes;
     private static boolean asciiComposing;
     private static String asciiDraft = "";
     private static int lastLoggedEchoCount;
@@ -39,9 +45,46 @@ public final class ImeBridge {
     private static int measuredPreeditCount;
     private static long measuredPreeditQueueNs;
     private static long longestPreeditQueueNs;
+    private static final Runnable flushEmptyPreedit = () -> {
+        synchronized (ImeBridge.class) {
+            deletionSmoother.flush(value ->
+                    io.post(() -> send('C', value)));
+        }
+    };
+    private static void stageEmptyPreedit() {
+        deletionSmoother.deletedRevision("", value ->
+                io.post(() -> send('C', value)));
+        io.removeCallbacks(flushEmptyPreedit);
+        io.postDelayed(flushEmptyPreedit, EMPTY_PREEDIT_MERGE_MS);
+    }
+    private static void cancelDeferredEmpty() {
+        if (deletionSmoother.hasPending()) {
+            deletionSmoother.cancel();
+            io.removeCallbacks(flushEmptyPreedit);
+            mergedEmptyDeletes++;
+            if (mergedEmptyDeletes % 32 == 0)
+                Log.i(TAG, "IME avoided intermediate empty Hangul redraw count=" +
+                        mergedEmptyDeletes);
+        }
+    }
+    private static void flushDeferredEmpty() {
+        io.removeCallbacks(flushEmptyPreedit);
+        deletionSmoother.flush(value ->
+                io.post(() -> send('C', value)));
+    }
     private static final ImeCommitState.Sink compositionSink =
             new ImeCommitState.Sink() {
                 @Override public void composing(String text) {
+                    if (text.isEmpty()) {
+                        // Samsung may send setComposingText("") before a
+                        // replacement, even without deleteSurroundingText.
+                        // Holding only this empty frame avoids a visible
+                        // temporary caret jump while preserving immediate
+                        // nonempty Hangul composition.
+                        stageEmptyPreedit();
+                        return;
+                    }
+                    cancelDeferredEmpty();
                     // Native 'C' displays the mutable Korean syllable now,
                     // matching the working P06/Termux-X11 immediate input.
                     final long enqueuedNs = SystemClock.elapsedRealtimeNanos();
@@ -62,10 +105,30 @@ public final class ImeBridge {
                     });
                 }
                 @Override public void committed(String text) {
+                    // The native T event already reconciles any old visible
+                    // composition. Never send a stale empty C after it.
+                    cancelDeferredEmpty();
                     io.post(() -> send('T', text));
                 }
                 @Override public void delete(int before, int after) {
+                    // If an edit deletes text BEFORE the pending composing
+                    // glyph, erase that glyph before the committed D event.
+                    flushDeferredEmpty();
                     io.post(() -> send('D', before + " " + after));
+                }
+            };
+    private static final ImeCommitState.Sink deletingCompositionSink =
+            new ImeCommitState.Sink() {
+                @Override public void composing(String text) {
+                    // The same empty-frame coalescer is used for both
+                    // deleteSurroundingText and setComposingText("").
+                    compositionSink.composing(text);
+                }
+                @Override public void committed(String text) {
+                    compositionSink.committed(text);
+                }
+                @Override public void delete(int before, int after) {
+                    compositionSink.delete(before, after);
                 }
             };
     private static LocalSocket socket;
@@ -138,9 +201,15 @@ public final class ImeBridge {
         }
         if (asciiOnly(text)) {
             if (!asciiComposing && composition.duplicateAsciiComposing(text, ms)) {
+                // This English preedit was filtered, so it will not replace
+                // the previous Korean glyph. Preserve the pending deletion.
+                flushDeferredEmpty();
                 maybeLogEchoSuppressions();
                 return;
             }
+            // A fresh English C will replace the old composing suffix,
+            // so an intervening pending C("") is not needed.
+            cancelDeferredEmpty();
             // The original English path is already smooth: keep incremental
             // ASCII composing in XTEST, rather than delaying it until space.
             if (composition.hasDraft())
@@ -200,11 +269,16 @@ public final class ImeBridge {
             return;
         }
         composition.finished(SystemClock.elapsedRealtime(), compositionSink);
+        // No final T may have been sent when DEL emptied the entire draft.
+        // Make sure the native glyph is cleared BEFORE native F resets
+        // its composition tracking.
+        flushDeferredEmpty();
         io.post(() -> send('F', ""));
     }
 
     public static synchronized void resetComposing() {
         finalizeNativeAscii(SystemClock.elapsedRealtime());
+        flushDeferredEmpty();
         composition.reset();
         backspaceGuard.reset();
         io.post(() -> send('R', ""));
@@ -236,7 +310,7 @@ public final class ImeBridge {
                 io.post(() -> send('D', remainingBefore + " " + after));
             return;
         }
-        composition.delete(before, after, compositionSink);
+        composition.delete(before, after, deletingCompositionSink);
     }
 
     public static boolean hasPendingPreedit() {
@@ -244,12 +318,24 @@ public final class ImeBridge {
     }
 
     /** Apply DEL to the native, already-visible preedit immediately. */
-    public static boolean deletePendingPreedit() {
+    public static synchronized boolean deletePendingPreedit() {
         if (backspaceGuard.isEcho(ImeBackspaceGuard.KEY_EVENT,
                 SystemClock.elapsedRealtime()))
             return true; // surrounding-text Backspace already handled it
-        if (!composition.hasDraft()) return false;
-        composition.delete(1, 0, compositionSink);
+        if (!composition.hasDraft()) {
+            if (deletionSmoother.hasPending()) {
+                // The first empty composition was intentionally deferred.
+                // A second Backspace must clear it BEFORE deleting earlier
+                // committed text. Consume the Android KeyEvent and enqueue
+                // both requests on the ordered native socket; forwarding the
+                // key synchronously could race ahead and erase twice.
+                flushDeferredEmpty();
+                io.post(() -> send('D', "1 0"));
+                return true;
+            }
+            return false;
+        }
+        composition.delete(1, 0, deletingCompositionSink);
         return true;
     }
 

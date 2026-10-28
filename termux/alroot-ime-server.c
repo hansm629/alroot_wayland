@@ -130,7 +130,8 @@ static bool unicode_scalar(uint32_t cp) {
     if (!code) return false;
     XTestFakeKeyEvent(display,(unsigned)code,True,CurrentTime);
     XTestFakeKeyEvent(display,(unsigned)code,False,CurrentTime);
-    XSync(display,False);
+    // Avoid a blocking round trip for each composing glyph. X11 processes
+    // same-client requests in order; process() flushes the complete edit.
     return true;
 }
 static bool prewarm_first_utf8(const char *text, size_t length) {
@@ -178,7 +179,7 @@ static bool send_utf8(const char *s, size_t size) {
             (old_tail==3 && code<0x10000)) return false;
         if (!unicode_scalar(code)) return false;
     }
-    XFlush(display);
+    // Defer output flush to process(), keeping erase+replacement together.
     return true;
 }
 static size_t common_prefix(const char *a,const char *b) {

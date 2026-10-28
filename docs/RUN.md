@@ -599,3 +599,50 @@ After installing the signed APK:
 Test typing and immediate Backspace in both XFCE terminal and Mousepad
 just after switching from English to Korean. Do not mark actual Samsung
 keyboard experience PASS on headless evidence alone.
+
+## P10: smooth Korean caret during Backspace and composition
+
+User P09 acceptance: the critical Korean typing/deletion delay was fixed.
+Remaining problem: occasional caret flicker when deleting/recomposing
+Hangul, more visible than the established English typing path.
+
+On S26U, a headless real GTK entry reproduced the exact mechanism:
+when Android sends a delete event that temporarily clears preedit,
+then a new Hangul syllable a later frame, GTK **paints** an empty
+text frame before the new glyph. When the old composing glyph is
+replaced directly without an intermediate empty native C frame, GTK
+still processes internal changed notifications, but does NOT draw an
+intermediate empty frame in the measured scenario.
+
+P10 keeps P09's immediate nonempty Korean preedit and normal English
+behavior. Only a transient empty Hangul preedit/delete revision is
+deferred for 9ms, roughly one 120Hz frame. A following nonempty
+setComposingText cancels that empty revision and directly replaces
+the previous visible glyph. A standalone Backspace still clears
+the glyph after the short bounded grace period. When another DEL
+arrives, the first pending erase is ordered BEFORE deletion of
+committed text to avoid removing two characters. Commits/focus
+transitions also flush/cancel pending empties to preserve correctness.
+
+The native Unicode XTEST daemon no longer performs a blocking XSync
+after every individual fake keypress. It still synchronizes new
+Unicode keymap changes as needed and flushes the full Backspace+
+replacement sequence together. A separate native test verified the
+existing 24 distinct Hangul keysym cache remains correct.
+
+Safe test commands (private Xvfb, never :0 or active Alroot :90):
+
+    bash ~/alroot_wayland/tests/p10-smoke.sh
+    bash ~/alroot_wayland/tests/p10-ime-smoothing.sh
+
+In measured private GTK tests, both
+deleteSurroundingText→new preedit and setComposingText("")→new preedit
+produced the correct final Korean character and **zero intermediate
+blank GTK draw frames**. English/Korean quick-entry and final deletion
+regressions also passed. These are not measurements of the actual
+Samsung keyboard/physical display or proof that every GTK app is
+flicker-free. Some internal GTK text changed signals still occur
+because the current compatibility layer uses XTEST Backspace+Unicode,
+not full XIM/GTK composing-range integration. If real device flicker
+persists, XIM integration is the appropriate next step; avoid adding
+large delays to a working input path.
