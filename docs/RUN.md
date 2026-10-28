@@ -848,3 +848,33 @@ unmodified terminal continues to use its existing system VTE. To
 open a legacy unmodified terminal explicitly, run the original
 Termux path /data/data/com.termux/files/usr/bin/xfce4-terminal
 with --disable-server rather than the Alroot launcher.
+
+## P15: English uppercase with Samsung Android software keyboard
+
+P15 fixes two independent paths without modifying P13 Hangul composition:
+
+1. The XTEST daemon formerly case-folded `A`/`Z` to `a`/`z` when sending
+   Unicode text. Its `A..Z` path now sends a scoped Shift+ASCII letter.
+2. For a software keyboard's scanless A..Z KeyEvent, Android now uses the
+   event's uppercase/Shift meta only when needed and releases synthetic
+   Shift immediately. Hardware keys and navigation remain unchanged.
+
+Rebuild and test the project-local native daemon (no Termux-X11 changes):
+
+    bash ~/alroot_wayland/termux/build-ime-server.sh
+    bash ~/alroot_wayland/tests/p15-uppercase-smoke.sh
+    bash ~/alroot_wayland/tests/p14-vte-caret-smoke.sh
+    bash ~/alroot_wayland/tests/p13-smoke.sh
+
+P15's Android component requires a signed v0.1.16 APK built from the
+corresponding commit and Android installer approval. After saving any open
+Alroot work, update via the already configured `awstart --install-apk`,
+approve the Android prompt, and restart **only** the Alroot Wayland session
+to load the new native daemon. Do not kill the unrelated Termux-X11 `:0`.
+Open a NEW Alroot XFCE terminal to load P14's private VTE library.
+
+Physical keyboard acceptance: type `aAzZ`, toggle soft Shift and Caps,
+then type `ABC xyz !?`, switch English→Korean, type/delete `한글`, and
+check that old English does not reappear and the composing cursor stays
+visible. The real Android display acceptance remains TEST-PENDING until
+the user confirms it; private Xvfb is not a substitute for a Samsung IME.

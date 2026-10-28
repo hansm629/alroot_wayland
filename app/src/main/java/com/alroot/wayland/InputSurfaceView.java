@@ -26,6 +26,9 @@ public final class InputSurfaceView extends SurfaceView {
     public static final int MODE_VIRTUAL_TOUCHSCREEN = 1;
     public static final int MODE_DIRECT_TOUCH = 2;
     private final Set<Integer> keys = new HashSet<>();
+    // Virtual uppercase key-downs are sent as complete scoped keystrokes;
+    // their optional later key-up must not release an unrelated guest key.
+    private final Set<Integer> syntheticShiftKeyUps = new HashSet<>();
     private final Handler gestures = new Handler(Looper.getMainLooper());
     private final float touchSlop;
     private final TouchpadScrollState scrollState;
@@ -156,6 +159,7 @@ public final class InputSurfaceView extends SurfaceView {
         cancelGesture();
         for (Integer code : new HashSet<>(keys)) WaylandCompositor.nativeSendKey(code, 0);
         keys.clear();
+        syntheticShiftKeyUps.clear();
         for (int btn : new int[] {272, 273, 274}) WaylandCompositor.nativeSendSceneInput(3, btn, 0);
     }
 
@@ -172,6 +176,29 @@ public final class InputSurfaceView extends SurfaceView {
         int code = e.getScanCode();
         if (code <= 0) code = fallbackEvdev(e.getKeyCode());
         if (code <= 0 || code > 767) return false;
+        if (!down && syntheticShiftKeyUps.remove(code)) return true;
+        if (down) {
+            syntheticShiftKeyUps.remove(code);
+            boolean alpha = e.getKeyCode() >= KeyEvent.KEYCODE_A &&
+                    e.getKeyCode() <= KeyEvent.KEYCODE_Z;
+            int unicode = e.getUnicodeChar();
+            boolean uppercase = (unicode >= 'A' && unicode <= 'Z') ||
+                    (unicode == 0 && (e.isShiftPressed() ^ e.isCapsLockOn()));
+            boolean shortcut = e.isCtrlPressed() || e.isAltPressed() || e.isMetaPressed();
+            if (ImeVirtualShiftPolicy.needsScopedShift(e.getScanCode() <= 0,
+                    alpha, uppercase, keys.contains(42) || keys.contains(54),
+                    shortcut) && !keys.contains(code)) {
+                // Virtual IMEs often encode Shift in metaState only. A
+                // complete down/up pair avoids leaving Shift held when the
+                // IME omits or delays the matching key-up callback.
+                WaylandCompositor.nativeSendKey(42, 1);
+                WaylandCompositor.nativeSendKey(code, 1);
+                WaylandCompositor.nativeSendKey(code, 0);
+                WaylandCompositor.nativeSendKey(42, 0);
+                syntheticShiftKeyUps.add(code);
+                return true;
+            }
+        }
         if (down) {
             if (!keys.add(code)) return true;
         } else keys.remove(code);
@@ -204,6 +231,8 @@ public final class InputSurfaceView extends SurfaceView {
         }
         switch (key) {
             case KeyEvent.KEYCODE_ENTER: return 28;
+            case KeyEvent.KEYCODE_SHIFT_LEFT: return 42;
+            case KeyEvent.KEYCODE_SHIFT_RIGHT: return 54;
             case KeyEvent.KEYCODE_DEL: return 14;
             case KeyEvent.KEYCODE_FORWARD_DEL: return 111;
             case KeyEvent.KEYCODE_SPACE: return 57;

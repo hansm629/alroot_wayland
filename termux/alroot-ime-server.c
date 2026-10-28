@@ -208,6 +208,23 @@ static KeyCode unicode_keycode(uint32_t cp) {
     return (KeyCode)key_codes[slot];
 }
 static bool unicode_scalar(uint32_t cp) {
+    if (cp >= 'A' && cp <= 'Z') {
+        // Xwayland/XKB case-folds an uppercase keysym placed in level 0
+        // of a temporary keymap into lowercase on an unshifted XTEST press.
+        // Samsung IME commitText("A") therefore became "a" even though the
+        // socket carried the correct capital. Send the real US letter key
+        // with a scoped Shift press/release, leaving native Fcitx Hangul and
+        // the existing lowercase/Unicode mapping entirely untouched.
+        KeyCode shift = XKeysymToKeycode(display, XK_Shift_L);
+        KeyCode letter = XKeysymToKeycode(display,
+                (KeySym)(cp - 'A' + 'a'));
+        if (!shift || !letter) return false;
+        XTestFakeKeyEvent(display, shift, True, CurrentTime);
+        XTestFakeKeyEvent(display, letter, True, CurrentTime);
+        XTestFakeKeyEvent(display, letter, False, CurrentTime);
+        XTestFakeKeyEvent(display, shift, False, CurrentTime);
+        return true;
+    }
     KeyCode code = unicode_keycode(cp);
     if (!code) return false;
     XTestFakeKeyEvent(display,(unsigned)code,True,CurrentTime);
@@ -236,6 +253,11 @@ static bool prewarm_first_utf8(const char *text, size_t length) {
     // visible. Only THEN enqueue its Backspace + replacement keypresses.
     // Otherwise the XChangeKeyboardMapping/XSync during unicode_scalar()
     // flushed an isolated Backspace frame, making the caret flash.
+    // No temporary keymap rewrite is needed for an uppercase ASCII
+    // character: unicode_scalar() emits the regular key with Shift.
+    if (cp >= 'A' && cp <= 'Z')
+        return XKeysymToKeycode(display, XK_Shift_L) != 0 &&
+               XKeysymToKeycode(display, (KeySym)(cp - 'A' + 'a')) != 0;
     return unicode_keycode(cp) != 0;
 }
 static bool send_utf8(const char *s, size_t size) {

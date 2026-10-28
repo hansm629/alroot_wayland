@@ -11,8 +11,8 @@ android {
         minSdk 26
         // Termux's app-data executable entrypoints require targetSdk <= 28 on Android.
         targetSdk 28
-        versionCode 16
-        versionName '0.1.15-p13-ime-caret-sync'
+        versionCode 17
+        versionName '0.1.16-p15-ime-uppercase'
         ndk { abiFilters 'arm64-v8a' }
         externalNativeBuild { cmake { arguments '-DANDROID_STL=c++_shared' } }
     }

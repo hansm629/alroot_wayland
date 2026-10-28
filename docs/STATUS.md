@@ -397,3 +397,27 @@ Do not promote code existence or build success into screen/input PASS.
   unchanged. Existing terminal server processes are never killed.
 - The Android helper APK remains P13 v0.1.15. P14 needs no new APK,
   only the scoped VTE build/launcher and a new XFCE terminal window.
+
+## P15 2026-10-28 — Android soft Shift and XTEST uppercase preservation
+
+- Follow-up user issue: Android software keyboard did not produce English
+  uppercase characters. Reproduced the native X11 half of the defect on a
+  private Xvfb GTK editor: `aAZz!?` became `aazz!?`. Xwayland/XKB case-folded
+  level-0 uppercase keysyms installed by the XTEST Unicode spare-keycode
+  mapper. This was not a Hangul/Fcitx5 or VTE rendering defect.
+- The native XTEST ASCII uppercase path now sends a scoped Shift+letter
+  down/up sequence, while preserving the existing lowercase, symbol,
+  non-ASCII Unicode and native Fcitx5 Hangul routes. A new isolated GTK
+  regression shows six exact characters `aAZz!?`, with no duplication.
+- Android's virtual scanCode=0 KeyEvent fallback previously forwarded only
+  the alphabet's evdev code and discarded META_SHIFT. It now synthesizes a
+  bounded press/release sequence for uppercase letters *only* when no real
+  guest Shift or Ctrl/Alt/Meta shortcut is held. An optional later IME
+  key-up is consumed, avoiding key/modifier latch. Hardware keys, normal
+  lowercase and commitText/setComposingText remain on their existing paths.
+- `tests/p15-uppercase-smoke.sh` checks the scoped virtual-Shift policy and
+  live XTEST-to-GTK capitalization in isolated Xvfb. P13 and P14 regression
+  suites are preserved. Android helper advances to v0.1.16 (code 17).
+- Real S26U Samsung keyboard Shift, double-Shift, English→Korean→DEL and
+  GUI caret appearance require updated APK installation and user test;
+  a successful JVM/Xvfb/CI test alone is not on-device acceptance.
