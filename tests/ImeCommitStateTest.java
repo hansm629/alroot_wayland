@@ -429,6 +429,73 @@ public final class ImeCommitStateTest {
         x.check("hello world");
     }
 
+    // P17: real Samsung software keyboard repeatedly offers its previous
+    // Latin word while Hangul is being deleted. If the speculative preedit
+    // contained ONE letter, finishing the IME session must NOT convert that
+    // rejected old English into a new commit.
+    static void staleSingleAsciiOnFinishMustNotInsert() {
+        ImeCommitState s = new ImeCommitState();
+        FakeNative x = new FakeNative();
+        s.committed("hello", 100, x);
+        s.composing("한", 200, x);
+        s.committed("한", 220, x);
+        s.backspace(300);
+        s.delete(1, 0, x);
+        x.check("hello");
+        check(s.withholdSuspectedAscii("h", 310), "Old English one-letter prefix withheld");
+        String finish = s.takeWithheldAsciiOnFinish(330);
+        check(finish.isEmpty(), "Unconfirmed English prefix must not be committed on finish");
+        x.check("hello");
+    }
+
+    // P17: the old 3.5-second timer expires while Samsung is still
+    // rebuilding the previous word (observed every ~50ms in real logcat).
+    // Refresh the guard on repeated old context, without blocking deliberate
+    // same-word typing after the keyboard has been quiet.
+    static void staleEnglishAfterGuardTimerExpires() {
+        ImeCommitState s = new ImeCommitState();
+        FakeNative x = new FakeNative();
+        s.committed("hello", 100, x);
+        s.composing("한", 200, x);
+        s.committed("한", 220, x);
+        s.backspace(300);
+        s.delete(1, 0, x);
+        x.check("hello");
+        for (int ms = 350; ms <= 6350; ms += 500) {
+            check(s.withholdSuspectedAscii("hello", ms),
+                  "Continuous old English replay remains stale after 3.5 seconds");
+        }
+        check(s.suppressWithheldAsciiCommit("hello", 6370),
+              "Late final old English snapshot must not be committed");
+        x.check("hello");
+        check(!s.withholdSuspectedAscii("hello", 12370),
+              "Intentional same-word input allowed after prolonged quiet");
+    }
+
+    static void scanlessEnglishKeyEventsStillRememberCommittedText() {
+        ImeCommitState s = new ImeCommitState();
+        FakeNative x = new FakeNative();
+        // The actual guest key events are delivered by the Wayland seat.
+        // The IME state must OBSERVE them, but must not forward them twice.
+        x.committed("hello");
+        for (char c : "hello".toCharArray())
+            s.alreadyInsertedDirectAscii(String.valueOf(c), 100);
+        x.check("hello");
+        s.composing("한", 200, x);
+        s.committed("한", 230, x);
+        s.backspace(300);
+        s.delete(1, 0, x);
+        x.check("hello");
+        s.committed("hello", 350, x);
+        x.check("hello");
+        // Explicitly typing a new key, as opposed to an IME stale
+        // composing snapshot, disarms the pending Korean-deletion guard.
+        x.committed("z");
+        s.alreadyInsertedDirectAscii("z", 400);
+        check(!s.withholdSuspectedAscii("hello", 420),
+                "New real key epoch releases the old English echo guard");
+    }
+
     public static void main(String[] args) {
         koreanIsVisibleAtFirstPreedit();
         koreanBackspaceIsImmediate();
@@ -459,6 +526,9 @@ public final class ImeCommitStateTest {
         progressiveEnglishReplayAfterHangulDeletion();
         legitimateEnglishIsStillAcceptedAfterDelete();
         directOldEnglishPrefixCommitAfterKoreanDeletion();
-        System.out.println("PASS: 28 Android IME event scenarios, Korean DEL and English echo");
+        staleSingleAsciiOnFinishMustNotInsert();
+        staleEnglishAfterGuardTimerExpires();
+        scanlessEnglishKeyEventsStillRememberCommittedText();
+        System.out.println("PASS: 31 Android IME event scenarios, Korean DEL and English echo");
     }
 }

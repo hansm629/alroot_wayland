@@ -16,9 +16,12 @@ public final class ImeCursorTracker {
     public static final class Report {
         public final int cursor;
         public final boolean reset;
-        Report(int cursor, boolean reset) {
+        /** True only when the IME must be told that its selection changed. */
+        public final boolean notify;
+        Report(int cursor, boolean reset, boolean notify) {
             this.cursor = cursor;
             this.reset = reset;
+            this.notify = notify;
         }
     }
 
@@ -27,6 +30,11 @@ public final class ImeCursorTracker {
     private int batchDepth;
     private boolean reset;
     private int ignoredPhantomDeletes;
+    // EditorInfo.initialSelStart/End are both 1. Reporting that SAME
+    // selection on each rejected stale IME callback creates a feedback loop
+    // in Samsung Keyboard: it retries the old English composition even
+    // though the host never accepted that text.
+    private int lastReportedCursor = 1;
 
     public synchronized void begin() {
         if (++batchDepth == 1) {
@@ -48,6 +56,11 @@ public final class ImeCursorTracker {
             if (start == end && start > cursor) requested = start;
             return;
         }
+        // Samsung IME can redundantly request the exact position it was
+        // already given. Turning a no-op setSelection(1,1) into
+        // updateSelection(-1,-1) -> (1,1) makes the keyboard repeatedly
+        // rebuild its previous Latin context.
+        if (start == end && start == cursor) return;
         // Outside a batch this is cursor/navigation control, not a real
         // X11 cursor move. Reset Samsung's editor-state anchor to 1.
         cursor = 1;
@@ -77,7 +90,9 @@ public final class ImeCursorTracker {
         boolean shouldReset = reset;
         if (shouldReset) cursor = 1;
         reset = false;
-        return new Report(cursor, shouldReset);
+        boolean needsNotify = shouldReset || cursor != lastReportedCursor;
+        if (needsNotify) lastReportedCursor = cursor;
+        return new Report(cursor, shouldReset, needsNotify);
     }
     public synchronized int ignoredPhantomDeletes() {
         return ignoredPhantomDeletes;

@@ -216,6 +216,7 @@ public final class InputSurfaceView extends SurfaceView {
                 WaylandCompositor.nativeSendKey(code, 0);
                 WaylandCompositor.nativeSendKey(42, 0);
                 syntheticShiftKeyUps.add(code);
+                noteActualScanlessAscii(e);
                 return true;
             }
         }
@@ -223,7 +224,21 @@ public final class InputSurfaceView extends SurfaceView {
             if (!keys.add(code)) return true;
         } else keys.remove(code);
         WaylandCompositor.nativeSendKey(code, down ? 1 : 0);
+        if (down) noteActualScanlessAscii(e);
         return true;
+    }
+
+    private void noteActualScanlessAscii(KeyEvent e) {
+        // Called ONLY after a down was actually sent to the native seat;
+        // repeat/ignored downs and modifier-only keys never update history.
+        if (e.getScanCode() > 0 || e.isCtrlPressed() ||
+                e.isAltPressed() || e.isMetaPressed()) return;
+        int ch = e.getUnicodeChar();
+        // Never guess English from KEYCODE_A..Z when getUnicodeChar()==0:
+        // Samsung can reuse those virtual codes on a Korean keyboard and
+        // such a guess would incorrectly disarm Korean-deletion protection.
+        if (ch >= 0x20 && ch <= 0x7e)
+            ImeBridge.noteDirectAsciiKey(ch);
     }
 
     private void recordImeEvent(int characters) {
@@ -550,11 +565,23 @@ public final class InputSurfaceView extends SurfaceView {
             private boolean consumedDraftBackspace;
             private final ImeCursorTracker synthetic = new ImeCursorTracker();
             private int lastLoggedPhantomDeletes;
+            private int avoidedSelectionEchoes;
             private void reportCursor() {
                 InputMethodManager manager = (InputMethodManager)
                         getContext().getSystemService(Context.INPUT_METHOD_SERVICE);
                 if (manager == null) return;
                 ImeCursorTracker.Report state = synthetic.report();
+                // Never acknowledge a stale/filtered commit or a no-op
+                // begin/endBatchEdit by re-publishing the SAME position.
+                // Samsung Keyboard can interpret that redundant callback as
+                // a request to resend its old English composing buffer.
+                if (!state.notify) {
+                    if (++avoidedSelectionEchoes % 128 == 0)
+                        android.util.Log.i("AlrootWayland",
+                                "IME P17 redundant selection notifications avoided=" +
+                                avoidedSelectionEchoes + " (no text captured)");
+                    return;
+                }
                 int position = state.cursor;
                 boolean reset = state.reset;
                 Runnable report = () -> {

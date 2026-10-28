@@ -31,12 +31,43 @@ public final class ImeEnglishEchoNativeProbe {
     }
     public static void main(String[] args) throws Exception {
         if (args.length != 1 && args.length != 2)
-            throw new IllegalArgumentException("socket [p16]");
+            throw new IllegalArgumentException("socket [p16|p17]");
         try (SocketChannel socket = SocketChannel.open(StandardProtocolFamily.UNIX)) {
             socket.connect(UnixDomainSocketAddress.of(args[0]));
             ImeCommitState state = new ImeCommitState();
             ImeCursorTracker fake = new ImeCursorTracker();
             NativeSink x = new NativeSink(socket);
+            if (args.length == 2 && "p17".equals(args[1])) {
+                state.committed("hello", 100, x);
+                Thread.sleep(100);
+                state.composing("한", 200, x);
+                Thread.sleep(70);
+                state.committed("한", 230, x);
+                Thread.sleep(80);
+                state.backspace(290);
+                state.delete(1, 0, x);
+                // Samsung's previously committed English prefix returns as
+                // a speculative C. Android then calls finishComposingText
+                // during a Back / keyboard-mode transition. The P16 bridge
+                // incorrectly committed this one character again.
+                if (!state.withholdSuspectedAscii("h", 310))
+                    throw new AssertionError("Old one-letter composition wasn't quarantined");
+                String badFinish = state.takeWithheldAsciiOnFinish(320);
+                if (!badFinish.isEmpty()) x.committed(badFinish);
+                if (!badFinish.isEmpty())
+                    throw new AssertionError("P17 finish accepted stale ASCII");
+                // The keyboard can retry the old word every ~50ms for
+                // longer than P16's 3.5-second fixed deadline.
+                for (int ms = 500; ms <= 7000; ms += 500) {
+                    if (!state.withholdSuspectedAscii("hello", ms))
+                        throw new AssertionError("Stale Latin echo escaped during repeated retries");
+                }
+                if (!state.suppressWithheldAsciiCommit("hello", 7010))
+                    throw new AssertionError("Late stale ASCII commit was forwarded");
+                Thread.sleep(100);
+                System.out.println("P17_STALE_ASCII_FINISH_AND_LATE_REPLAY_FILTERED=1");
+                return;
+            }
             if (args.length == 2 && "p16".equals(args[1])) {
                 state.committed("hello", 100, x);
                 Thread.sleep(110);

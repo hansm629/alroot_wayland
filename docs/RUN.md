@@ -912,3 +912,34 @@ Test fresh host→Labwc→XFCE without touching the screen and check that
 the cursor is centered from the first visible desktop frame. Then
 test 'hello'→'한글'→delete Hangul→'hello' remains exactly once, followed
 by new English 'h', Korean caret, uppercase and two-finger scroll.
+
+## P17: English comes back after Korean Backspace on real Samsung IME
+
+P16 was NOT accepted for this problem: the actual Samsung keyboard
+still reinserted old English after Korean deletion even though its
+synthetic tests passed. Current S26U logcat showed >70 filtered
+English echoes and repeated selection callbacks. P17 fixes the
+remaining one-character stale finish commit, tracks real scanless
+English key events, and stops repeating identical fake-cursor
+updateSelection notifications to the Samsung editor.
+
+Regression on separate, disposable Xvfb (do not inject into :0/:90):
+
+    cd ~/alroot_wayland
+    bash tests/p11-native-integration.sh
+    bash tests/p14-vte-caret-smoke.sh
+    bash tests/p15-uppercase-smoke.sh
+
+P17's GTK test expects exactly one 'hello' after the Korean character
+is deleted, including an unconfirmed single-character English prefix
+finished by the IME and repeated old snapshots >3.5 seconds.
+The tests do not prove the Samsung keyboard itself is fixed.
+
+Build the signed P17 v0.1.18 APK via GitHub Actions and the existing
+local Termux-compatible signing flow. Preserve the running Alroot
+session until the user saves work. After the user approves the Android
+installer update, restart only the Alroot session, not Termux-X11.
+Repeat the failing 'hello' → '한글' → delete Hangul test, then verify
+new English typing, P14 composing caret, P15 uppercase and initial
+mouse centering. If the symptom remains, gather only text-free
+'IME P17' counters from logcat; no keystrokes are saved.

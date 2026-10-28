@@ -47,6 +47,9 @@ public final class ImeBridge {
     private static boolean asciiComposing;
     private static String asciiDraft = "";
     private static int lastLoggedEchoCount;
+    private static int staleAsciiPreeditsWithheld;
+    private static int staleAsciiCommitsRejected;
+    private static int directAsciiKeysObserved;
     private static int receivedPreeditCount;
     private static int measuredPreeditCount;
     private static long measuredPreeditQueueNs;
@@ -206,6 +209,9 @@ public final class ImeBridge {
                 // X11, even for its first one-letter prefix. A later genuine
                 // commitText("h") will still be forwarded normally.
                 flushDeferredEmpty();
+                if (++staleAsciiPreeditsWithheld % 16 == 0)
+                    Log.i(TAG, "IME P17 stale ASCII composing held=" +
+                            staleAsciiPreeditsWithheld + " (no text captured)");
                 maybeLogEchoSuppressions();
                 return;
             }
@@ -247,6 +253,9 @@ public final class ImeBridge {
     public static synchronized boolean commitComposed(String text) {
         long ms = SystemClock.elapsedRealtime();
         if (composition.suppressWithheldAsciiCommit(text, ms)) {
+            if (++staleAsciiCommitsRejected % 16 == 0)
+                Log.i(TAG, "IME P17 stale ASCII commits rejected=" +
+                        staleAsciiCommitsRejected + " (no text captured)");
             maybeLogEchoSuppressions();
             return false;
         }
@@ -272,9 +281,22 @@ public final class ImeBridge {
 
     public static void commit(String text) { commitComposed(text); }
 
+    /** Observe an already forwarded scanless ASCII key; never inject it twice. */
+    public static synchronized void noteDirectAsciiKey(int codePoint) {
+        if (codePoint < 0x20 || codePoint > 0x7e) return;
+        composition.alreadyInsertedDirectAscii(
+                String.valueOf((char) codePoint), SystemClock.elapsedRealtime());
+        if (++directAsciiKeysObserved % 32 == 0)
+            Log.i(TAG, "IME P17 direct scanless ASCII keys observed=" +
+                    directAsciiKeysObserved + " (already sent to seat, not reinjected)");
+    }
+
     private static void maybeLogEchoSuppressions() {
         int total = composition.suppressedEchoCount();
         if (total == lastLoggedEchoCount) return;
+        // Avoid generating thousands of feedback logs when Samsung retries
+        // the old composing snapshot repeatedly (P16 observed >70 in 10s).
+        if (total != 1 && total / 16 == lastLoggedEchoCount / 16) return;
         lastLoggedEchoCount = total;
         Log.i(TAG, "IME English-to-Korean echo filtered count=" + total +
                 " (text not recorded)");
@@ -286,6 +308,7 @@ public final class ImeBridge {
         if (!withheld.isEmpty())
             composition.committed(withheld, SystemClock.elapsedRealtime(),
                     compositionSink);
+        maybeLogEchoSuppressions();
         if (asciiComposing) {
             finalizeNativeAscii(SystemClock.elapsedRealtime());
             return;

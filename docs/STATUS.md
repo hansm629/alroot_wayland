@@ -461,3 +461,47 @@ Do not promote code existence or build success into screen/input PASS.
 - APK v0.1.17 (versionCode 18). Pointer visual timing and real Samsung
   IME on the newly installed APK remain TEST-PENDING until user review;
   do not promote CI/native Xvfb success to physical display PASS.
+
+## P17 2026-10-28 — Android IME stale-editor feedback correction
+
+- User confirms P16 pointer centering fixed, but English → Korean →
+  delete Korean still duplicates earlier English on the *real* S26U.
+  P16 APK is installed and matching; this is a genuine P16 regression
+  failure, regardless of its green synthetic Xvfb test results.
+- Real Android logcat shows Samsung's previously inserted English is
+  filtered more than 70 times in a single typing sequence, with repeated
+  events approximately every 50ms. The focused real X11 client was
+  xfce4-terminal; the X11 daemon also reported XTEST DEL when the client
+  lacks Fcitx5 SurroundingText. Native GTK and VTE support differ.
+- Reproduced an actual P16 state-machine defect with a FAILING Java test:
+  after rejecting a one-character old English composing prefix,
+  takeWithheldAsciiOnFinish() returned that one character and the bridge
+  sent it as a *new commit*. Now any unconfirmed matching old prefix
+  is discarded on finish instead; a genuine commitText of a single
+  newly entered letter is still accepted.
+- P16's 3.5-second *absolute* stale-replay cutoff was insufficient
+  against ongoing old-text callbacks. The guard is now extended by
+  each confirmed old-text retry and disarmed by accepted fresh direct
+  ASCII, new actual committed content, editor reset, or a 5-second
+  interval with no old-text replay. This avoids both delayed echoes
+  and indefinitely rejecting intentional same-word re-entry.
+- ImeCursorTracker no longer publishes the same selection repeatedly,
+  including ignored stale commits, no-op batches and identical outside-
+  batch setSelection. This breaks an Android→Samsung updateSelection
+  feedback opportunity without changing the Fcitx5 native preedit
+  buffer, visual VTE caret, Korean deletion semantics or DPI.
+- ScanCode=0 ASCII KeyEvents, when actually forwarded to the guest,
+  now contribute to the short in-memory English context without
+  reinjecting their text. This closes a P16 blind spot when the Samsung
+  keyboard uses sendKeyEvent instead of InputConnection.commitText.
+- P17 logging records only aggregate counters for withheld preedits,
+  rejected commits, direct ASCII-key events and redundant selection
+  notifications, never actual text or clipboard content.
+- Added a P17 case to the isolated Xvfb → native daemon → Fcitx5 →
+  GTK test with stale ASCII on finish and continuously repeated old
+  text beyond 3.5 seconds. Pure JVM cursor/input-state tests also
+  cover all new branches. P14 caret and P15 uppercase retain
+  their previous independently verifiable paths.
+- Target APK v0.1.18, versionCode 19. As before, actual on-device
+  Samsung-IME acceptance is TEST-PENDING until user verification.
+  The known-working P16 pointer and P14/P15 input remain untouched.

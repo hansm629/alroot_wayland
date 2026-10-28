@@ -6,9 +6,17 @@ public final class ImeCursorTrackerTest {
     }
     public static void main(String[] args) {
         ImeCursorTracker tracker = new ImeCursorTracker();
+        tracker.selected(1, 1);
+        check(!tracker.report().notify,
+                "Same-position Samsung setSelection must not restart editor state");
         tracker.begin();
         tracker.committed(5, 1);
         check(tracker.report().cursor == 6, "English hello cursor");
+        check(!tracker.report().notify,
+                "Identical synthetic selection must not be published again");
+        tracker.selected(6, 6);
+        check(!tracker.report().notify,
+                "No-op setSelection(6,6) must not reset to fake anchor");
         tracker.selected(9, 9);
         check(tracker.phantomDelete(2, 0), "Ignore fake IME whitespace deletion");
         check(tracker.phantomDelete(1, 0), "Ignore trailing fake whitespace");
@@ -35,6 +43,14 @@ public final class ImeCursorTrackerTest {
         check(tracker.report().cursor == 1, "Committed delete returns to anchor");
         check(!tracker.phantomDelete(1, 0),
                 "Phantom marker must not leak after batch ends");
-        System.out.println("PASS: 13 fake-cursor and phantom deletion assertions");
+        check(!tracker.report().notify,
+                "Duplicate no-op batch/endBatchEdit must not notify Samsung");
+        tracker.selected(0, 0);
+        ImeCursorTracker.Report forced = tracker.report();
+        check(forced.reset && forced.notify && forced.cursor == 1,
+                "Explicit editor selection reset always notified once");
+        check(!tracker.report().notify,
+                "Selection reset acknowledged, not repeated forever");
+        System.out.println("PASS: synthetic cursor, phantom deletion and no-feedback selection");
     }
 }

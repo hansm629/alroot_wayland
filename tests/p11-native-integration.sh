@@ -132,16 +132,17 @@ echo "PASS: Native GTK visual caret image captured with no underline format"
 # Verify deletion of a committed Korean syllable and the next composing
 # update; old XTEST is still used for committed DEL even with GTK Fcitx.
 # Also check that normal English-to-Korean entry remains non-duplicated.
-for scenario in deletion switch echo echo-p16; do
+for scenario in deletion switch echo echo-p16 echo-p17; do
     expected=글
     [[ "$scenario" == switch ]] && expected=hi하
-    [[ "$scenario" == echo || "$scenario" == echo-p16 ]] && expected=hello
+    [[ "$scenario" == echo || "$scenario" == echo-p16 || "$scenario" == echo-p17 ]] && expected=hello
     env GTK_IM_MODULE=fcitx GDK_BACKEND=x11 \
         $base/gtk-edit-probe "$expected" > "$XDG_RUNTIME_DIR/gtk-edit-$scenario.log" 2>&1 & gui_pid=$!
     sleep .58
-    if [[ "$scenario" == echo || "$scenario" == echo-p16 ]]; then
+    if [[ "$scenario" == echo || "$scenario" == echo-p16 || "$scenario" == echo-p17 ]]; then
         probe_extra=()
         [[ "$scenario" != echo-p16 ]] || probe_extra=(p16)
+        [[ "$scenario" != echo-p17 ]] || probe_extra=(p17)
         java -cp "$base/jvm" ImeEnglishEchoNativeProbe "$XDG_RUNTIME_DIR/ime.sock" \
             "${probe_extra[@]}" \
             > "$XDG_RUNTIME_DIR/echo-test.log" 2>&1
@@ -164,9 +165,11 @@ PY
     wait "$gui_pid";gui_pid=""
     cat "$XDG_RUNTIME_DIR/gtk-edit-$scenario.log"
     grep -q "P11_NATIVE_EDIT_MATCH=1" "$XDG_RUNTIME_DIR/gtk-edit-$scenario.log"
-    if [[ "$scenario" == echo || "$scenario" == echo-p16 ]]; then
+    if [[ "$scenario" == echo || "$scenario" == echo-p16 || "$scenario" == echo-p17 ]]; then
         if [[ "$scenario" == echo-p16 ]]; then
             grep -q "P16_PREFIX_REPLAY_FILTERED=1" "$XDG_RUNTIME_DIR/echo-test.log"
+        elif [[ "$scenario" == echo-p17 ]]; then
+            grep -q "P17_STALE_ASCII_FINISH_AND_LATE_REPLAY_FILTERED=1" "$XDG_RUNTIME_DIR/echo-test.log"
         else
             grep -q "P12_ENGLISH_ECHO_FILTERED=1" "$XDG_RUNTIME_DIR/echo-test.log"
             grep -q "P13_PHANTOM_DELETE_IGNORED=2" "$XDG_RUNTIME_DIR/echo-test.log"
