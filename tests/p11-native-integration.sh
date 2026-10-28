@@ -129,11 +129,11 @@ env ALROOT_TEST_IMAGE="$XDG_RUNTIME_DIR/p13-caret.png" GTK_IM_MODULE=fcitx GDK_B
 # observe native preedit. Focus this *disposable Xvfb* window explicitly.
 caret_win=""
 for i in $(seq 1 40); do
-    caret_win=$(xdotool search --name 'P13 native preedit caret visual' 2>/dev/null | tail -1 || true)
+    caret_win=$(xdotool search --name "P13 native preedit caret visual" 2>/dev/null | tail -1 || true)
     [[ -n "$caret_win" ]] && break
     sleep .05
 done
-[[ -n "$caret_win" ]] || { echo 'P13 private GTK window not mapped' >&2; exit 2; }
+[[ -n "$caret_win" ]] || { echo "P13 private GTK window not mapped" >&2; exit 2; }
 xdotool windowfocus "$caret_win" || true
 sleep .18
 send_series
