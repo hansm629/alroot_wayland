@@ -29,6 +29,12 @@ public final class ImeBridge {
     private static final File QUEUE = new File(STATE, "ipc/ime-requests");
     private static final HandlerThread ioThread = new HandlerThread("AlrootX11IME");
     private static final Handler io;
+    static {
+        // Install the handler before initializing the coalescing Runnable,
+        // which captures this final reference in its lambda.
+        ioThread.start();
+        io = new Handler(ioThread.getLooper());
+    }
     private static final ImeCommitState composition = new ImeCommitState();
     private static final ImeBackspaceGuard backspaceGuard =
             new ImeBackspaceGuard();
@@ -139,11 +145,6 @@ public final class ImeBridge {
     private static int delivered, fallbacks;
     private static long totalTransportNs;
     private static int fileSerial;
-
-    static {
-        ioThread.start();
-        io = new Handler(ioThread.getLooper());
-    }
 
     private ImeBridge() {}
 
