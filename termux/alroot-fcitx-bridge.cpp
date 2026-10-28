@@ -69,25 +69,46 @@ class AlrootIMBridge : public AddonInstance {
                 if(ic->hasFocus() && !focused) focused=ic;
                 return true;
             });
-        if (!focused || !focused->capabilityFlags().test(CapabilityFlag::Preedit))
+        if (!focused)
             return false;
         // This is intentionally only for an actual focused Fcitx input
         // context. XTerm, games, Wine and clients without a native IM frontend
         // must retain the existing XTEST fallback.
-        if (opcode == 'D')
-            return false;
         if(opcode=='C') {
-            Text preedit(text,TextFormatFlag::Underline);
+            if (!focused->capabilityFlags().test(CapabilityFlag::Preedit))
+                return false;
+            // P11 explicitly requested Underline. The user wants the
+            // same plain-text appearance as English, not an underlined
+            // composing span. GTK/Qt receive a real preedit and cursor,
+            // but no decorative underline formatting.
+            Text preedit(text,TextFormatFlag::NoFlag);
             preedit.setCursor(static_cast<int>(text.size()));
             focused->inputPanel().setClientPreedit(preedit);
             focused->updatePreedit();
         } else if(opcode=='T') {
+            if (!focused->capabilityFlags().test(CapabilityFlag::Preedit))
+                return false;
             focused->commitString(text);
             focused->inputPanel().setClientPreedit(Text{});
             focused->updatePreedit();
         } else if(opcode=='F'||opcode=='R') {
+            if (!focused->capabilityFlags().test(CapabilityFlag::Preedit))
+                return false;
             focused->inputPanel().setClientPreedit(Text{});
             focused->updatePreedit();
+        } else if(opcode=='D') {
+            // A native GTK input method can delete committed surrounding
+            // text via its own IMContext. Sending a separate XTEST
+            // Backspace into a focused Fcitx widget can cause the host IM
+            // to reinterpret old composition state and replay English.
+            if (!focused->capabilityFlags().test(CapabilityFlag::SurroundingText))
+                return false;
+            int before=0,after=0;
+            if (sscanf(text.c_str(),"%d %d",&before,&after)!=2 ||
+                before<0 || before>128 || after<0 || after>128)
+                return false;
+            if (before+after>0)
+                focused->deleteSurroundingText(-before,before+after);
         } else return false;
         handled_++;
         if (handled_ % 64 == 0)

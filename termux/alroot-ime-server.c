@@ -46,9 +46,11 @@ static char fcitx_socket_path[sizeof(((struct sockaddr_un*)0)->sun_path)];
 static int fcitx_fd = -1;
 static int64_t last_fcitx_attempt_ns;
 static uint64_t native_preedit, xtest_preedit, native_uncertain;
+static uint64_t native_deletes, xtest_deletes;
 enum { ROUTE_UNDECIDED, ROUTE_FCITX, ROUTE_XTEST };
 static int active_route = ROUTE_UNDECIDED;
 static Window route_focus = None;
+static bool native_committed_on_focus;
 static int64_t ns_now(void);
 
 static void fcitx_disconnect(void) {
@@ -294,6 +296,7 @@ static void process(char op, const char *text, size_t len) {
     if (focus != route_focus) {
         route_focus=focus;
         active_route=ROUTE_UNDECIDED;
+        native_committed_on_focus=false;
         composing[0]=0;
     }
     if (op=='C' || op=='T') {
@@ -311,6 +314,7 @@ static void process(char op, const char *text, size_t len) {
                 native_preedit++;
                 composing[0]=0; // Native GTK preedit is not real X11 text.
                 active_route=(op=='C')?ROUTE_FCITX:ROUTE_UNDECIDED;
+                if (op=='T') native_committed_on_focus=true;
                 good=true;
                 goto processed;
             }
@@ -324,6 +328,7 @@ static void process(char op, const char *text, size_t len) {
             }
             active_route=ROUTE_XTEST;
         }
+        native_committed_on_focus=false;
         xtest_preedit++;
     } else if (op=='F' || op=='R') {
         if (active_route==ROUTE_FCITX)
@@ -331,6 +336,22 @@ static void process(char op, const char *text, size_t len) {
         active_route=ROUTE_UNDECIDED;
         composing[0]=0;
         goto processed;
+    } else if (op=='D' && native_committed_on_focus) {
+        // Delete a committed Korean glyph via the same native IMContext,
+        // not an XTEST Backspace that Fcitx may reinterpret as key input.
+        int response=fcitx_request('D',text,len);
+        if (response==1) {
+            native_preedit++;
+            native_deletes++;
+            good=true;
+            goto processed;
+        }
+        if (response<0) {
+            native_uncertain++;
+            good=false; // Never double-delete after uncertain delivery.
+            goto processed;
+        }
+        native_committed_on_focus=false; // Native client declined; XTEST.
     }
     if (op=='C' || op=='T') {
         if (focus != focus_at_composition && composing[0]) composing[0]=0;
@@ -350,6 +371,7 @@ static void process(char op, const char *text, size_t len) {
                 else {
                     composing[0]=0;
                     active_route=ROUTE_UNDECIDED;
+                    native_committed_on_focus=false;
                 }
             }
         }
@@ -357,6 +379,7 @@ static void process(char op, const char *text, size_t len) {
         unsigned before=0,after=0;
         if (sscanf(text,"%u %u",&before,&after)==2 && before<=128 && after<=128) {
             erase(before,XK_BackSpace);erase(after,XK_Delete);
+            xtest_deletes++;
             composing[0]=0;
         } else good=false;
     } else good=false;
@@ -366,12 +389,14 @@ processed:
     output_bytes+=len;
     total_ns+=(uint64_t)(ns_now()-start);
     if((count_ok+count_err)%40==0) {
-        fprintf(stderr,"IME-SERVER events=%llu failed=%llu avg-delivery-ms=%.3f bytes=%llu XIM=%llu XTEST=%llu uncertain=%llu clipboard=UNTOUCHED\n",
+        fprintf(stderr,"IME-SERVER events=%llu failed=%llu avg-delivery-ms=%.3f bytes=%llu XIM=%llu XTEST=%llu nativeDEL=%llu xtestDEL=%llu uncertain=%llu clipboard=UNTOUCHED\n",
                 (unsigned long long)count_ok,(unsigned long long)count_err,
                 total_ns/1000000.0/(count_ok+count_err),
                 (unsigned long long)output_bytes,
                 (unsigned long long)native_preedit,
                 (unsigned long long)xtest_preedit,
+                (unsigned long long)native_deletes,
+                (unsigned long long)xtest_deletes,
                 (unsigned long long)native_uncertain);
     }
 }
@@ -381,6 +406,7 @@ static void client_close(void) {
     if(client>=0)close(client);
     client=-1;incoming_len=0;composing[0]=0;
     active_route=ROUTE_UNDECIDED;
+    native_committed_on_focus=false;
 }
 static bool receive_packets(void) {
     ssize_t count=recv(client,incoming+incoming_len,
@@ -456,10 +482,12 @@ int main(int argc,char **argv) {
     unlink(socket_path);
     restore_keymap();
     XCloseDisplay(display);
-    fprintf(stderr,"IME-SERVER stopped events=%llu failures=%llu native_preedit=%llu xtest_preedit=%llu uncertain=%llu\n",
+    fprintf(stderr,"IME-SERVER stopped events=%llu failures=%llu native_preedit=%llu xtest_preedit=%llu native_del=%llu xtest_del=%llu uncertain=%llu\n",
             (unsigned long long)count_ok,(unsigned long long)count_err,
             (unsigned long long)native_preedit,
             (unsigned long long)xtest_preedit,
+            (unsigned long long)native_deletes,
+            (unsigned long long)xtest_deletes,
             (unsigned long long)native_uncertain);
     return 0;
 }

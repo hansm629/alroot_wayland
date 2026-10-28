@@ -708,6 +708,52 @@ semantics, a genuinely new English letter, and editor focus changes.
 Actual Samsung keyboard behavior and device scaling still require the
 updated APK visual acceptance.
 
+## P13: Korean caret appearance and English replay after Hangul Backspace
+
+User P12 acceptance: old English still duplicated after Hangul deletion,
+and Fcitx5 native composition showed an underline instead of the
+ordinary input caret.
+
+**Cursor style:** P11 explicitly set TextFormatFlag::Underline for
+Hangul preedit. P13 now uses TextFormatFlag::NoFlag while retaining
+Text::setCursor at the UTF-8 byte offset documented by Fcitx5.
+An actual private Xvfb GTK screenshot showed an un-underlined Korean
+glyph and a visible insertion caret. Other GTK/Qt themes and the
+physical Samsung keyboard still require on-device visual acceptance.
+
+**Native deletion:** P11 sent Korean C/T through native Fcitx5 but
+committed-text D through an XTEST Backspace, which could activate
+Fcitx's own key handling and replay stale composition. P13 uses
+InputContext::deleteSurroundingText when the focused Fcitx frontend
+advertises SurroundingText. Clients without this capability continue
+to use the existing XTEST fallback. Acknowledged native deletes are
+not sent a second time via XTEST.
+
+**Android fake editor:** Comparing against the user's stable installed
+Termux-X11 LorieView found that Alroot had omitted its requestedPos
+guard. Some Android keyboards select beyond the synthetic one-space
+editor and then send deleteSurroundingText to remove phantom
+whitespace. P12 forwarded these requests as real X11 Backspace.
+The new ImeCursorTracker handles nested batches, synthetic positions,
+phantom whitespace deletion and editor resets. Ignored English echo
+commits no longer advance the fake editor cursor. This tracker stores
+no user text.
+
+Regression:
+
+    bash ~/alroot_wayland/tests/p13-smoke.sh
+
+The private end-to-end scenario includes English → Hangul commit →
+two synthetic-editor cleanup deletions → one actual native Korean
+delete → old English echo. GTK retains a single correct English word.
+Native Fcitx deletion, unchanged XTEST fallback, native 1080p/96DPI
+Labwc output, battery and wallpaper are checked separately.
+Original Termux-X11 and its settings remain untouched.
+
+Synthetic tests cannot prove the physical Samsung keyboard is fully
+equivalent to English input. Do not broaden arbitrary text/time-based
+suppression for any remaining bug; first inspect event metadata.
+
 ## P10: smooth Korean caret during Backspace and composition
 
 User P09 acceptance: the critical Korean typing/deletion delay was fixed.

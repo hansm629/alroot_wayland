@@ -1,4 +1,5 @@
 import com.alroot.wayland.ImeCommitState;
+import com.alroot.wayland.ImeCursorTracker;
 import java.net.StandardProtocolFamily;
 import java.net.UnixDomainSocketAddress;
 import java.nio.ByteBuffer;
@@ -33,13 +34,29 @@ public final class ImeEnglishEchoNativeProbe {
         try (SocketChannel socket = SocketChannel.open(StandardProtocolFamily.UNIX)) {
             socket.connect(UnixDomainSocketAddress.of(args[0]));
             ImeCommitState state = new ImeCommitState();
+            ImeCursorTracker fake = new ImeCursorTracker();
             NativeSink x = new NativeSink(socket);
             state.committed("hello", 100, x); // existing English committed
+            fake.begin();
+            fake.committed(5, 1);
+            fake.end();
             Thread.sleep(100);
             state.composing("한", 5000, x);
             Thread.sleep(80);
             state.committed("한", 5100, x);
             Thread.sleep(80);
+            // A Samsung/Gboard editor occasionally moves its phantom
+            // selection beyond the synthetic context and then deletes the
+            // *fake whitespace*. This MUST NOT delete a real X11 character.
+            fake.begin();
+            fake.selected(10, 10);
+            if (!fake.phantomDelete(3, 0) || !fake.phantomDelete(1, 0) ||
+                    fake.phantomDelete(1, 0)) {
+                throw new AssertionError("IME phantom-space cleanup misclassified");
+            }
+            fake.end();
+            System.out.println("P13_PHANTOM_DELETE_IGNORED=" +
+                    fake.ignoredPhantomDeletes());
             state.backspace(5105);            // same path as both Android DEL APIs
             state.delete(1, 0, x);
             Thread.sleep(80);

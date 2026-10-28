@@ -347,6 +347,28 @@ Do not promote code existence or build success into screen/input PASS.
   at 96 DPI, Xwayland 1920x1080, Android physical 120Hz mode and
   Fcitx addon ready. Battery, wallpaper, PiP and original Termux-X11
   were not modified. Actual Samsung keyboard acceptance still pending.
+
+## P13 2026-10-28 — native caret style and English-after-Hangul-DEL regression
+
+- User reports P12 still duplicated prior English after Korean delete,
+  and native Korean composition had a visible underline/no normal caret.
+- Native Fcitx addon explicitly requested Underline; changed to NoFlag
+  and preserved documented byte-accurate preedit cursor position.
+  An actual private GTK screenshot shows no underline and a visible
+  vertical insertion caret. Theme-specific on-device acceptance pending.
+- Native IME broker previously handled C/T with Fcitx but always
+  executed committed D via XTEST, potentially feeding synthetic keys
+  through Fcitx again. Implemented native committed-text delete for
+  focused clients with SurroundingText, retaining XTEST as fallback.
+  Private GTK test recorded native_del=2, xtest_del=0, uncertain=0.
+- Android InputConnection was missing Termux-X11's requestedPos/
+  phantom-whitespace delete guard. Added Android-independent
+  ImeCursorTracker with batch edits and no stored typed text.
+  Unaccepted stale commits do not advance synthetic cursor position.
+- Expanded private JVM plus GTK sequence to exercise
+  English→Hangul→phantom cleanup→real DEL→old English replay.
+  Native Fcitx/GTK, English and raw-Xlib XTEST fallback all passed.
+  Actual Samsung keyboard behavior remains TEST-PENDING.
 - P04 refresh stability: Choreographer measured timestamp jitter briefly
   caused the older code to advertise 122Hz despite the physical mode
   remaining 120Hz. This release retains the actual Android active physical

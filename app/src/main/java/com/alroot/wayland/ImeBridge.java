@@ -234,7 +234,8 @@ public final class ImeBridge {
         maybeLogEchoSuppressions();
     }
 
-    public static synchronized void commitComposed(String text) {
+    /** Whether the real remote editor received a commit (for fake cursor). */
+    public static synchronized boolean commitComposed(String text) {
         long ms = SystemClock.elapsedRealtime();
         if (asciiComposing && asciiOnly(text)) {
             asciiComposing = false;
@@ -244,14 +245,16 @@ public final class ImeBridge {
             // Native 'T' finalizes the existing P06 ASCII preedit without
             // reinserting the word, and leaves it visible at the X11 caret.
             io.post(() -> send('T', value));
-            return;
+            return true;
         }
         boolean directKoreanSwitch = asciiComposing && text != null &&
                 !text.isEmpty() && !asciiOnly(text);
         finalizeNativeAscii(ms);
         if (directKoreanSwitch) composition.keyboardSwitchedToKorean(ms);
+        int previousCommits = composition.committedCount();
         composition.committed(text, ms, compositionSink);
         maybeLogEchoSuppressions();
+        return composition.committedCount() > previousCommits;
     }
 
     public static void commit(String text) { commitComposed(text); }
@@ -319,6 +322,13 @@ public final class ImeBridge {
             return false; // already sent via KEYCODE_DEL; don't move fake cursor twice
         deleteInternal(before, after, ms);
         return true;
+    }
+
+    /** Android sometimes sends KEYCODE_DEL after deleting fake cursor space.
+     *  Neither callback is a real X11 delete in this case. */
+    public static synchronized void phantomSurroundingDelete() {
+        backspaceGuard.isEcho(ImeBackspaceGuard.SURROUNDING_TEXT,
+                SystemClock.elapsedRealtime());
     }
 
     public static boolean hasPendingPreedit() {

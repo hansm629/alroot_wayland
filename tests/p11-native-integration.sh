@@ -18,10 +18,13 @@ clang -O1 tests/p11-native-gtk.c \
     -o "$base/gtk-preedit-probe" $(pkg-config --cflags --libs gtk+-3.0)
 clang -O1 tests/p11-native-edit-gtk.c \
     -o "$base/gtk-edit-probe" $(pkg-config --cflags --libs gtk+-3.0)
+clang -O1 -Wno-deprecated-declarations tests/p13-gtk-caret.c \
+    -o "$base/gtk-caret-probe" $(pkg-config --cflags --libs gtk+-3.0)
 clang -O1 tests/p11-raw-xlib.c -o "$base/xlib-fallback" -lX11
 mkdir -p "$base/jvm"
 javac -encoding UTF-8 -d "$base/jvm" \
     app/src/main/java/com/alroot/wayland/ImeCommitState.java \
+    app/src/main/java/com/alroot/wayland/ImeCursorTracker.java \
     tests/ImeEnglishEchoNativeProbe.java
 display=""
 for n in 206 207 208 209 210; do
@@ -114,6 +117,18 @@ wait "$gui_pid";gui_pid=""
 cat "$XDG_RUNTIME_DIR/gtk-native.log"
 grep -q "GTK_FCITX_FINAL_MATCH=1 text_events=1 preedit_events=3" "$XDG_RUNTIME_DIR/gtk-native.log"
 echo "PASS: Native Fcitx GTK preedit rendered, 1 real text mutation"
+# Reproducible *visual* proof of the actual GTK preedit appearance:
+# the Fcitx addon now requests NoFlag instead of Underline, and the
+# native GtkEntry shows the insertion caret at the end of the glyph.
+# Image remains inside the disposable private test runtime.
+env ALROOT_TEST_IMAGE="$XDG_RUNTIME_DIR/p13-caret.png" GTK_IM_MODULE=fcitx GDK_BACKEND=x11 \
+ $base/gtk-caret-probe > "$XDG_RUNTIME_DIR/gtk-caret.log" 2>&1 & gui_pid=$!
+sleep .65
+send_series
+wait "$gui_pid";gui_pid=""
+grep -q "GTK_P13_SCREENSHOT_SAVED=1" "$XDG_RUNTIME_DIR/gtk-caret.log"
+test -s "$XDG_RUNTIME_DIR/p13-caret.png"
+echo "PASS: Native GTK visual caret image captured with no underline format"
 # Verify deletion of a committed Korean syllable and the next composing
 # update; old XTEST is still used for committed DEL even with GTK Fcitx.
 # Also check that normal English-to-Korean entry remains non-duplicated.
@@ -148,6 +163,7 @@ PY
     grep -q "P11_NATIVE_EDIT_MATCH=1" "$XDG_RUNTIME_DIR/gtk-edit-$scenario.log"
     if [[ "$scenario" == echo ]]; then
         grep -q "P12_ENGLISH_ECHO_FILTERED=1" "$XDG_RUNTIME_DIR/echo-test.log"
+        grep -q "P13_PHANTOM_DELETE_IGNORED=2" "$XDG_RUNTIME_DIR/echo-test.log"
     fi
     echo "PASS: native GTK $scenario edits preserve text and final cursor"
 done
@@ -194,6 +210,7 @@ echo "=== routing metrics ==="
 tail -9 "$XDG_RUNTIME_DIR/native.log"
 grep -Eq "native_preedit=[1-9][0-9]*" "$XDG_RUNTIME_DIR/native.log"
 grep -Eq "xtest_preedit=[1-9][0-9]*" "$XDG_RUNTIME_DIR/native.log"
+grep -Eq "native_del=[1-9][0-9]*" "$XDG_RUNTIME_DIR/native.log"
 grep -Eq "uncertain=0" "$XDG_RUNTIME_DIR/native.log"
-echo "PASS: Focus-aware native XIM and fallback both used with zero ambiguous delivery"
+echo "PASS: Focus-aware native IM, native committed DEL, XTEST fallback, zero ambiguous delivery"
 '

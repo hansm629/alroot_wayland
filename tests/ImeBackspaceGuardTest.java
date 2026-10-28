@@ -21,6 +21,15 @@ public final class ImeBackspaceGuardTest {
         guard.reset();
         check(!guard.isEcho(ImeBackspaceGuard.KEY_EVENT, 525),
                 "Focus changes must reset the suppression window");
-        System.out.println("PASS: 7 Backspace event ordering checks, no dropped repeated key");
+        guard.reset();
+        // A synthetic cursor cleanup can be followed by Samsung's
+        // KEYCODE_DEL for the same phantom space. Neither reaches X11.
+        check(!guard.isEcho(ImeBackspaceGuard.SURROUNDING_TEXT, 1000),
+                "Phantom surrounding cleanup starts a guard window");
+        check(guard.isEcho(ImeBackspaceGuard.KEY_EVENT, 1008),
+                "Companion phantom key event must be suppressed");
+        check(!guard.isEcho(ImeBackspaceGuard.KEY_EVENT, 1160),
+                "A separate user Backspace later must still work");
+        System.out.println("PASS: 10 Backspace ordering and phantom cleanup checks");
     }
 }

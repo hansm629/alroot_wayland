@@ -499,20 +499,15 @@ public final class InputSurfaceView extends SurfaceView {
         // rely on stale cursor/selection state and send empty commitText.
         return new BaseInputConnection(this, false) {
             private boolean consumedDraftBackspace;
-            // Termux-X11 keeps a synthetic InputConnection cursor and sends
-            // updateSelection() after commits. P07 left initialSelStart=1
-            // forever; Samsung IME could conclude that its earlier English
-            // text was not consumed, then replay the entire run on 한/영.
-            private int fakeCursorPosition = 1;
-            private int batchDepth;
-            private boolean cursorNeedsReset;
+            private final ImeCursorTracker synthetic = new ImeCursorTracker();
+            private int lastLoggedPhantomDeletes;
             private void reportCursor() {
                 InputMethodManager manager = (InputMethodManager)
                         getContext().getSystemService(Context.INPUT_METHOD_SERVICE);
                 if (manager == null) return;
-                int position = fakeCursorPosition;
-                boolean reset = cursorNeedsReset;
-                cursorNeedsReset = false;
+                ImeCursorTracker.Report state = synthetic.report();
+                int position = state.cursor;
+                boolean reset = state.reset;
                 Runnable report = () -> {
                     if (reset)
                         manager.updateSelection(InputSurfaceView.this,
@@ -524,13 +519,13 @@ public final class InputSurfaceView extends SurfaceView {
                 else post(report);
             }
             @Override public boolean beginBatchEdit() {
-                batchDepth++;
+                synthetic.begin();
                 return true;
             }
             @Override public boolean endBatchEdit() {
-                if (batchDepth > 0) batchDepth--;
-                if (batchDepth == 0) reportCursor();
-                return batchDepth > 0;
+                boolean finished = synthetic.end();
+                if (finished) reportCursor();
+                return !finished;
             }
             @Override public android.text.Editable getEditable() { return null; }
             @Override public CharSequence getTextBeforeCursor(int n, int flags) { return " "; }
@@ -541,29 +536,22 @@ public final class InputSurfaceView extends SurfaceView {
                         1, 1, -1);
             }
             @Override public boolean setSelection(int start, int end) {
-                // No X11 caret position is accessible through this view.
-                // Never move a real editor caret based on speculative IME
-                // selection of our synthetic single-space context.
-                if (batchDepth == 0) {
-                    fakeCursorPosition = 1;
-                    cursorNeedsReset = true;
-                    reportCursor();
-                }
+                synthetic.selected(start, end);
+                if (!synthetic.inBatch()) reportCursor();
                 return true;
             }
             @Override public boolean commitText(CharSequence text, int newCursorPosition) {
                 boolean x11 = ImeBridge.rootfulX11Active();
                 recordImeEvent(text.length());
-                if (x11) ImeBridge.commitComposed(text.toString());
-                else WaylandCompositor.textInputCommit(text.toString());
-                if (newCursorPosition > 0) {
-                    fakeCursorPosition = Math.max(1,
-                            fakeCursorPosition + text.length() + newCursorPosition - 1);
-                } else {
-                    fakeCursorPosition = 1;
-                    cursorNeedsReset = true;
+                boolean inserted;
+                if (x11) inserted = ImeBridge.commitComposed(text.toString());
+                else {
+                    WaylandCompositor.textInputCommit(text.toString());
+                    inserted = true;
                 }
-                if (batchDepth == 0) reportCursor();
+                if (inserted)
+                    synthetic.committed(text.length(), newCursorPosition);
+                if (!synthetic.inBatch()) reportCursor();
                 return true;
             }
             @Override public boolean setComposingText(CharSequence text, int newCursorPosition) {
@@ -581,13 +569,23 @@ public final class InputSurfaceView extends SurfaceView {
                 return true;
             }
             @Override public boolean deleteSurroundingText(int beforeLength, int afterLength) {
+                if (synthetic.phantomDelete(beforeLength, afterLength)) {
+                    if (ImeBridge.rootfulX11Active() && beforeLength > 0)
+                        ImeBridge.phantomSurroundingDelete();
+                    int count = synthetic.ignoredPhantomDeletes();
+                    if (count != lastLoggedPhantomDeletes && count % 8 == 0) {
+                        lastLoggedPhantomDeletes = count;
+                        android.util.Log.i("AlrootWayland",
+                                "IME ignored phantom editor-space cleanup count=" + count);
+                    }
+                    return true;
+                }
                 if (ImeBridge.rootfulX11Active()) {
                     boolean hadDraft = ImeBridge.hasPendingPreedit();
                     boolean processed = ImeBridge.delete(beforeLength, afterLength);
                     if (!hadDraft && processed) {
-                        fakeCursorPosition = Math.max(1,
-                                fakeCursorPosition - Math.max(0, beforeLength));
-                        if (batchDepth == 0) reportCursor();
+                        synthetic.deleted(beforeLength);
+                        if (!synthetic.inBatch()) reportCursor();
                     }
                 }
                 else WaylandCompositor.textInputDelete(beforeLength, afterLength);
@@ -609,8 +607,8 @@ public final class InputSurfaceView extends SurfaceView {
                         consumedDraftBackspace = ImeBridge.deletePendingPreedit();
                         if (consumedDraftBackspace) {
                             if (!draftBeforeDelete) {
-                                fakeCursorPosition = Math.max(1, fakeCursorPosition - 1);
-                                if (batchDepth == 0) reportCursor();
+                                synthetic.deleted(1);
+                                if (!synthetic.inBatch()) reportCursor();
                             }
                             return true;
                         }
