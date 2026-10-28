@@ -196,6 +196,7 @@ public final class ImeBridge {
 
     public static synchronized void composing(String text) {
         long ms = SystemClock.elapsedRealtime();
+        ImeFlowTrace.record("BRIDGE_COMPOSE_IN", text, true);
         receivedPreeditCount++;
         if (receivedPreeditCount % 64 == 0) {
             Log.i(TAG, "IME preedit received=" + receivedPreeditCount +
@@ -205,6 +206,7 @@ public final class ImeBridge {
         }
         if (asciiOnly(text)) {
             if (!asciiComposing && composition.withholdSuspectedAscii(text, ms)) {
+                ImeFlowTrace.record("BRIDGE_ASCII_HELD", text, false);
                 // A speculative Samsung English snapshot must not appear in
                 // X11, even for its first one-letter prefix. A later genuine
                 // commitText("h") will still be forwarded normally.
@@ -216,6 +218,7 @@ public final class ImeBridge {
                 return;
             }
             if (!asciiComposing && composition.duplicateAsciiComposing(text, ms)) {
+                ImeFlowTrace.record("BRIDGE_ASCII_DUPLICATE", text, false);
                 // This English preedit was filtered, so it will not replace
                 // the previous Korean glyph. Preserve the pending deletion.
                 flushDeferredEmpty();
@@ -232,6 +235,7 @@ public final class ImeBridge {
             asciiComposing = true;
             asciiDraft = text;
             final String value = text;
+            ImeFlowTrace.record("BRIDGE_ASCII_PREEDIT", text, true);
             io.post(() -> send('C', value));
             return;
         }
@@ -246,13 +250,16 @@ public final class ImeBridge {
         // finalized the next syllable. We now forward every changed Korean
         // composing string immediately to the persistent native C route.
         composition.composing(text, ms, compositionSink);
+        ImeFlowTrace.record("BRIDGE_NONASCII_PREEDIT", text, true);
         maybeLogEchoSuppressions();
     }
 
     /** Whether the real remote editor received a commit (for fake cursor). */
     public static synchronized boolean commitComposed(String text) {
         long ms = SystemClock.elapsedRealtime();
+        ImeFlowTrace.record("BRIDGE_COMMIT_IN", text, true);
         if (composition.suppressWithheldAsciiCommit(text, ms)) {
+            ImeFlowTrace.record("BRIDGE_STALE_COMMIT_REJECTED", text, false);
             if (++staleAsciiCommitsRejected % 16 == 0)
                 Log.i(TAG, "IME P17 stale ASCII commits rejected=" +
                         staleAsciiCommitsRejected + " (no text captured)");
@@ -267,6 +274,7 @@ public final class ImeBridge {
             // Native 'T' finalizes the existing P06 ASCII preedit without
             // reinserting the word, and leaves it visible at the X11 caret.
             io.post(() -> send('T', value));
+            ImeFlowTrace.record("BRIDGE_ASCII_FINALIZE", text, true);
             return true;
         }
         boolean directKoreanSwitch = asciiComposing && text != null &&
@@ -275,6 +283,8 @@ public final class ImeBridge {
         if (directKoreanSwitch) composition.keyboardSwitchedToKorean(ms);
         int previousCommits = composition.committedCount();
         composition.committed(text, ms, compositionSink);
+        ImeFlowTrace.record("BRIDGE_NONASCII_COMMIT_DECISION", text,
+                composition.committedCount() > previousCommits);
         maybeLogEchoSuppressions();
         return composition.committedCount() > previousCommits;
     }
@@ -303,6 +313,7 @@ public final class ImeBridge {
     }
 
     public static synchronized void finishComposing() {
+        ImeFlowTrace.record("BRIDGE_FINISH", null, true);
         String withheld = composition.takeWithheldAsciiOnFinish(
                 SystemClock.elapsedRealtime());
         if (!withheld.isEmpty())
@@ -322,6 +333,7 @@ public final class ImeBridge {
     }
 
     public static synchronized void resetComposing() {
+        ImeFlowTrace.record("BRIDGE_RESET", null, true);
         finalizeNativeAscii(SystemClock.elapsedRealtime());
         flushDeferredEmpty();
         composition.reset();
@@ -330,6 +342,7 @@ public final class ImeBridge {
     }
 
     public static synchronized void newEditorContext() {
+        ImeFlowTrace.record("BRIDGE_NEW_EDITOR", null, true);
         finishComposing();
         composition.clearEditorContext();
         backspaceGuard.reset();
@@ -337,6 +350,8 @@ public final class ImeBridge {
     }
 
     private static void deleteInternal(int before, int after, long ms) {
+        ImeFlowTrace.record("BRIDGE_DELETE_" + Math.min(128, before) +
+                "_" + Math.min(128, after), null, true);
         if (before > 0) composition.backspace(ms);
         if (asciiComposing) {
             // Preserve the English composing range that is already visible
@@ -447,7 +462,9 @@ public final class ImeBridge {
             Log.w(TAG, "IME payload exceeds bounded 16KiB");
             return;
         }
-        if (!sendSocket(operation, data)) {
+        boolean delivered = sendSocket(operation, data);
+        ImeFlowTrace.record("X11_SOCKET_" + operation, payload, delivered);
+        if (!delivered) {
             // Never revive the old Unicode->X11-CLIPBOARD fallback. It
             // generated the Android "copied to connected device" toast and
             // could paste an unrelated clipboard selection into the editor.

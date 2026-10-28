@@ -22,6 +22,7 @@ import android.view.Choreographer;
 import android.view.Gravity;
 import android.view.KeyEvent;
 import android.view.PixelCopy;
+import android.view.PointerIcon;
 import android.view.Surface;
 import android.view.SurfaceHolder;
 import android.view.View;
@@ -175,6 +176,14 @@ public final class MainActivity extends Activity implements SurfaceHolder.Callba
         view.getHolder().addCallback(this);
         FrameLayout root = new FrameLayout(this);
         root.setBackgroundColor(Color.BLACK);
+        // The Android root can receive hover events *before* SurfaceView
+        // starts resolving the guest pointer. Otherwise Android briefly
+        // shows its own arrow at the top-left of the fullscreen window,
+        // then Labwc's cursor appears at the guest center. Hide only the
+        // root's default cursor; child SurfaceView still chooses the native
+        // hardware pointer on an actual mouse event.
+        if (view.getInputMode() == InputSurfaceView.MODE_TOUCHPAD)
+            root.setPointerIcon(PointerIcon.getSystemIcon(this, PointerIcon.TYPE_NULL));
         root.addView(view, new FrameLayout.LayoutParams(-1, -1));
         cursorOverlay = new CursorOverlay(this, view);
         // Draw on top without stealing the mouse/touch events from SurfaceView.

@@ -314,8 +314,10 @@ static Window current_focus(void) {
 static void process(char op, const char *text, size_t len) {
     int64_t start=ns_now();
     bool good=true;
+    const char *route="NO_ROUTE";
     Window focus=current_focus();
-    if (focus != route_focus) {
+    const bool changed_focus=focus != route_focus;
+    if (changed_focus) {
         route_focus=focus;
         active_route=ROUTE_UNDECIDED;
         native_committed_on_focus=false;
@@ -333,6 +335,7 @@ static void process(char op, const char *text, size_t len) {
                 (active_route==ROUTE_FCITX || unicode)) {
             int result=fcitx_request(op,text,len);
             if (result==1) {
+                route="FCITX_NATIVE";
                 native_preedit++;
                 composing[0]=0; // Native GTK preedit is not real X11 text.
                 active_route=(op=='C')?ROUTE_FCITX:ROUTE_UNDECIDED;
@@ -341,6 +344,7 @@ static void process(char op, const char *text, size_t len) {
                 goto processed;
             }
             if (result<0 || active_route==ROUTE_FCITX) {
+                route="FCITX_UNCERTAIN";
                 // A native preedit may already exist. Falling back now
                 // could double-insert its final text. Wait for a new focus
                 // or future composition rather than corrupting the editor.
@@ -351,8 +355,10 @@ static void process(char op, const char *text, size_t len) {
             active_route=ROUTE_XTEST;
         }
         native_committed_on_focus=false;
+        route="XTEST_TEXT";
         xtest_preedit++;
     } else if (op=='F' || op=='R') {
+        route="COMPOSITION_RESET";
         if (active_route==ROUTE_FCITX)
             (void)fcitx_request(op,text,len);
         active_route=ROUTE_UNDECIDED;
@@ -363,12 +369,14 @@ static void process(char op, const char *text, size_t len) {
         // not an XTEST Backspace that Fcitx may reinterpret as key input.
         int response=fcitx_request('D',text,len);
         if (response==1) {
+            route="FCITX_NATIVE_DELETE";
             native_preedit++;
             native_deletes++;
             good=true;
             goto processed;
         }
         if (response<0) {
+            route="FCITX_UNCERTAIN_DELETE";
             native_uncertain++;
             good=false; // Never double-delete after uncertain delivery.
             goto processed;
@@ -398,6 +406,7 @@ static void process(char op, const char *text, size_t len) {
             }
         }
     } else if(op=='D') {
+        route="XTEST_DELETE";
         unsigned before=0,after=0;
         if (sscanf(text,"%u %u",&before,&after)==2 && before<=128 && after<=128) {
             erase(before,XK_BackSpace);erase(after,XK_Delete);
@@ -407,6 +416,16 @@ static void process(char op, const char *text, size_t len) {
     } else good=false;
     XFlush(display);
 processed:
+    // P19: the previous GTK tests exercised mostly FCITX_NATIVE_DELETE,
+    // but real XFCE/VTE can use XTEST_DELETE instead. Record only a short
+    // text-free trace of the first event paths for comparison with Android's
+    // private P19 IME flow. Never output the UTF-8 payload or key values.
+    if (count_ok + count_err < 240) {
+        fprintf(stderr,
+                "IME-P19 event=%llu op=%c bytes=%zu route=%s focus_changed=%d accepted=%d\n",
+                (unsigned long long)(count_ok + count_err + 1),
+                op, len, route, changed_focus ? 1 : 0, good ? 1 : 0);
+    }
     if(good)count_ok++;else count_err++;
     output_bytes+=len;
     total_ns+=(uint64_t)(ns_now()-start);

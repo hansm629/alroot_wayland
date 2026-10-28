@@ -549,3 +549,41 @@ Do not promote code existence or build success into screen/input PASS.
   regressions remain required.
 - Target APK v0.1.19 (versionCode 20). Real S26U first-field IME and
   initial startup pointer acceptance are TEST-PENDING until observed.
+
+## P19 2026-10-28 — remove oversized cursor and instrument real IME failure
+
+- S26U user screenshot and P18 source show a grossly enlarged temporary
+  arrow. P18 multiplied a hardcoded 19x27 cursor path by Android display
+  density (around twice normal on a high-density handset); unlike the
+  actual guest bitmap it did not obey the guest-to-view transform.
+- P19 removes that Android density enlargement. The placeholder can now
+  only be displayed at its original native-pixel dimensions or smaller,
+  following the same scene-to-view scale as guest cursor imagery.
+  The Activity root's Android pointer is hidden only in touchpad mode
+  during the early hover window; the SurfaceView still restores the
+  existing hardware mouse pointer after real mouse movement. Existing
+  touch gestures and P16 centered host pointer coordinates are retained.
+- Separate, disposable Xvfb/Fcitx5/real XFCE-VTE terminal regression now
+  sends ASCII 'hello', native Hangul '한', then a committed deletion.
+  PASS: final VTE line equals exactly 'hello', with XTEST_DEL=1.
+  Therefore XTEST_DEL by itself does NOT reproduce the phone's
+  first-field English reinsertion. Changing it or adding additional
+  English substring filters without the real Android callback sequence
+  would be speculative and risks a new regression.
+- P18's volatile Android logcat ring lost the first-field event sequence
+  before it could be inspected. P19 adds a bounded, private 64KiB rotating
+  diagnostic at ~/.alroot-wayland/diagnostics/p19-ime-flow.log. It records
+  only callback type, length, broad Latin/Hangul classification, local
+  filter decision and X11 socket delivery; NEVER actual text, keycodes
+  or clipboard contents. File writes use a separate handler thread and
+  one held file descriptor so UI typing cannot block on each write.
+- The project-local X11 daemon additionally prints its first 240 routing
+  decisions (FCITX, XTEST, XTEST_DELETE, native delete, reset) without
+  text contents to its existing project log. P19 Android flow + native
+  routing is needed to identify exactly which real Samsung callback
+  reinserts English on the first editor visit.
+- P19 DOES NOT claim a final fix for the English duplication: the user
+  has reported repeated physical-device failures through P18. This is
+  intentionally a cursor regression repair and lossless, privacy-limited
+  diagnosis before any new IME state-machine edits. P14 Korean caret,
+  P15 uppercase, DPI, battery, PiP, XFCE and Termux-X11 :0 are unchanged.

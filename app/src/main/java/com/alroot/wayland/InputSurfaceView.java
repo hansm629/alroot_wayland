@@ -270,6 +270,9 @@ public final class InputSurfaceView extends SurfaceView {
     }
 
     private void traceFirstEditor(String operation, CharSequence value, boolean accepted) {
+        // Persist the event decision without plaintext, before Android's
+        // volatile logcat ring drops the original first-field failure.
+        ImeFlowTrace.record("ANDROID_" + operation, value, accepted);
         // Bounded, metadata-only report for the user's *first* editor entry.
         // There is no plaintext, cursor-surrounding text, clipboard, or key
         // content in logcat; only route/length/script classes and decisions.
@@ -610,6 +613,9 @@ public final class InputSurfaceView extends SurfaceView {
                 "IME InputConnection " +
                 (imeConnections.hasConnection() ? "reused" : "created") +
                 " focused=" + hasFocus() + " window=" + hasWindowFocus());
+        ImeFlowTrace.record(imeConnections.hasConnection()
+                ? "ANDROID_REUSE_INPUT_CONNECTION"
+                : "ANDROID_CREATE_INPUT_CONNECTION", null, true);
         // X11 apps own the actual text. Android must never pretend this
         // SurfaceView has a real editable buffer; Samsung/Gboard otherwise
         // rely on stale cursor/selection state and send empty commitText.
@@ -740,6 +746,7 @@ public final class InputSurfaceView extends SurfaceView {
                 if (event.getKeyCode() == KeyEvent.KEYCODE_DEL) {
                     if (event.getAction() == KeyEvent.ACTION_DOWN &&
                             ImeBridge.rootfulX11Active()) {
+                        ImeFlowTrace.record("ANDROID_KEY_DEL_DOWN", null, true);
                         boolean draftBeforeDelete = ImeBridge.hasPendingPreedit();
                         consumedDraftBackspace = ImeBridge.deletePendingPreedit();
                         if (consumedDraftBackspace) {

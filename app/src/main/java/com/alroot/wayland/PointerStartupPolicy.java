@@ -32,4 +32,10 @@ final class PointerStartupPolicy {
     static float midpoint(float start, float end) {
         return start + (end - start) / 2f;
     }
+
+    /** The P18 density-multiplied fallback arrow was up to ~2x too large. */
+    static float fallbackCursorScale(float sceneToView) {
+        if (!Float.isFinite(sceneToView) || sceneToView <= 0f) return 1f;
+        return Math.min(1f, sceneToView);
+    }
 }

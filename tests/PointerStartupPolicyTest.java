@@ -25,6 +25,10 @@ public final class PointerStartupPolicyTest {
                 PointerStartupPolicy.midpoint(0, 1080) != 540f ||
                 PointerStartupPolicy.midpoint(120, 1320) != 720f)
             throw new AssertionError("Initial pointer must use the displayed view center");
+        if (PointerStartupPolicy.fallbackCursorScale(2.2f) != 1f ||
+                PointerStartupPolicy.fallbackCursorScale(.75f) != .75f ||
+                PointerStartupPolicy.fallbackCursorScale(0f) != 1f)
+            throw new AssertionError("P18 density scale must never enlarge temporary arrow");
         System.out.println("PASS: startup cursor centered, Android duplicate hidden");
     }
 }

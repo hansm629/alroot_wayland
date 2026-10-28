@@ -214,6 +214,42 @@ done
 cat "$XDG_RUNTIME_DIR/terminal-result.txt"
 grep -q "PASS_NATIVE_FCITX_TERMINAL=1" "$XDG_RUNTIME_DIR/terminal-result.txt"
 echo "PASS: XFCE terminal native preedit/commit through Android-compatible socket"
+# P19 regression: prior GTK entry tests had SurroundingText and therefore
+# often avoided the XTEST DEL route. The real XFCE VTE terminal is also
+# used on S26U and can lack that capability; test its first focused editor
+# with ASCII -> native Hangul -> delete the Hangul through the actual daemon.
+kill -TERM "$gui_pid" 2>/dev/null || true
+wait "$gui_pid" 2>/dev/null || true
+gui_pid=""
+env GTK_IM_MODULE=fcitx GDK_BACKEND=x11 \
+ xfce4-terminal --disable-server --title "P19 private terminal deletion" \
+  --command="$HOME/alroot_wayland/tests/p19-terminal-consumer.sh $XDG_RUNTIME_DIR/p19-terminal-result.txt" \
+  > "$XDG_RUNTIME_DIR/p19-terminal.log" 2>&1 & gui_pid=$!
+for i in $(seq 1 35); do
+  win=$(xdotool search --name "P19 private terminal deletion" 2>/dev/null | head -1 || true)
+  [[ -n "$win" ]] && { xdotool windowfocus "$win" 2>/dev/null || true; break; }
+  sleep .10
+done
+sleep .30
+python3 - "$XDG_RUNTIME_DIR/ime.sock" <<"PY"
+import socket, struct, sys, time
+s=socket.socket(socket.AF_UNIX)
+s.connect(sys.argv[1])
+for op, value in [("C","hello"),("T","hello"),("C","한"),("T","한"),("D","1 0")]:
+    b=value.encode()
+    s.sendall(op.encode()+struct.pack("!I",len(b))+b)
+    time.sleep(.080)
+s.close()
+PY
+sleep .16
+xdotool key Return
+for i in $(seq 1 35); do
+  [[ -f "$XDG_RUNTIME_DIR/p19-terminal-result.txt" ]] && break
+  sleep .10
+done
+cat "$XDG_RUNTIME_DIR/p19-terminal-result.txt"
+grep -q "P19_VTE_ENGLISH_HANGUL_DEL_MATCH=1" "$XDG_RUNTIME_DIR/p19-terminal-result.txt"
+echo "PASS: private XFCE VTE ASCII/Hangul committed deletion remains exact"
 kill -TERM "$native_pid"
 wait "$native_pid" 2>/dev/null || true
 echo "=== routing metrics ==="

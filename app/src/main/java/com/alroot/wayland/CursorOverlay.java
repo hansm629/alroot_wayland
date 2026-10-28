@@ -18,7 +18,6 @@ public final class CursorOverlay extends View {
     private final Path startupArrow = new Path();
     private final Paint startupFill = new Paint(Paint.ANTI_ALIAS_FLAG);
     private final Paint startupOutline = new Paint(Paint.ANTI_ALIAS_FLAG);
-    private final float startupScale;
     private Bitmap cursor;
     private int hotspotX, hotspotY;
     private boolean hidden;
@@ -29,7 +28,10 @@ public final class CursorOverlay extends View {
         setClickable(false);
         setFocusable(false);
         setImportantForAccessibility(IMPORTANT_FOR_ACCESSIBILITY_NO);
-        startupScale = Math.max(1f, getResources().getDisplayMetrics().density * 0.8f);
+        // Do not scale the temporary Wayland-pointer placeholder by Android
+        // density. P18 rendered a 27-pixel path at ~2x on high-DPI phones,
+        // making the cursor much larger than XFCE's actual desktop pointer.
+        // It must obey the same guest-to-view transform as a real wl_pointer.
         startupArrow.moveTo(0f, 0f);
         startupArrow.lineTo(0f, 22f);
         startupArrow.lineTo(5.5f, 16.5f);
@@ -70,7 +72,11 @@ public final class CursorOverlay extends View {
             canvas.scale(surface.cursorScaleX(), surface.cursorScaleY());
             canvas.drawBitmap(cursor, -hotspotX, -hotspotY, bitmapPaint);
         } else {
-            canvas.scale(startupScale, startupScale);
+            // Unlike a bitmap sent by the guest, this fallback has no X11
+            // hotspot/density metadata. It is drawn at native pixel size,
+            // never enlarged beyond its 19 x 27 source dimensions.
+            canvas.scale(PointerStartupPolicy.fallbackCursorScale(surface.cursorScaleX()),
+                         PointerStartupPolicy.fallbackCursorScale(surface.cursorScaleY()));
             canvas.drawPath(startupArrow, startupOutline);
             canvas.drawPath(startupArrow, startupFill);
         }

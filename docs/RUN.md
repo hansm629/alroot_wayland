@@ -983,3 +983,41 @@ If failure remains, collect only metadata (no actual text) using:
     logcat -d -s AlrootWayland | grep -E 'IME P18|IME InputConnection|P18 pointer' | tail -100
 
 Successful Java/Xvfb/CI checks do not establish real Samsung IME PASS.
+
+## P19: smaller cursor and first-real-editor event tracing
+
+P18's large temporary cursor was caused by multiplying a 19x27 native
+arrow by Android density on top of guest scaling. P19 removes this
+extra scaling, keeps the guest cursor's existing transform unchanged,
+and hides the independent Android root cursor only during touchpad
+startup. Guest mouse deltas and DeX hardware-mouse motion are unchanged.
+
+An expanded isolated XFCE/VTE regression covers ASCII 'hello' ->
+Hangul '한' -> delete the committed Hangul using the actual native
+IME socket. It passes, INCLUDING the terminal's XTEST_DEL route;
+this does not reproduce Samsung's genuine first-use callback bug.
+Do not treat another green Xvfb test as proof that Samsung is fixed.
+
+After installing the signed P19 APK and restarting **only** the Alroot
+session, check the cursor's first position and size, then reproduce
+the English/Hangul bug once in a newly focused input field. The actual
+text is never written to the diagnostic. The event sequence is
+retained in the Termux-shared private project directory:
+
+    tail -180 ~/.alroot-wayland/diagnostics/p19-ime-flow.log
+    grep 'IME-P19' ~/.alroot-wayland/logs/ime-server.log | tail -180
+
+The first file records only Android and bridge op/type/length/delivery
+decisions. The second file records the native X11 route without text.
+Together they distinguish Android stale-commit/phantom-delete feedback,
+socket messages and XTEST/Fcitx5 native fallback decisions. The
+Android file rotates at 64KiB. Trace logs are project-private and
+never sent off-device automatically.
+
+Regression test commands:
+
+    cd ~/alroot_wayland
+    bash tests/p18-startup-regression.sh
+    bash tests/p11-native-integration.sh
+    bash tests/p14-vte-caret-smoke.sh
+    bash tests/p15-uppercase-smoke.sh
