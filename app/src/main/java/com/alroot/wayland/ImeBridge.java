@@ -292,10 +292,8 @@ public final class ImeBridge {
         Log.d(TAG, "IME synthetic text context reset after pointer focus change");
     }
 
-    public static synchronized void delete(int before, int after) {
-        if (before == 1 && after == 0 && backspaceGuard.isEcho(
-                ImeBackspaceGuard.SURROUNDING_TEXT, SystemClock.elapsedRealtime()))
-            return; // the same keypress was already sent via KEYCODE_DEL
+    private static void deleteInternal(int before, int after, long ms) {
+        if (before > 0) composition.backspace(ms);
         if (asciiComposing) {
             // Preserve the English composing range that is already visible
             // inside X11. Deleting one composing character is a native C
@@ -313,6 +311,15 @@ public final class ImeBridge {
         }
         composition.delete(before, after, deletingCompositionSink);
     }
+    /** Returns false if the other Android deletion API already sent this DEL. */
+    public static synchronized boolean delete(int before, int after) {
+        long ms = SystemClock.elapsedRealtime();
+        if (before == 1 && after == 0 && backspaceGuard.isEcho(
+                ImeBackspaceGuard.SURROUNDING_TEXT, ms))
+            return false; // already sent via KEYCODE_DEL; don't move fake cursor twice
+        deleteInternal(before, after, ms);
+        return true;
+    }
 
     public static boolean hasPendingPreedit() {
         return composition.hasDraft();
@@ -320,23 +327,21 @@ public final class ImeBridge {
 
     /** Apply DEL to the native, already-visible preedit immediately. */
     public static synchronized boolean deletePendingPreedit() {
-        if (backspaceGuard.isEcho(ImeBackspaceGuard.KEY_EVENT,
-                SystemClock.elapsedRealtime()))
+        long now = SystemClock.elapsedRealtime();
+        if (backspaceGuard.isEcho(ImeBackspaceGuard.KEY_EVENT, now))
             return true; // surrounding-text Backspace already handled it
         if (!composition.hasDraft()) {
             if (deletionSmoother.hasPending()) {
-                // The first empty composition was intentionally deferred.
-                // A second Backspace must clear it BEFORE deleting earlier
-                // committed text. Consume the Android KeyEvent and enqueue
-                // both requests on the ordered native socket; forwarding the
-                // key synchronously could race ahead and erase twice.
+                // Flush the preceding empty preedit before deleting any
+                // already committed text; both go over the ordered socket.
                 flushDeferredEmpty();
-                io.post(() -> send('D', "1 0"));
-                return true;
             }
-            return false;
         }
-        composition.delete(1, 0, deletingCompositionSink);
+        // Do not bypass the Java composition/echo state by injecting a raw
+        // XTEST KEYCODE_DEL. Samsung can send both KEYCODE_DEL and
+        // deleteSurroundingText for one tap, and the old bypass failed
+        // to mark deletion of committed Korean before a stale English echo.
+        deleteInternal(1, 0, now);
         return true;
     }
 

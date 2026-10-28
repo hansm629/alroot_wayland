@@ -19,6 +19,10 @@ clang -O1 tests/p11-native-gtk.c \
 clang -O1 tests/p11-native-edit-gtk.c \
     -o "$base/gtk-edit-probe" $(pkg-config --cflags --libs gtk+-3.0)
 clang -O1 tests/p11-raw-xlib.c -o "$base/xlib-fallback" -lX11
+mkdir -p "$base/jvm"
+javac -encoding UTF-8 -d "$base/jvm" \
+    app/src/main/java/com/alroot/wayland/ImeCommitState.java \
+    tests/ImeEnglishEchoNativeProbe.java
 display=""
 for n in 206 207 208 209 210; do
     [[ ! -S "$PREFIX/tmp/.X11-unix/X$n" ]] && { display=":$n"; break; }
@@ -113,12 +117,18 @@ echo "PASS: Native Fcitx GTK preedit rendered, 1 real text mutation"
 # Verify deletion of a committed Korean syllable and the next composing
 # update; old XTEST is still used for committed DEL even with GTK Fcitx.
 # Also check that normal English-to-Korean entry remains non-duplicated.
-for scenario in deletion switch; do
+for scenario in deletion switch echo; do
     expected=글
     [[ "$scenario" == switch ]] && expected=hi하
+    [[ "$scenario" == echo ]] && expected=hello
     env GTK_IM_MODULE=fcitx GDK_BACKEND=x11 \
         $base/gtk-edit-probe "$expected" > "$XDG_RUNTIME_DIR/gtk-edit-$scenario.log" 2>&1 & gui_pid=$!
     sleep .58
+    if [[ "$scenario" == echo ]]; then
+        java -cp "$base/jvm" ImeEnglishEchoNativeProbe "$XDG_RUNTIME_DIR/ime.sock" \
+            > "$XDG_RUNTIME_DIR/echo-test.log" 2>&1
+        cat "$XDG_RUNTIME_DIR/echo-test.log"
+    else
     python3 - "$XDG_RUNTIME_DIR/ime.sock" "$scenario" <<"PY"
 import socket,struct,sys,time
 s=socket.socket(socket.AF_UNIX);s.connect(sys.argv[1])
@@ -132,9 +142,13 @@ for op,text in series:
     time.sleep(.085)
 s.close()
 PY
+    fi
     wait "$gui_pid";gui_pid=""
     cat "$XDG_RUNTIME_DIR/gtk-edit-$scenario.log"
     grep -q "P11_NATIVE_EDIT_MATCH=1" "$XDG_RUNTIME_DIR/gtk-edit-$scenario.log"
+    if [[ "$scenario" == echo ]]; then
+        grep -q "P12_ENGLISH_ECHO_FILTERED=1" "$XDG_RUNTIME_DIR/echo-test.log"
+    fi
     echo "PASS: native GTK $scenario edits preserve text and final cursor"
 done
 # Focus away from native GTK to raw Xlib: it must now fall back again.

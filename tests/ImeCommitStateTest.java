@@ -283,6 +283,70 @@ public final class ImeCommitStateTest {
         x.check("한국어");
     }
 
+    // P12 regression: after editing English then Korean and deleting the
+    // Korean syllable, Samsung can replay its earlier English snapshot.
+    // The old generic 1200ms filter expired during normal Korean typing.
+    static void hangulDeletedThenStaleEnglishSnapshot() {
+        ImeCommitState state = new ImeCommitState();
+        FakeNative x = new FakeNative();
+        state.committed("hello", 100, x);
+        state.composing("한", 5000, x);
+        state.committed("한", 5100, x);
+        x.check("hello한");
+        state.backspace(5105);
+        state.delete(1, 0, x);
+        x.check("hello");
+        check(state.duplicateAsciiComposing("hello", 5110),
+              "Stale English composing after Hangul DEL must be detected");
+        state.committed("hello", 5120, x);
+        x.check("hello"); // no automatic hellohello
+    }
+
+    static void normalEnglishAfterHangulDeleteIsNotLost() {
+        ImeCommitState state = new ImeCommitState();
+        FakeNative x = new FakeNative();
+        state.committed("hello", 100, x);
+        state.composing("한", 5000, x);
+        state.committed("한", 5100, x);
+        state.backspace(5105);
+        state.delete(1, 0, x);
+        // Genuine user-typed ASCII letters arrive as single/partial changes.
+        check(!state.duplicateAsciiComposing("h", 5110),
+              "Never discard a new single Latin letter");
+        state.committed("h", 5120, x);
+        x.check("helloh");
+    }
+
+    static void finishedHangulThenDeleteAndEnglishEcho() {
+        ImeCommitState state = new ImeCommitState();
+        FakeNative x = new FakeNative();
+        state.committed("hello", 100, x);
+        state.composing("한", 3200, x);
+        state.finished(3250, x); // Samsung uses finishComposingText
+        x.check("hello한");
+        state.backspace(3300);
+        state.delete(1, 0, x);
+        check(state.duplicateAsciiComposing("hello", 3330),
+                "Post-finish Hangul deletion must arm stale English guard");
+        state.committed("hello", 3340, x);
+        x.check("hello");
+    }
+
+    static void newEditorDoesNotSuppressLegitimateEnglish() {
+        ImeCommitState state = new ImeCommitState();
+        FakeNative x = new FakeNative();
+        state.committed("hello", 100, x);
+        state.composing("한", 3200, x);
+        state.committed("한", 3210, x);
+        state.backspace(3220);
+        state.delete(1, 0, x);
+        state.clearEditorContext();
+        check(!state.duplicateAsciiComposing("hello", 3250),
+                "New editor focus must clear old English echo state");
+        state.committed("hello", 3260, x);
+        x.check("hellohello");
+    }
+
     public static void main(String[] args) {
         koreanIsVisibleAtFirstPreedit();
         koreanBackspaceIsImmediate();
@@ -304,6 +368,10 @@ public final class ImeCommitStateTest {
         deleteCommittedAfterComposing();
         canceledCompositionRemovesX11Only();
         twoWordDirectPreeditSnapshot();
-        System.out.println("PASS: 20 Android IME event scenarios, immediate Korean preedit & DEL");
+        hangulDeletedThenStaleEnglishSnapshot();
+        normalEnglishAfterHangulDeleteIsNotLost();
+        finishedHangulThenDeleteAndEnglishEcho();
+        newEditorDoesNotSuppressLegitimateEnglish();
+        System.out.println("PASS: 24 Android IME event scenarios, Korean DEL and English echo");
     }
 }

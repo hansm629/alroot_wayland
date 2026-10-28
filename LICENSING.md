@@ -21,3 +21,10 @@ to be audited before public release or redistribution beyond development CI.
 
 Project-private wlroots is compiled as a separate bionic library from upstream
 0.18.2; its permissive license is retained in LICENSES/wlroots-MIT.txt.
+
+The private Labwc output-resize utility uses the wlr-output-management-v1
+protocol XML in termux/protocols/, taken from wlroots 0.18.2 (copyright
+Purism SPC, permission/notice text included verbatim in that XML). The
+client implementation is Alroot project source, generated protocol stubs
+are compiled locally with wayland-scanner, and no Termux global library or
+original X11 output configuration is modified.

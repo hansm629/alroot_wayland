@@ -583,8 +583,8 @@ public final class InputSurfaceView extends SurfaceView {
             @Override public boolean deleteSurroundingText(int beforeLength, int afterLength) {
                 if (ImeBridge.rootfulX11Active()) {
                     boolean hadDraft = ImeBridge.hasPendingPreedit();
-                    ImeBridge.delete(beforeLength, afterLength);
-                    if (!hadDraft) {
+                    boolean processed = ImeBridge.delete(beforeLength, afterLength);
+                    if (!hadDraft && processed) {
                         fakeCursorPosition = Math.max(1,
                                 fakeCursorPosition - Math.max(0, beforeLength));
                         if (batchDepth == 0) reportCursor();
@@ -605,8 +605,15 @@ public final class InputSurfaceView extends SurfaceView {
                 if (event.getKeyCode() == KeyEvent.KEYCODE_DEL) {
                     if (event.getAction() == KeyEvent.ACTION_DOWN &&
                             ImeBridge.rootfulX11Active()) {
+                        boolean draftBeforeDelete = ImeBridge.hasPendingPreedit();
                         consumedDraftBackspace = ImeBridge.deletePendingPreedit();
-                        if (consumedDraftBackspace) return true;
+                        if (consumedDraftBackspace) {
+                            if (!draftBeforeDelete) {
+                                fakeCursorPosition = Math.max(1, fakeCursorPosition - 1);
+                                if (batchDepth == 0) reportCursor();
+                            }
+                            return true;
+                        }
                     }
                     if (event.getAction() == KeyEvent.ACTION_UP && consumedDraftBackspace) {
                         consumedDraftBackspace = false;

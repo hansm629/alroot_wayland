@@ -325,6 +325,42 @@ start_session() {
             tail -16 "$LOGS/labwc.log" >&2
             return 1
         fi
+        # The nested wlroots backend defaults to 1280x720 even though the
+        # parent and Xwayland use 1920x1080. Upscaling this 720p scene
+        # to the full phone height makes XFCE look ~1.5x larger at 96 DPI.
+        # Resize only private Labwc WL-1 before Xwayland/XFCE start.
+        # Wayland nested backend rejects refresh values in custom modes.
+        local nested_w=1920 nested_h=1080 candidate_w="" candidate_h=""
+        if [[ -r "$STATE/output-resolution" ]]; then
+            read -r candidate_w candidate_h < "$STATE/output-resolution" || true
+            if [[ "$candidate_w" =~ ^[0-9]{3,4}$ && "$candidate_h" =~ ^[0-9]{3,4}$ ]] &&
+                ((candidate_w >= 320 && candidate_w <= 3840 &&
+                  candidate_h >= 240 && candidate_h <= 2160)); then
+                nested_w="$candidate_w"; nested_h="$candidate_h"
+            fi
+        fi
+        rm -f "$STATE/labwc-geometry"
+        if ! "$PREFIX/bin/bash" "$HOME/alroot_wayland/termux/build-nested-output.sh" \
+                > "$LOGS/nested-output-build.log" 2>&1; then
+            echo 'WARNING: project-only Labwc output helper failed to build' >&2
+        else
+            local nested_ok=0 attempt
+            for ((attempt=0; attempt<25; ++attempt)); do
+                if env XDG_RUNTIME_DIR="$RUNTIME" WAYLAND_DISPLAY="$parent" \
+                    "$HOME/alroot_wayland/packages/bin/alroot-nested-output" \
+                    "$nested_w" "$nested_h" > "$LOGS/nested-output.log" 2>&1; then
+                    nested_ok=1
+                    break
+                fi
+                sleep .12
+            done
+            if ((nested_ok)); then
+                printf '%s %s\n' "$nested_w" "$nested_h" > "$STATE/labwc-geometry"
+                echo "Nested Labwc $parent: $nested_w x $nested_h (X11 DPI 96)"
+            else
+                echo 'WARNING: nested Labwc output resize failed; see nested-output.log' >&2
+            fi
+        fi
     fi
     start_xwayland "$parent"
     rm -f "$STATE/ime-fcitx-enabled" "$STATE/ipc/ime-fcitx.sock"
@@ -409,6 +445,8 @@ case "${1:-}" in
         fi
         [[ ! -r "$STATE/ime-backend" ]] ||
             echo "ime_preference: $(cat "$STATE/ime-backend")"
+        [[ ! -r "$STATE/labwc-geometry" ]] ||
+            echo "labwc_geometry: $(cat "$STATE/labwc-geometry") (X11 DPI 96)"
         if x11_desktop_ready; then
             echo 'x11_desktop: READY (xfwm4 + xfdesktop + xfce4-panel on isolated Xwayland)'
         else
@@ -420,6 +458,7 @@ case "${1:-}" in
     stop)
         rm -f "$STATE/ime-active"
         rm -f "$STATE/ime-fcitx-enabled"
+        rm -f "$STATE/labwc-geometry"
         stop_one ime
         stop_one clipboard
         stop_one xfce
@@ -432,7 +471,7 @@ case "${1:-}" in
         am start -n com.alroot.wayland/.MainActivity
         ;;
     logs)
-        for f in "$LOGS"/{labwc,xwayland,xfce,clipboard,ime-server,ime-build,ime-fcitx-build,refresh,upower}.log "$STATE/spawn.log"; do
+        for f in "$LOGS"/{labwc,nested-output,nested-output-build,xwayland,xfce,clipboard,ime-server,ime-build,ime-fcitx-build,refresh,upower}.log "$STATE/spawn.log"; do
             if [[ -r "$f" ]]; then echo "--- $f"; tail -24 "$f"; fi
         done
         ;;

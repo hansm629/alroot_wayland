@@ -659,6 +659,55 @@ The preference is stored only in ~/.alroot-wayland/ime-backend.
 An awstart --status check shows NATIVE_FCITX when the addon's private
 Unix socket is ready. No global desktop/input settings are modified.
 
+## P12: restore true 1080p nested Labwc and suppress English replay after Hangul DEL
+
+P11 user screenshot showed the XFCE menu apparently ~1.5x too large.
+Live S26U comparison showed X11 :0 and :90 both at 1920x1080,
+96 DPI, identical XFCE panel XML, Xft 96, GTK window scale 1,
+and identical font/theme settings. **The actual mismatch was the
+nested Labwc wl_output at 1280x720**, subsequently stretched to the
+physical Android 1440-pixel display height. The parent Android host
+and rootful Xwayland were both 1920x1080.
+
+P12 uses a private wlr-output-management-v1 client to configure
+the nested Labwc WL-1 output to match the chosen guest dimensions
+BEFORE Xwayland/XFCE startup. The protocol XML includes the original
+copyright/license and is compiled into a tiny project-local helper
+using wayland-scanner/clang. No global wlr-randr installation or
+modification to Termux-X11 :0 is necessary. The wlroots Wayland backend
+does not support a nonzero refresh in custom-mode, so X11's separate
+RandR 120Hz mode logic is preserved unchanged. DPI remains 96.
+
+The English-after-Hangul-Backspace duplication was independently
+reproduced in P11's Android state engine: English "hello" typed first,
+more than 1.2s spent composing Korean, then Korean deleted and Samsung
+retransmits stale English text. The original English echo window
+expired BEFORE that deletion. P12 adds a narrow 3.5s guard starting
+from the Korean deletion, not the English typing. It ignores matching
+whole already-committed English snapshots sent as either composing
+or commit events. Legitimate single-letter English after deletion
+is preserved. A new text-editor focus clears this context.
+
+Both Android input deletion APIs now enter the SAME ImeBridge state
+machine: KEYCODE_DEL no longer bypasses it to send a raw XTEST key.
+Cross-source duplicate Backspace guard remains intact; fake Android
+cursor position decreases only after a deletion actually dispatches.
+The existing Fcitx5 native preedit path, unsupported-client XTEST
+fallback, native battery plugin, wallpaper settings and PiP are unchanged.
+
+Local validation commands:
+
+    bash ~/alroot_wayland/tests/p12-smoke.sh
+    awstart --status
+
+The private Xvfb GTK scenario tests the REAL Java state engine ->
+Unix socket -> Fcitx5 GTK preedit -> XTEST Backspace -> stale English
+replay, and asserts the final field is "hello" (not "hellohello").
+The P12 JVM suite also tests finishComposing, both delete source
+semantics, a genuinely new English letter, and editor focus changes.
+Actual Samsung keyboard behavior and device scaling still require the
+updated APK visual acceptance.
+
 ## P10: smooth Korean caret during Backspace and composition
 
 User P09 acceptance: the critical Korean typing/deletion delay was fixed.

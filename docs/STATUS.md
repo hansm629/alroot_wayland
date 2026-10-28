@@ -318,6 +318,35 @@ Do not promote code existence or build success into screen/input PASS.
   display mode, and original Termux-X11 :0 remained untouched.
 - User's actual Samsung touch-keyboard UI and visual cursor flicker
   acceptance are still TEST-PENDING after the new signed APK.
+
+## P12 2026-10-28: Labwc output regression and Korean DEL English echo
+
+- User reports P11 native Fcitx Hangul improved but XFCE appeared
+  oversized and old English resurfaced after Korean Backspace.
+- Confirmed both Termux-X11 :0 and Alroot :90 have 1920x1080 96 DPI,
+  identical GTK fonts/theme/scale and byte-identical panel xsettings.
+  Nested Labwc wayland-1 was actually 1280x720, stretched to full
+  phone height; host wayland-0 was 1920x1080. Direct project-only
+  wlr-output-management custom mode changed WL-1 to 1920x1080
+  successfully; Android log thereafter reported a 1920x1080 scene.
+- Added a source-built project-private output mode helper executed
+  before Xwayland/XFCE startup, with geometry from the existing
+  validated output-resolution file. No global package/wlroots change
+  or fake reduction of the Xft DPI value.
+- Added reproducible JVM regression: English typed first, >1.2s
+  Korean composition, Korean deleted, then Samsung stale English C/T.
+  P11 initially FAILED; a short echo guard measured from the Korean
+  deletion now prevents duplicate English. Focus change/normal new
+  English input is not suppressed. Both Android KEYCODE_DEL and
+  deleteSurroundingText update the same state before sending X11 DEL.
+- Added full private native Fcitx GTK roundtrip for this exact event
+  sequence: GTK final text remained 'hello', with no duplicate English;
+  native/legacy routing metrics reported zero uncertain deliveries.
+  Separate Android model tests include explicit finish and focus reset.
+- Live S26U Alroot project restart reported nested Labwc 1920x1080
+  at 96 DPI, Xwayland 1920x1080, Android physical 120Hz mode and
+  Fcitx addon ready. Battery, wallpaper, PiP and original Termux-X11
+  were not modified. Actual Samsung keyboard acceptance still pending.
 - P04 refresh stability: Choreographer measured timestamp jitter briefly
   caused the older code to advertise 122Hz despite the physical mode
   remaining 120Hz. This release retains the actual Android active physical

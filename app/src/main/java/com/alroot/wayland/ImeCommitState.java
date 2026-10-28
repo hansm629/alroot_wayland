@@ -21,6 +21,10 @@ public final class ImeCommitState {
 
     private static final long ENGLISH_CONTEXT_MS = 60000;
     private static final long ECHO_WINDOW_MS = 1200;
+    // Samsung can replay the previous English composition right after
+    // deleting Hangul, well after the original 1.2-second typing window.
+    // This window starts at the Hangul Backspace, not the English input.
+    private static final long DELETION_ECHO_MS = 3500;
     private String draft = "";
     private String recentAscii = "";
     private long recentAsciiAt = -1;
@@ -31,6 +35,9 @@ public final class ImeCommitState {
     private int echoSuppressions;
     private int emittedCompositions;
     private int emittedCommits;
+    private boolean lastCommittedWasKorean;
+    private long lastKoreanDeleteAt = -1;
+    private boolean mayReplayEnglishAfterKoreanDelete;
 
     private static boolean korean(String text) {
         for (int i = 0; i < text.length(); i++) {
@@ -74,12 +81,27 @@ public final class ImeCommitState {
         rememberAscii(text, ms);
     }
     public synchronized boolean duplicateAsciiComposing(String text, long ms) {
-        boolean echo = text != null && text.length() >= 2 && ascii(text)
-                && recentAsciiAt >= 0 && ms >= recentAsciiAt
-                && ms - recentAsciiAt < ECHO_WINDOW_MS
-                && recentAscii.endsWith(text);
+        boolean sameOldText = text != null && text.length() >= 2 &&
+                ascii(text) && !recentAscii.isEmpty() && recentAscii.endsWith(text);
+        boolean initialEcho = sameOldText && recentAsciiAt >= 0 &&
+                ms >= recentAsciiAt && ms - recentAsciiAt < ECHO_WINDOW_MS;
+        boolean afterDeletionEcho = sameOldText && isPostKoreanDeletion(ms);
+        boolean echo = initialEcho || afterDeletionEcho;
         if (echo) echoSuppressions++;
         return echo;
+    }
+    private boolean isPostKoreanDeletion(long nowMs) {
+        return mayReplayEnglishAfterKoreanDelete &&
+                lastKoreanDeleteAt >= 0 && nowMs >= lastKoreanDeleteAt &&
+                nowMs - lastKoreanDeleteAt < DELETION_ECHO_MS;
+    }
+    /** Called for either Android deletion API, before the remote Backspace. */
+    public synchronized void backspace(long nowMs) {
+        if (lastCommittedWasKorean || korean(draft)) {
+            lastKoreanDeleteAt = nowMs;
+            mayReplayEnglishAfterKoreanDelete = true;
+        }
+        lastCommittedWasKorean = false;
     }
     public synchronized void keyboardSwitchedToKorean(long ms) {
         koreanTransition = true;
@@ -124,6 +146,13 @@ public final class ImeCommitState {
     }
     public synchronized void committed(String text, long ms, Sink sink) {
         if (text == null) text = "";
+        if (text.length() >= 2 && ascii(text) &&
+                isPostKoreanDeletion(ms) && recentAscii.endsWith(text)) {
+            echoSuppressions++;
+            // This is the final commit of an already ignored English echo,
+            // not a new keystroke. Never duplicate the old English text.
+            return;
+        }
         if (korean(text)) koreanTransition = true;
         if (koreanTransition && !text.isEmpty() && ascii(text) &&
                 text.length() >= 2 && recentAscii.endsWith(text)) {
@@ -149,6 +178,11 @@ public final class ImeCommitState {
             emittedCommits++;
             sink.committed(normalized);
             if (ascii(normalized)) rememberAscii(normalized, ms);
+            if (korean(normalized)) lastCommittedWasKorean = true;
+            else if (!normalized.isEmpty()) {
+                lastCommittedWasKorean = false;
+                mayReplayEnglishAfterKoreanDelete = false;
+            }
         }
         draft = "";
         koreanTransition = false;
@@ -158,6 +192,7 @@ public final class ImeCommitState {
         if (!draft.isEmpty()) {
             emittedCommits++;
             sink.committed(draft);
+            if (korean(draft)) lastCommittedWasKorean = true;
             lastFinished = draft;
             lastFinishedMs = ms;
             finishEchoPending = true;
@@ -189,6 +224,9 @@ public final class ImeCommitState {
         draft = "";
         koreanTransition = false;
         finishEchoPending = false;
+        // Reinitializing IME's composing state is not an editor focus
+        // change. Retain English context and last committed script until
+        // clearEditorContext() is explicitly requested.
     }
     public synchronized void clearEditorContext() {
         reset();
@@ -196,5 +234,8 @@ public final class ImeCommitState {
         recentAsciiAt = -1;
         lastFinished = "";
         lastFinishedMs = -1;
+        lastCommittedWasKorean = false;
+        lastKoreanDeleteAt = -1;
+        mayReplayEnglishAfterKoreanDelete = false;
     }
 }
