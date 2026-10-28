@@ -1021,3 +1021,54 @@ Regression test commands:
     bash tests/p11-native-integration.sh
     bash tests/p14-vte-caret-smoke.sh
     bash tests/p15-uppercase-smoke.sh
+
+## P20: fix proven first Hangul deletion replay and duplicate cursors
+
+P19's text-free S26U trace proved the exact error: English C(1..27),
+F, Android mixed C(English+Hangul), then pure old-English C(27..0)
+when the last Hangul is deleted, before any real DEL. P19 classified
+the old English as a new XTEST composing range and duplicated it.
+
+P20 retains the exact mixed editor-prefix identity while forwarding
+only Hangul to native Fcitx. Pure ASCII composing updates that match
+the already-inserted prefix are *consumed*, not sent as new XTEST C.
+For uncommitted Hangul the native C is cleared without T. For
+already committed Hangul, a subsequent genuine DEL is still sent to
+the native focused client. A DIFFERENT new English text is not blocked.
+
+P18 also started a second software cursor immediately, over Android's
+hardware pointer. P20 removes that startup overlay and the fake arrow;
+only an actual touchpad gesture with a ready guest bitmap or captured
+pointer enables the software overlay, with the Android icon suppressed
+while it owns the pointer. Actual mouse movement restores hardware
+cursor ownership. A second cursor is never deliberately drawn at
+startup. A centered OS hardware cursor remains subject to Android's
+pointer positioning rules (P20 does not claim a privileged warp).
+
+Run the isolated regressions:
+
+    cd ~/alroot_wayland
+    bash tests/p18-startup-regression.sh
+    bash tests/p11-native-integration.sh
+    bash tests/p14-vte-caret-smoke.sh
+    bash tests/p15-uppercase-smoke.sh
+
+The expanded native GTK tests include both P20 raw context drains
+and the committed-Hangul T-before-C variant from the REAL P19 log,
+on an isolated Xvfb only. All user live :0/:90 windows and native
+Termux system packages remain untouched.
+
+After signed APK installation (requires Android installer approval),
+restart only Alroot and test:
+  1. One visible cursor immediately at startup, then after XFCE loads
+     and after mouse/touchpad movement; no fake oversized cursor.
+  2. FIRST editor: English -> Korean -> delete only Korean. English must
+     remain exactly once; repeat in the same and a second editor.
+  3. Uppercase, Hangul visible caret, touch/scroll, 120Hz, DPI, battery.
+
+If the English issue persists, the on-device text-free trace remains:
+
+    tail -180 ~/.alroot-wayland/diagnostics/p19-ime-flow.log
+    grep 'IME-P19' ~/.alroot-wayland/logs/ime-server.log | tail -180
+
+Do not call a synthetic PASS real Samsung acceptance.

@@ -205,6 +205,12 @@ public final class ImeBridge {
                     " (no text recorded)");
         }
         if (asciiOnly(text)) {
+            if (!asciiComposing && composition.consumeRestoredAsciiContext(
+                    text, ms, compositionSink)) {
+                ImeFlowTrace.record("BRIDGE_MIXED_CONTEXT_DRAIN", text, false);
+                maybeLogEchoSuppressions();
+                return;
+            }
             if (!asciiComposing && composition.withholdSuspectedAscii(text, ms)) {
                 ImeFlowTrace.record("BRIDGE_ASCII_HELD", text, false);
                 // A speculative Samsung English snapshot must not appear in
@@ -258,6 +264,11 @@ public final class ImeBridge {
     public static synchronized boolean commitComposed(String text) {
         long ms = SystemClock.elapsedRealtime();
         ImeFlowTrace.record("BRIDGE_COMMIT_IN", text, true);
+        if (!asciiComposing && composition.consumeRestoredAsciiCommit(text)) {
+            ImeFlowTrace.record("BRIDGE_MIXED_CONTEXT_COMMIT_REJECTED", text, false);
+            maybeLogEchoSuppressions();
+            return false;
+        }
         if (composition.suppressWithheldAsciiCommit(text, ms)) {
             ImeFlowTrace.record("BRIDGE_STALE_COMMIT_REJECTED", text, false);
             if (++staleAsciiCommitsRejected % 16 == 0)

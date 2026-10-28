@@ -587,3 +587,53 @@ Do not promote code existence or build success into screen/input PASS.
   intentionally a cursor regression repair and lossless, privacy-limited
   diagnosis before any new IME state-machine edits. P14 Korean caret,
   P15 uppercase, DPI, battery, PiP, XFCE and Termux-X11 :0 are unchanged.
+
+## P20 2026-10-28 — real Samsung mixed-context replay and one cursor owner
+
+- P19 user report: still two visible cursors (one independent Android
+  pointer, the other P18/P19 native snapshot overlay) and repeated English
+  text when deleting the final Hangul character.
+- REAL S26U ~/.alroot-wayland/diagnostics/p19-ime-flow.log records the
+  exact first-failure class (text itself was never logged):
+    * Android ASCII C grows from length 1 to 27; the X11 daemon sends
+      XTEST C, then Android F leaves that English committed/visible.
+    * Samsung C contains the 27-character already-present Latin prefix
+      plus Hangul, which ImeCommitState correctly strips while Hangul
+      remains. Native Fcitx5 receives only the Korean suffix.
+    * As Korean shrinks, the raw Android composing value becomes ASCII
+      length 27 WITHOUT any deleteSurroundingText/KEYCODE_DEL first.
+      P19 then calls composition.finished() -> native T(Korean), followed
+      by XTEST C(27), retyping the earlier English. C(26..1) subsequently
+      revises that new duplicate. The previous post-Backspace guard could
+      never catch this transition.
+- P20 records only the exact stripped Latin context of the *current*
+  mixed Korean preedit and consumes its subsequent pure-ASCII revisions
+  before the ordinary ASCII routing path. While Hangul is uncommitted,
+  its Fcitx5 preedit is cleared by native C("") rather than committed
+  with T. When Hangul is already committed (the real P19 T-then-C path),
+  the stale ASCII revisions are ignored and a later real DEL removes
+  just the committed Korean. The guard disarms when the old snapshot
+  drains to empty, on a new/different ASCII preedit, direct fresh
+  key input or a new editor. A trailing stale T is ignored once.
+- Private Xvfb/Fcitx5/GTK native socket and JVM simulations now cover
+  both uncommitted Hangul and already-committed Hangul followed by
+  C(27..0). These demonstrate exact English retention without another
+  XTEST ASCII insertion. Actual Samsung acceptance remains pending.
+- Native compositor ROLE_CURSOR is NOT included in render_scene(): it
+  publishes a bitmap for Android to draw/use as PointerIcon. Therefore
+  the apparent two cursors came from Android hardware pointer and
+  P18's always-on CursorOverlay, NOT two composited Labwc cursors.
+  P20 reverts the P18 always-on overlay; startup uses a single Android
+  hardware cursor. Actual touchpad gesture uses the Android overlay
+  only when a guest bitmap is ready and suppresses the OS icon; actual
+  physical mouse movement hands ownership back to the hardware cursor.
+  The fake P18 arrow is fully removed. Native bootstrap tracks output
+  mode changes before real pointer input so guest center does not use
+  the obsolete initial 1280x720 mode; do not warp after user movement.
+- Android cannot guarantee the initial *hardware pointer* position is
+  centered without pointer capture/injection. P20 prioritizes one
+  correctly-sized cursor over pretending a second centered cursor fixes
+  the OS pointer. Startup center and Android icon suppression require
+  actual S26U acceptance rather than synthetic tests.
+- Keep Termux-X11 :0, user's XFCE settings, PiP, DPI, battery, native
+  Korean composing caret, uppercase, pointer gestures unchanged.

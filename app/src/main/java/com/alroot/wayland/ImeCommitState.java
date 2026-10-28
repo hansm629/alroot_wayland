@@ -53,6 +53,16 @@ public final class ImeCommitState {
     // a time ("h" -> "he" -> "hel" ...). Never send that speculative C to X11
     // until a genuine new ASCII commit distinguishes it from cached context.
     private String withheldAscii = "";
+    // P20 (captured on real S26U): Samsung's setComposingText first contains
+    // already-committed English plus Korean. When the final Korean syllable
+    // is deleted the same *old English prefix* becomes the whole composing
+    // value, and shrinks one character at a time. Unlike the older DEL
+    // filters, this guard is armed while Korean is STILL composing.
+    // Track the exact prefix that we stripped from mixed C, not arbitrary
+    // previously typed ASCII, so unrelated fresh English is unaffected.
+    private String mixedContextPrefix = "";
+    private boolean drainingMixedContext;
+    private String drainedMixedContextCommit = "";
     private static final long EMPTY_KOREAN_DELETE_MS = 120;
     private static final long KOREAN_CONTEXT_MS = 3000;
 
@@ -112,6 +122,9 @@ public final class ImeCommitState {
         withheldAscii = "";
         koreanTransition = false;
         lastCommittedWasKorean = false;
+        mixedContextPrefix = "";
+        drainingMixedContext = false;
+        drainedMixedContextCommit = "";
     }
     public synchronized boolean duplicateAsciiComposing(String text, long ms) {
         boolean sameOldText = text != null && text.length() >= 2 &&
@@ -214,6 +227,10 @@ public final class ImeCommitState {
                     korean(text.substring(n))) {
                 echoSuppressions++;
                 if (isPostKoreanDeletion(ms)) lastStaleReplayAt = ms;
+                // Remember EXACTLY the context that came with the current
+                // Korean composition; it is not a new X11 text insertion.
+                mixedContextPrefix = text.substring(0, n);
+                drainingMixedContext = false;
                 return text.substring(n);
             }
         }
@@ -226,6 +243,13 @@ public final class ImeCommitState {
             lastKoreanActivityAt = ms;
         }
         String normalized = removeEnglishEcho(text, ms);
+        // A genuinely separate Korean preedit does not carry the previous
+        // Latin editor context. End any stale tracking on that transition.
+        if (korean(text) && normalized.equals(text)) {
+            mixedContextPrefix = "";
+            drainingMixedContext = false;
+            drainedMixedContextCommit = "";
+        }
         if (normalized.isEmpty() && korean(draft)) {
             clearedKoreanPreeditAt = ms;
             clearedKoreanPreedit = true;
@@ -250,6 +274,58 @@ public final class ImeCommitState {
         finishEchoPending = false;
         emittedCompositions++;
         sink.composing(normalized); // immediate 'C' to the X11 native socket
+    }
+
+    /**
+     * Call BEFORE the bridge's ordinary ASCII composing path. This is the
+     * missing Korean->ASCII transition from the S26U P19 trace, in which
+     * setComposingText("old-English-prefix") follows mixed Hangul preedit
+     * without any Android DEL at all. Clear only the Korean Fcitx preedit;
+     * the old English has already been rendered by X11/XTEST.
+     */
+    public synchronized boolean consumeRestoredAsciiContext(
+            String text, long ms, Sink sink) {
+        if (text == null || !ascii(text)) return false;
+        if (mixedContextPrefix.isEmpty()) {
+            if (!text.isEmpty()) drainedMixedContextCommit = "";
+            return false;
+        }
+        if (!mixedContextPrefix.startsWith(text)) {
+            mixedContextPrefix = "";
+            drainingMixedContext = false;
+            drainedMixedContextCommit = "";
+            return false; // a genuine, different ASCII composition
+        }
+        drainingMixedContext = true;
+        echoSuppressions++;
+        // A C("") update removes a native preedit without committing it.
+        // P19 mistakenly did finished() -> T("한") followed by C(old ASCII)
+        // here, so both the Hangul and the English were reinserted.
+        if (!draft.isEmpty()) composing("", ms, sink);
+        if (text.isEmpty()) {
+            // Once Samsung has finished shrinking its stale old-English
+            // composition all the way to C(""), the NEXT user-typed ASCII
+            // must work normally (even if it starts with the same letter).
+            // Keep only a one-shot guard for a possible late stale T.
+            drainedMixedContextCommit = mixedContextPrefix;
+            mixedContextPrefix = "";
+            drainingMixedContext = false;
+        }
+        return true;
+    }
+
+    /** Ignore a finishing T of the exact context drained above. */
+    public synchronized boolean consumeRestoredAsciiCommit(String text) {
+        if (text == null || text.isEmpty() || !ascii(text)) return false;
+        String old = drainingMixedContext ? mixedContextPrefix
+                : drainedMixedContextCommit;
+        if (old.isEmpty() || !old.startsWith(text)) {
+            drainedMixedContextCommit = "";
+            return false;
+        }
+        drainedMixedContextCommit = "";
+        echoSuppressions++;
+        return true;
     }
     public synchronized void committed(String text, long ms, Sink sink) {
         if (text == null) text = "";
@@ -350,6 +426,9 @@ public final class ImeCommitState {
         clearedKoreanPreedit = false;
         consumeClearedPreeditDelete = false;
         withheldAscii = "";
+        mixedContextPrefix = "";
+        drainingMixedContext = false;
+        drainedMixedContextCommit = "";
         // Reinitializing IME's composing state is not an editor focus
         // change. Retain English context and last committed script until
         // clearEditorContext() is explicitly requested.

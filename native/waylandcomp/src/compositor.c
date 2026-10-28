@@ -311,6 +311,7 @@ static struct {
 } g_perf;
 
 static void schedule_render(void);
+static void pointer_follow_initial_scene_resize(int w, int h);
 /* Initial pointer focus is delivered only once, when a real desktop/toplevel
  * and its wl_seat pointer are ready. No later session/PiP/resize recentering. */
 static void pointer_bootstrap_if_ready(void);
@@ -2111,6 +2112,12 @@ static void render_scene(void) {
     wl_list_for_each(s, &g_surfaces, link) s->drawn = 0;
     scene_size(&w, &h);
     if (w != g_scene_w || h != g_scene_h) {
+        // Labwc may initially publish 1280x720, then the Alroot project
+        // output manager changes it to 1920x1080 before XFCE starts.
+        // Keep the ONE native cursor centered in the scene while no user
+        // has touched/moved it. Previously it stayed at (639,359) in the
+        // resized 1920x1080 desktop while Android drew an unrelated arrow.
+        pointer_follow_initial_scene_resize(w, h);
         if (g_desktop) alroot_log("desktop", "size %dx%d", w, h);
         else alroot_log("desktop", "no desktop: showing %dx%d (largest window)", w, h);
         g_scene_w = w;
@@ -2514,6 +2521,9 @@ static double g_raw_x, g_raw_y;
 static int g_raw_valid;
 static int g_pointer_bootstrap_pending = 1;
 static int g_pointer_input_seen;
+static int g_pointer_user_input;
+static int g_pointer_internal_motion;
+static int g_pointer_center_scene_w, g_pointer_center_scene_h;
 
 static void pointer_input(double x, double y, int relative, uint32_t button, int pressed);
 static void pointer_bootstrap_if_ready(void) {
@@ -2536,10 +2546,13 @@ static void pointer_bootstrap_if_ready(void) {
         g_ptr_x = (scene_w - 1) / 2.0;
         g_ptr_y = (scene_h - 1) / 2.0;
     }
+    scene_size(&g_pointer_center_scene_w, &g_pointer_center_scene_h);
     g_pointer_bootstrap_pending = 0;
     // Emit the initial enter/motion at the already-central host position.
     // Do NOT warp after an actual pointer event, focus change or reattach.
+    g_pointer_internal_motion = 1;
     pointer_input(g_ptr_x, g_ptr_y, 0, 0, 0);
+    g_pointer_internal_motion = 0;
     alroot_log("pointer", "initial seat focus at %d,%d (once per host)",
                (int)g_ptr_x, (int)g_ptr_y);
 }
@@ -2870,6 +2883,7 @@ static int send_relative_motion(struct wl_client *client, double dx, double dy) 
 
 static void pointer_input(double x, double y, int relative, uint32_t button, int pressed) {
     g_pointer_input_seen = 1;
+    if (!g_pointer_internal_motion) g_pointer_user_input = 1;
     struct surface *target;
     struct constraint *k = g_active_constraint;
     double dx, dy;
@@ -2938,6 +2952,28 @@ static void pointer_input(double x, double y, int relative, uint32_t button, int
         alroot_text_input_refocus();
     }
     wl_display_flush_clients(g_display);
+}
+
+static void pointer_follow_initial_scene_resize(int w, int h) {
+    if (w < 1 || h < 1 || g_pointer_user_input ||
+        g_pointer_bootstrap_pending || g_active_constraint ||
+        g_pointer_center_scene_w < 1 || g_pointer_center_scene_h < 1 ||
+        (w == g_pointer_center_scene_w && h == g_pointer_center_scene_h))
+        return;
+    const int old_w = g_pointer_center_scene_w, old_h = g_pointer_center_scene_h;
+    g_pointer_center_scene_w = w;
+    g_pointer_center_scene_h = h;
+    g_pointer_internal_motion = 1;
+    // This is a coordinate-system correction, NOT real mouse movement.
+    // Suppress relative-pointer deltas when sending the absolute center to
+    // Labwc; otherwise the nested compositor could apply the resize as an
+    // extra mouse move on top of wl_pointer.motion.
+    g_raw_valid = 0;
+    pointer_input((w - 1) / 2.0, (h - 1) / 2.0, 0, 0, 0);
+    g_pointer_internal_motion = 0;
+    alroot_log("pointer", "initial scene resized %dx%d -> %dx%d, "
+               "single native cursor centered (no user motion)",
+               old_w, old_h, w, h);
 }
 
 static void pointer_event(double x, double y, uint32_t button, int pressed) {
@@ -3539,6 +3575,9 @@ int alroot_wayland_run(void) {
     g_raw_valid = 0;
     g_pointer_bootstrap_pending = 1;
     g_pointer_input_seen = 0;
+    g_pointer_user_input = 0;
+    g_pointer_internal_motion = 0;
+    g_pointer_center_scene_w = g_pointer_center_scene_h = 0;
     wl_list_init(&g_surfaces);
     wl_list_init(&g_toplevels);
     wl_list_init(&g_outputs);

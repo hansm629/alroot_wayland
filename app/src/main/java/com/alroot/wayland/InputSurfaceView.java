@@ -76,7 +76,11 @@ public final class InputSurfaceView extends SurfaceView {
                 touchSlop, getResources().getDisplayMetrics().density);
         SharedPreferences p = context.getSharedPreferences("display", Context.MODE_PRIVATE);
         inputMode = p.getInt("input_mode", MODE_TOUCHPAD);
-        touchpadCursorActive = inputMode == MODE_TOUCHPAD;
+        // P18 forced the project overlay on before the first touch. Android's
+        // existing mouse cursor was still visible, resulting in two cursors
+        // (one at the old Android coordinate, one at the scene center).
+        // Use hardware pointer alone until an intentional touchpad gesture.
+        touchpadCursorActive = false;
         pointerSpeed = p.getInt("pointer_speed", 190);
         acceleration = p.getInt("pointer_accel", 110);
         setFocusable(true);
@@ -116,7 +120,7 @@ public final class InputSurfaceView extends SurfaceView {
     public float pointerY() { return lastY; }
     public boolean isSoftwareCursorWanted() {
         return PointerStartupPolicy.showSoftwareCursor(inputMode, captured,
-                touchpadCursorActive, pointerViewSized);
+                touchpadCursorActive && guestIcon != null, pointerViewSized);
     }
     public float cursorScaleX() { return 1f / pointerScaleX; }
     public float cursorScaleY() { return 1f / pointerScaleY; }
@@ -129,7 +133,7 @@ public final class InputSurfaceView extends SurfaceView {
         if (mode < MODE_TOUCHPAD || mode > MODE_DIRECT_TOUCH) return;
         cancelGesture();
         inputMode = mode;
-        touchpadCursorActive = inputMode == MODE_TOUCHPAD;
+        touchpadCursorActive = false;
         pointerSpeed = Math.max(50, Math.min(300, speed));
         acceleration = Math.max(0, Math.min(200, accel));
         getContext().getSharedPreferences("display", Context.MODE_PRIVATE).edit()
@@ -137,6 +141,7 @@ public final class InputSurfaceView extends SurfaceView {
                 .putInt("pointer_speed", pointerSpeed)
                 .putInt("pointer_accel", acceleration).apply();
         invalidate();
+        refreshPointerOwnership();
         if (onCursorMove != null) onCursorMove.run();
     }
     private void sendButton(int evdev, boolean down) {
@@ -164,12 +169,23 @@ public final class InputSurfaceView extends SurfaceView {
         } else {
             guestIcon = null;
         }
+        refreshPointerOwnership();
         invalidate();
+    }
+
+    /** Make the same Android View own either hardware cursor or overlay. */
+    private void refreshPointerOwnership() {
+        if (PointerStartupPolicy.hideSystemCursor(inputMode, captured,
+                guestCursorHidden, touchpadCursorActive && guestIcon != null))
+            setPointerIcon(PointerIcon.getSystemIcon(getContext(), PointerIcon.TYPE_NULL));
+        else
+            setPointerIcon(guestIcon); // null restores the system default
     }
 
     @Override public PointerIcon onResolvePointerIcon(MotionEvent event, int pointerIndex) {
         if (PointerStartupPolicy.hideSystemCursor(
-                inputMode, captured, guestCursorHidden, touchpadCursorActive))
+                inputMode, captured, guestCursorHidden,
+                touchpadCursorActive && guestIcon != null))
             return PointerIcon.getSystemIcon(getContext(), PointerIcon.TYPE_NULL);
         return guestIcon != null ? guestIcon : super.onResolvePointerIcon(event, pointerIndex);
     }
@@ -190,6 +206,7 @@ public final class InputSurfaceView extends SurfaceView {
         if (hasCapture && !pointerInitialized)
             absolute(getWidth() / 2f, getHeight() / 2f);
         if (!hasCapture) releaseAllKeys();
+        refreshPointerOwnership();
         if (onCursorMove != null) onCursorMove.run();
     }
 
@@ -435,11 +452,11 @@ public final class InputSurfaceView extends SurfaceView {
 
     @Override public boolean onGenericMotionEvent(MotionEvent event) {
         if (event.isFromSource(android.view.InputDevice.SOURCE_MOUSE)) {
-            // No spontaneous Android system cursor at startup. After the
-            // first *real* physical-mouse input, switch back to the old fast
-            // Android hardware cursor at its actual event position.
+            // Actual mouse input returns ownership to the Android hardware
+            // pointer; do not draw the same guest bitmap in CursorOverlay.
             if (touchpadCursorActive) {
                 touchpadCursorActive = false;
+                refreshPointerOwnership();
                 if (onCursorMove != null) onCursorMove.run();
             }
             if (event.getActionMasked() == MotionEvent.ACTION_HOVER_MOVE ||
@@ -512,6 +529,7 @@ public final class InputSurfaceView extends SurfaceView {
         if (a == MotionEvent.ACTION_DOWN) {
             if (!pointerInitialized) absolute(getWidth() / 2f, getHeight() / 2f);
             touchpadCursorActive = true;
+            refreshPointerOwnership();
             if (onCursorMove != null) onCursorMove.run();
             primaryPointer = event.getPointerId(0);
             touchStarted = event.getEventTime();

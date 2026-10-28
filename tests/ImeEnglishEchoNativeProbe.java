@@ -31,12 +31,51 @@ public final class ImeEnglishEchoNativeProbe {
     }
     public static void main(String[] args) throws Exception {
         if (args.length != 1 && args.length != 2)
-            throw new IllegalArgumentException("socket [p16|p17]");
+            throw new IllegalArgumentException("socket [p16|p17|p20|p20committed]");
         try (SocketChannel socket = SocketChannel.open(StandardProtocolFamily.UNIX)) {
             socket.connect(UnixDomainSocketAddress.of(args[0]));
             ImeCommitState state = new ImeCommitState();
             ImeCursorTracker fake = new ImeCursorTracker();
             NativeSink x = new NativeSink(socket);
+            if (args.length == 2 && ("p20".equals(args[1]) ||
+                    "p20committed".equals(args[1]))) {
+                // EXACT failure class from the real Samsung P19 event trace:
+                // English composing 1..27, F, mixed 28..29, then pure ASCII
+                // 27..0 while the Korean part is erased (NO Android DEL).
+                String context = "abcdefghijklmnopqrstuvwxyz1";
+                x.composing(context);  // original ASCII XTEST preedit
+                x.send('F', "");     // Korean mode switch leaves ASCII visible
+                state.alreadyInsertedAscii(context, 100);
+                Thread.sleep(95);
+                state.composing(context + "한글", 200, x);
+                Thread.sleep(95);
+                state.composing(context + "한", 250, x);
+                Thread.sleep(95);
+                boolean committedKorean = "p20committed".equals(args[1]);
+                if (committedKorean) {
+                    // Real P19 route logged T(KOREAN) immediately before
+                    // the first stale ASCII C(27). Native deletion must
+                    // subsequently remove only the committed Korean glyph.
+                    state.committed(context + "한", 275, x);
+                    Thread.sleep(70);
+                }
+                if (!state.consumeRestoredAsciiContext(context, 300, x))
+                    throw new AssertionError("P20 first pure old ASCII context escaped");
+                for (int n=context.length()-1; n>=0; n--) {
+                    if (!state.consumeRestoredAsciiContext(
+                            context.substring(0,n),310+context.length()-n,x))
+                        throw new AssertionError("P20 shrinking old context escaped at " + n);
+                }
+                if (committedKorean) {
+                    state.backspace(360);
+                    state.delete(1, 0, x);
+                }
+                Thread.sleep(125);
+                System.out.println(committedKorean ?
+                        "P20_COMMITTED_HANGUL_DRAIN_DEL=1 no_new_XTEST_C" :
+                        "P20_FIRST_MIXED_TO_ASCII_DRAIN=1 no_new_XTEST_C");
+                return;
+            }
             if (args.length == 2 && "p17".equals(args[1])) {
                 state.committed("hello", 100, x);
                 Thread.sleep(100);

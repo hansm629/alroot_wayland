@@ -496,6 +496,100 @@ public final class ImeCommitStateTest {
                 "New real key epoch releases the old English echo guard");
     }
 
+    // P20: captured on real S26U in P19 diagnostics:
+    //   ASCII C 1..27, F, MIXED C 28..43 (then back down to 28),
+    //   ASCII C 27,26,...1, C(empty).
+    // P19 sends ASCII C(27) to XTEST as *new text* when the last Hangul
+    // vanishes, duplicating the already present English prefix. This is
+    // NOT a post-Backspace echo; there was no Android DEL yet.
+    static void mixedPreeditBecomesOldAsciiContextOnHangulRemoval() {
+        ImeCommitState state = new ImeCommitState();
+        FakeNative x = new FakeNative();
+        String prefix = "abcdefghijklmnopqrstuvwxyz1"; // 27 ASCII chars
+        x.committed(prefix);               // original XTEST ASCII insertion
+        state.alreadyInsertedAscii(prefix, 100);
+        state.composing(prefix + "한글", 200, x);
+        x.check(prefix + "한글");
+        state.composing(prefix + "한", 250, x);
+        x.check(prefix + "한");
+        check(state.consumeRestoredAsciiContext(prefix, 300, x),
+                "First ASCII-only C after mixed Hangul must be old context");
+        x.check(prefix); // Korean preedit is removed, English stays once
+        for (int len = prefix.length() - 1; len >= 0; --len) {
+            check(state.consumeRestoredAsciiContext(prefix.substring(0, len),
+                            310 + prefix.length() - len, x),
+                    "Shrinking old English context must never enter XTEST");
+            x.check(prefix);
+        }
+        check(!state.consumeRestoredAsciiContext(prefix.substring(0, 1), 490, x),
+                "After old ASCII drains to empty, genuine new English must not be swallowed");
+        check(!state.consumeRestoredAsciiContext("NEW", 500, x),
+                "Genuinely new/different English can be entered normally");
+        x.check(prefix);
+        check(x.deletions == 0, "Do not delete committed English while draining IME context");
+        state.clearEditorContext();
+        check(!state.consumeRestoredAsciiContext(prefix, 600, x),
+                "A new editor must never inherit the prior field's context");
+        x.check(prefix);
+    }
+
+    static void realP19TraceMixedHangulCommittedBeforeAsciiReplay() {
+        ImeCommitState s = new ImeCommitState();
+        FakeNative x = new FakeNative();
+        String english = "abcdefghijklmnopqrstuvwxyz1";
+        // P19 native log: ASCII C(1..27), F, then FCITX C(Hangul), T(Hangul).
+        x.committed(english);
+        s.alreadyInsertedAscii(english, 100);
+        s.composing(english + "한글", 200, x);
+        s.composing(english + "한", 250, x);
+        s.committed(english + "한", 275, x);
+        x.check(english + "한");
+        // The bug began HERE: old English C(27) occurred BEFORE any DEL,
+        // and XTEST inserted a duplicate, then C(26..1) erased it slowly.
+        for (int n = english.length(); n >= 0; n--) {
+            check(s.consumeRestoredAsciiContext(english.substring(0, n),
+                        290 + english.length() - n, x),
+                  "P20: old full English and its shrinking snapshot must be ignored");
+            x.check(english + "한");
+        }
+        s.backspace(340);
+        s.delete(1, 0, x);
+        x.check(english);
+        check(s.consumeRestoredAsciiCommit(english),
+                "A stale old-English T must not reinsert the original run");
+        x.check(english);
+    }
+
+    static void realP19TraceMixedInterruptionDuringAsciiDrain() {
+        ImeCommitState s = new ImeCommitState();
+        FakeNative x = new FakeNative();
+        String english = "abcdefghijklmnopqrstuvwxyz1";
+        x.committed(english);
+        s.alreadyInsertedAscii(english, 100);
+        s.composing(english + "한", 200, x);
+        x.check(english + "한");
+        check(s.consumeRestoredAsciiContext(english, 240, x),
+                "P20 initial ASCII-only stale composition must be drained");
+        x.check(english);
+        for (int n = 26; n >= 21; n--)
+            check(s.consumeRestoredAsciiContext(english.substring(0, n),
+                    241 + english.length() - n, x), "P20 first shrinking run");
+        // P19 log shows a MIXED composing update during the shrink of
+        // the old ASCII snapshot (length 22 -> ASCII length 21).
+        s.composing(english.substring(0, 21) + "한", 260, x);
+        x.check(english + "한");
+        check(s.consumeRestoredAsciiContext(english.substring(0, 21), 270, x),
+                "P20 mixed re-entry must not lose the stale-English guard");
+        x.check(english);
+        for (int n = 20; n >= 0; n--) {
+            check(s.consumeRestoredAsciiContext(english.substring(0, n),
+                    275 + 20 - n, x), "P20 final shrinking run");
+            x.check(english);
+        }
+        check(!s.consumeRestoredAsciiContext("a", 500, x),
+                "Next real one-letter English input must be usable");
+    }
+
     public static void main(String[] args) {
         koreanIsVisibleAtFirstPreedit();
         koreanBackspaceIsImmediate();
@@ -529,6 +623,9 @@ public final class ImeCommitStateTest {
         staleSingleAsciiOnFinishMustNotInsert();
         staleEnglishAfterGuardTimerExpires();
         scanlessEnglishKeyEventsStillRememberCommittedText();
-        System.out.println("PASS: 31 Android IME event scenarios, Korean DEL and English echo");
+        mixedPreeditBecomesOldAsciiContextOnHangulRemoval();
+        realP19TraceMixedHangulCommittedBeforeAsciiReplay();
+        realP19TraceMixedInterruptionDuringAsciiDrain();
+        System.out.println("PASS: 34 Android IME event scenarios, Korean DEL and English echo");
     }
 }

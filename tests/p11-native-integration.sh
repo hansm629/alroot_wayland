@@ -123,7 +123,19 @@ echo "PASS: Native Fcitx GTK preedit rendered, 1 real text mutation"
 # Image remains inside the disposable private test runtime.
 env ALROOT_TEST_IMAGE="$XDG_RUNTIME_DIR/p13-caret.png" GTK_IM_MODULE=fcitx GDK_BACKEND=x11 \
  $base/gtk-caret-probe > "$XDG_RUNTIME_DIR/gtk-caret.log" 2>&1 & gui_pid=$!
-sleep .65
+# On an S26U busy with XFCE/Wayland, a fixed 650ms sleep sometimes sends
+# the first Hangul before the new GTK window has pointer/keyboard focus.
+# The daemon then correctly chooses XTEST and the screenshot probe cannot
+# observe native preedit. Focus this *disposable Xvfb* window explicitly.
+caret_win=""
+for i in $(seq 1 40); do
+    caret_win=$(xdotool search --name 'P13 native preedit caret visual' 2>/dev/null | tail -1 || true)
+    [[ -n "$caret_win" ]] && break
+    sleep .05
+done
+[[ -n "$caret_win" ]] || { echo 'P13 private GTK window not mapped' >&2; exit 2; }
+xdotool windowfocus "$caret_win" || true
+sleep .18
 send_series
 wait "$gui_pid";gui_pid=""
 grep -q "GTK_P13_SCREENSHOT_SAVED=1" "$XDG_RUNTIME_DIR/gtk-caret.log"
@@ -132,17 +144,20 @@ echo "PASS: Native GTK visual caret image captured with no underline format"
 # Verify deletion of a committed Korean syllable and the next composing
 # update; old XTEST is still used for committed DEL even with GTK Fcitx.
 # Also check that normal English-to-Korean entry remains non-duplicated.
-for scenario in deletion switch echo echo-p16 echo-p17; do
+for scenario in deletion switch echo echo-p16 echo-p17 echo-p20 echo-p20committed; do
     expected=글
     [[ "$scenario" == switch ]] && expected=hi하
     [[ "$scenario" == echo || "$scenario" == echo-p16 || "$scenario" == echo-p17 ]] && expected=hello
+    [[ "$scenario" != echo-p20 && "$scenario" != echo-p20committed ]] || expected=abcdefghijklmnopqrstuvwxyz1
     env GTK_IM_MODULE=fcitx GDK_BACKEND=x11 \
         $base/gtk-edit-probe "$expected" > "$XDG_RUNTIME_DIR/gtk-edit-$scenario.log" 2>&1 & gui_pid=$!
     sleep .58
-    if [[ "$scenario" == echo || "$scenario" == echo-p16 || "$scenario" == echo-p17 ]]; then
+    if [[ "$scenario" == echo || "$scenario" == echo-p16 || "$scenario" == echo-p17 || "$scenario" == echo-p20 || "$scenario" == echo-p20committed ]]; then
         probe_extra=()
         [[ "$scenario" != echo-p16 ]] || probe_extra=(p16)
         [[ "$scenario" != echo-p17 ]] || probe_extra=(p17)
+        [[ "$scenario" != echo-p20 ]] || probe_extra=(p20)
+        [[ "$scenario" != echo-p20committed ]] || probe_extra=(p20committed)
         java -cp "$base/jvm" ImeEnglishEchoNativeProbe "$XDG_RUNTIME_DIR/ime.sock" \
             "${probe_extra[@]}" \
             > "$XDG_RUNTIME_DIR/echo-test.log" 2>&1
@@ -165,11 +180,15 @@ PY
     wait "$gui_pid";gui_pid=""
     cat "$XDG_RUNTIME_DIR/gtk-edit-$scenario.log"
     grep -q "P11_NATIVE_EDIT_MATCH=1" "$XDG_RUNTIME_DIR/gtk-edit-$scenario.log"
-    if [[ "$scenario" == echo || "$scenario" == echo-p16 || "$scenario" == echo-p17 ]]; then
+    if [[ "$scenario" == echo || "$scenario" == echo-p16 || "$scenario" == echo-p17 || "$scenario" == echo-p20 || "$scenario" == echo-p20committed ]]; then
         if [[ "$scenario" == echo-p16 ]]; then
             grep -q "P16_PREFIX_REPLAY_FILTERED=1" "$XDG_RUNTIME_DIR/echo-test.log"
         elif [[ "$scenario" == echo-p17 ]]; then
             grep -q "P17_STALE_ASCII_FINISH_AND_LATE_REPLAY_FILTERED=1" "$XDG_RUNTIME_DIR/echo-test.log"
+        elif [[ "$scenario" == echo-p20 ]]; then
+            grep -q "P20_FIRST_MIXED_TO_ASCII_DRAIN=1" "$XDG_RUNTIME_DIR/echo-test.log"
+        elif [[ "$scenario" == echo-p20committed ]]; then
+            grep -q "P20_COMMITTED_HANGUL_DRAIN_DEL=1" "$XDG_RUNTIME_DIR/echo-test.log"
         else
             grep -q "P12_ENGLISH_ECHO_FILTERED=1" "$XDG_RUNTIME_DIR/echo-test.log"
             grep -q "P13_PHANTOM_DELETE_IGNORED=2" "$XDG_RUNTIME_DIR/echo-test.log"

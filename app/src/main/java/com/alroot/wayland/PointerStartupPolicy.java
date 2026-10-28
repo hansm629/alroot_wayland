@@ -15,10 +15,11 @@ final class PointerStartupPolicy {
 
     static boolean hideSystemCursor(int mode, boolean captured, boolean guestHidden,
             boolean touchpadOverlayActive) {
-        // Hide the system pointer until the user actually moves a physical
-        // mouse. After a real mouse event, retain the pre-P18 fast Android
-        // hardware cursor path instead of forcing all DeX mouse motion
-        // through a software overlay.
+        // Our native Wayland compositor publishes ROLE_CURSOR as an Android
+        // bitmap snapshot, but DOES NOT add it to render_scene(). Thus
+        // Labwc's cursor is NOT drawn directly into the desktop framebuffer.
+        // Only hide Android's mouse pointer when the project overlay really
+        // owns a guest bitmap or when pointer capture is enabled.
         return captured || guestHidden ||
                 (mode == TOUCHPAD && touchpadOverlayActive);
     }
