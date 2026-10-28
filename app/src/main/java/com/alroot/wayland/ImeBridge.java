@@ -32,6 +32,7 @@ public final class ImeBridge {
     private static final ImeCommitState composition = new ImeCommitState();
     private static boolean asciiComposing;
     private static String asciiDraft = "";
+    private static int lastLoggedEchoCount;
     private static final ImeCommitState.Sink compositionSink =
             new ImeCommitState.Sink() {
                 @Override public void committed(String text) {
@@ -103,6 +104,10 @@ public final class ImeBridge {
     public static synchronized void composing(String text) {
         long ms = SystemClock.elapsedRealtime();
         if (asciiOnly(text)) {
+            if (!asciiComposing && composition.duplicateAsciiComposing(text, ms)) {
+                maybeLogEchoSuppressions();
+                return;
+            }
             // The original English path is already smooth: keep incremental
             // ASCII composing in XTEST, rather than delaying it until space.
             if (composition.hasDraft())
@@ -122,6 +127,7 @@ public final class ImeBridge {
         // proven stable by a later event are transmitted to Xwayland.
         // This removes every speculative Backspace/insert repaint.
         composition.composing(text, ms, compositionSink);
+        maybeLogEchoSuppressions();
     }
 
     public static synchronized void commitComposed(String text) {
@@ -141,9 +147,18 @@ public final class ImeBridge {
         finalizeNativeAscii(ms);
         if (directKoreanSwitch) composition.keyboardSwitchedToKorean(ms);
         composition.committed(text, ms, compositionSink);
+        maybeLogEchoSuppressions();
     }
 
     public static void commit(String text) { commitComposed(text); }
+
+    private static void maybeLogEchoSuppressions() {
+        int total = composition.suppressedEchoCount();
+        if (total == lastLoggedEchoCount) return;
+        lastLoggedEchoCount = total;
+        Log.i(TAG, "IME English-to-Korean echo filtered count=" + total +
+                " (text not recorded)");
+    }
 
     public static synchronized void finishComposing() {
         if (asciiComposing) {
@@ -158,6 +173,12 @@ public final class ImeBridge {
         finalizeNativeAscii(SystemClock.elapsedRealtime());
         composition.reset();
         io.post(() -> send('R', ""));
+    }
+
+    public static synchronized void newEditorContext() {
+        finishComposing();
+        composition.clearEditorContext();
+        Log.d(TAG, "IME synthetic text context reset after pointer focus change");
     }
 
     public static synchronized void delete(int before, int after) {

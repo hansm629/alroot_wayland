@@ -65,6 +65,10 @@ public final class SessionFiles {
             JSONObject payload = new JSONObject();
             payload.put("percentage", percentage);
             payload.put("status", status);
+            int temperatureTenthC = battery.getIntExtra(
+                    BatteryManager.EXTRA_TEMPERATURE, Integer.MIN_VALUE);
+            if (temperatureTenthC > -400 && temperatureTenthC < 1500)
+                payload.put("temperature", temperatureTenthC / 10.0);
             payload.put("time_ms", System.currentTimeMillis());
             put("android-battery.json", payload.toString() + "\n");
         } catch (Exception e) {

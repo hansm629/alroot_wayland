@@ -19,7 +19,6 @@ def mirror_xfce():
     xmlroot = Path("xfce4/xfconf/xfce-perchannel-xml")
     originals = (
         "xfce4-panel.xml",
-        "xfce4-desktop.xml",
         "xfwm4.xml",
         "xsettings.xml",
         "xfce4-session.xml",
@@ -32,12 +31,24 @@ def mirror_xfce():
         if src.is_file():
             dst.parent.mkdir(parents=True, exist_ok=True)
             shutil.copy2(src, dst)
+    # xfdesktop is stateful: setting a wallpaper writes backdrop/workspace
+    # values into xfce4-desktop.xml. Mirroring the original on EVERY start
+    # erased the user's Alroot wallpaper before xfconfd could reload it.
+    # Seed it once; all later restarts preserve the Alroot-only XML.
+    desktop_xml = xmlroot / "xfce4-desktop.xml"
+    src = HOME / ".config" / desktop_xml
+    dst = CONFIG / desktop_xml
+    if src.is_file() and not dst.exists():
+        dst.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(src, dst)
     for rel in (Path("xfce4/panel"), Path("xfce4/desktop")):
         src = HOME / ".config" / rel
         dst = CONFIG / rel
         if src.is_dir():
+            if rel == Path("xfce4/desktop") and dst.exists():
+                continue
             shutil.copytree(src, dst, dirs_exist_ok=True, symlinks=False)
-    return "MIRRORED original Xfce panel/theme/desktop (isolated copy)"
+    return "MIRRORED Xfce panel; PERSISTED private wallpaper/desktop"
 
 
 def install_plank():

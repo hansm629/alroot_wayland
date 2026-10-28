@@ -14,6 +14,7 @@ package com.alroot.wayland;
  * Independent from Android APIs so regression tests run with regular javac.
  */
 public final class ImeCommitState {
+    private static final long ENGLISH_CONTEXT_WINDOW_MS = 60000;
     public interface Sink {
         void committed(String text);
         void delete(int before, int after);
@@ -27,6 +28,7 @@ public final class ImeCommitState {
     private boolean transitioning;
     private String mostRecentFinish = "";
     private long mostRecentFinishMs = -1;
+    private int suppressedEnglishEchoes;
 
     private static boolean containsKorean(String text) {
         for (int i = 0; i < text.length(); i++) {
@@ -69,12 +71,21 @@ public final class ImeCommitState {
         if (value.isEmpty()) return;
         sink.committed(value);
         if (ascii(value)) {
-            if (ms - recentAsciiMs > 2800) recentAscii = "";
-            recentAscii += value;
-            if (recentAscii.length() > 96)
-                recentAscii = recentAscii.substring(recentAscii.length() - 96);
-            recentAsciiMs = ms;
+            recordAscii(value, ms);
         }
+    }
+
+    private void recordAscii(String text, long ms) {
+        if (ms - recentAsciiMs > ENGLISH_CONTEXT_WINDOW_MS ||
+                ms < recentAsciiMs) recentAscii = "";
+        // One English word may be committed character by character by
+        // Samsung Keyboard. Replacing this history with only the LAST
+        // commit (P07) made "hello" appear twice on Hangul transition:
+        // cached prefix was "o" instead of "hello".
+        recentAscii += text;
+        if (recentAscii.length() > 128)
+            recentAscii = recentAscii.substring(recentAscii.length() - 128);
+        recentAsciiMs = ms;
     }
 
     /**
@@ -84,9 +95,33 @@ public final class ImeCommitState {
      */
     public synchronized void alreadyInsertedAscii(String text, long ms) {
         if (text == null || text.isEmpty() || !ascii(text)) return;
-        recentAscii = text.length() > 96
-                ? text.substring(text.length() - 96) : text;
-        recentAsciiMs = ms;
+        recordAscii(text, ms);
+    }
+
+    /** Stale complete-word ASCII composing snapshot after a prior commit. */
+    public synchronized boolean duplicateAsciiComposing(String text, long ms) {
+        boolean duplicate = text != null && ascii(text) && text.length() >= 2 &&
+                ms >= recentAsciiMs && ms - recentAsciiMs < 850 &&
+                !recentAscii.isEmpty() && recentAscii.endsWith(text);
+        if (duplicate) suppressedEnglishEchoes++;
+        return duplicate;
+    }
+
+    /** Remove an echo only when its suffix also matches recent emitted ASCII. */
+    private String trimEnglishEcho(String incoming, long nowMs) {
+        if (!containsKorean(incoming) || recentAscii.length() < 2 ||
+                nowMs < recentAsciiMs ||
+                nowMs - recentAsciiMs > ENGLISH_CONTEXT_WINDOW_MS)
+            return incoming;
+        int length = Math.min(incoming.length(), recentAscii.length());
+        for (int count = length; count >= 2; count--) {
+            if (recentAscii.endsWith(incoming.substring(0, count)) &&
+                    containsKorean(incoming.substring(count))) {
+                suppressedEnglishEchoes++;
+                return incoming.substring(count);
+            }
+        }
+        return incoming;
     }
 
     /** Direct non-ASCII commits can arrive without a preceding preedit. */
@@ -97,16 +132,17 @@ public final class ImeCommitState {
 
     public synchronized void composing(String incoming, long nowMs, Sink sink) {
         if (incoming == null) incoming = "";
+        if (containsKorean(incoming)) {
+            transitioning = true;
+            koreanTransitionMs = nowMs;
+            incoming = trimEnglishEcho(incoming, nowMs);
+        }
         if (!incoming.isEmpty()) mostRecentFinish = "";
         if (incoming.isEmpty()) {
             // The keyboard may be cancelling a draft on Backspace.
             draft = "";
             forwardedPrefix = "";
             return;
-        }
-        if (containsKorean(incoming) && !transitioning) {
-            transitioning = true;
-            koreanTransitionMs = nowMs;
         }
         String next = stripPrefix(incoming, forwardedPrefix);
         if (next.equals(draft)) return;
@@ -141,6 +177,15 @@ public final class ImeCommitState {
 
     public synchronized void committed(String incoming, long nowMs, Sink sink) {
         if (incoming == null) incoming = "";
+        if (transitioning && !incoming.isEmpty() && ascii(incoming) &&
+                incoming.length() >= 2 && recentAscii.endsWith(incoming) &&
+                nowMs >= koreanTransitionMs && nowMs - koreanTransitionMs < 2800) {
+            // Samsung can commit the English editor snapshot again after
+            // the first Hangul composing event. This is an echo, not a new
+            // user keystroke. Keep the Korean draft and do not send X11.
+            suppressedEnglishEchoes++;
+            return;
+        }
         if (!incoming.isEmpty() && draft.isEmpty() &&
                 incoming.equals(mostRecentFinish) && mostRecentFinishMs >= 0 &&
                 nowMs >= mostRecentFinishMs && nowMs - mostRecentFinishMs < 600) {
@@ -150,18 +195,15 @@ public final class ImeCommitState {
             return;
         }
         mostRecentFinish = "";
+        if (containsKorean(incoming)) {
+            transitioning = true;
+            if (koreanTransitionMs < 0) koreanTransitionMs = nowMs;
+            incoming = trimEnglishEcho(incoming, nowMs);
+        }
         String text = stripPrefix(incoming, forwardedPrefix);
         if (text.isEmpty() && !draft.isEmpty() && incoming.isEmpty())
             text = draft;  // Samsung sometimes ends preedit with commitText("")
 
-        if (transitioning && koreanTransitionMs >= 0 &&
-                nowMs - koreanTransitionMs < 3000 &&
-                recentAscii.length() >= 2 && text.startsWith(recentAscii)) {
-            // Samsung keyboard can resend the already-committed English
-            // run when switching to Korean. Remove only the exact recent
-            // prefix in this narrow language-switch window.
-            text = text.substring(recentAscii.length());
-        }
         if (!text.isEmpty()) emit(sink, text, nowMs);
         if (text.isEmpty() && !incoming.isEmpty() && !draft.isEmpty()) {
             // An English echo is not a Korean finalization.
@@ -198,10 +240,21 @@ public final class ImeCommitState {
 
     public synchronized boolean hasDraft() { return !draft.isEmpty(); }
 
+    /** Diagnostics only. No text, hashes or clipboard data are exposed. */
+    public synchronized int suppressedEchoCount() { return suppressedEnglishEchoes; }
+
     public synchronized void reset() {
         draft = "";
         forwardedPrefix = "";
         transitioning = false;
         // Keep recent ASCII solely for a narrowly bounded language switch.
+    }
+
+    public synchronized void clearEditorContext() {
+        reset();
+        recentAscii = "";
+        recentAsciiMs = 0;
+        koreanTransitionMs = -1;
+        mostRecentFinish = "";
     }
 }

@@ -14,6 +14,8 @@ java -cp .source/p07-java-test TouchpadScrollStateTest
 bash -n termux/alroot-wayland termux/alroot-xfce-session.sh
 python3 -m py_compile termux/alroot-upower.py
 bash tests/p06-smoke.sh
+python3 tests/p08-profile-battery.py
+bash tests/p08-battery-source.sh
 if awstart --status | grep -q '^xfce: RUNNING '; then
     bash tests/p07-upower-live.sh
 fi

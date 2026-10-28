@@ -138,6 +138,61 @@ public final class ImeCommitStateTest {
         out.check("hello한");
         check(out.deletions == 0, "No English text replacement on direct switch");
     }
+    static void chunkedEnglishThenHangulPreedit() {
+        ImeCommitState state = new ImeCommitState();
+        FakeSink out = new FakeSink();
+        for (String value : new String[]{"h","e","l","l","o"}) {
+            out.committed(value);
+            state.alreadyInsertedAscii(value, 80 + out.text.length() * 20);
+        }
+        state.composing("helloㅎ", 260, out);
+        state.composing("hello하", 275, out);
+        state.composing("hello한", 280, out);
+        state.committed("hello한", 300, out);
+        out.check("hello한");
+        check(out.deletions == 0, "No destructive English echo deletion");
+    }
+    static void chunkedEnglishThenDirectKoreanCommit() {
+        ImeCommitState state = new ImeCommitState();
+        FakeSink out = new FakeSink();
+        for (String value : new String[]{"t", "e", "s", "t"}) {
+            out.committed(value);
+            state.alreadyInsertedAscii(value, 100 + out.text.length() * 10);
+        }
+        state.committed("test한", 240, out);
+        out.check("test한");
+    }
+    static void englishSuffixEchoOnly() {
+        ImeCommitState state = new ImeCommitState();
+        FakeSink out = new FakeSink();
+        out.committed("welcome hello");
+        state.alreadyInsertedAscii("welcome hello", 300);
+        state.composing("helloㅎ", 310, out);
+        state.committed("hello한", 340, out);
+        out.check("welcome hello한");
+    }
+    static void staleAsciiSnapshotDetected() {
+        ImeCommitState state = new ImeCommitState();
+        state.alreadyInsertedAscii("hello", 100);
+        check(state.duplicateAsciiComposing("hello", 140), "Full stale English snapshot");
+        check(!state.duplicateAsciiComposing("hell", 140), "Not the full prior snapshot");
+        check(!state.duplicateAsciiComposing("h", 140), "Never suppress legitimate single char");
+        check(!state.duplicateAsciiComposing("hello", 1000), "Expiry bounds detection");
+    }
+    static void delayedLanguageSwitchAndFocusReset() {
+        ImeCommitState state = new ImeCommitState();
+        FakeSink result = new FakeSink();
+        result.committed("hello");
+        state.alreadyInsertedAscii("hello", 100);
+        state.composing("helloㅎ", 12000, result);
+        state.committed("hello한", 12100, result);
+        result.check("hello한");
+        state.clearEditorContext();
+        result.committed("hello한");
+        state.composing("helloㅎ", 14000, result);
+        state.committed("hello한", 14010, result);
+        result.check("hello한hello한hello한");
+    }
     public static void main(String[] args) {
         englishHangulSwitch();
         hangulEvolutionNoFlicker();
@@ -150,6 +205,11 @@ public final class ImeCommitStateTest {
         differentVowelSameSyllable();
         finishThenRepeatedCommit();
         directKoreanCommitAfterAscii();
-        System.out.println("PASS: 11 ImeCommitState scenarios; no destructive preedit");
+        chunkedEnglishThenHangulPreedit();
+        chunkedEnglishThenDirectKoreanCommit();
+        englishSuffixEchoOnly();
+        staleAsciiSnapshotDetected();
+        delayedLanguageSwitchAndFocusReset();
+        System.out.println("PASS: 16 ImeCommitState scenarios; no destructive preedit");
     }
 }

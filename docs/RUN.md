@@ -499,3 +499,52 @@ touchpad scroll signs, Xwayland Unicode input, original XFCE panel
 settings, and live private UPower properties. They do NOT prove the
 actual Samsung keyboard's in-app appearance or finger gestures on
 the device. Test these after the signed APK update.
+
+## P08: Korean input, Android battery status and persistent wallpaper
+
+The P07 ASCII history stored only the LAST commit. Samsung Keyboard
+can commit an English word character-by-character and later echo the
+entire previously entered run as part of the Korean preedit. P08
+accumulates a bounded recent ASCII run and filters matching prefixes
+at both Korean preedit and Korean commit boundaries, as well as the
+last complete English composing snapshot. Android InputConnection now
+tracks a synthetic cursor through batch edits and calls
+InputMethodManager.updateSelection after committed text, following
+the established Termux-X11 fake-editor technique. Event diagnostics
+report only suppression counts, not the typed text.
+
+Immutable Korean syllables and final commits go through XTEST without
+repeated remote Backspace operations on mutable Korean preedit. Real
+inline GTK/XIM preedit is not yet implemented by this XTEST bridge;
+physical Samsung keyboard acceptance is still a separate test.
+
+The actual Termux xfce4-battery-plugin 1.2.0-1 uses a downstream
+libacpi.c which forks termux-battery-status and parses the JSON it
+returns, rather than deriving its displayed percentage from UPower.
+The earlier Alroot-only UPower service was thus insufficient. P08
+provides an Alroot-session-only termux-battery-status wrapper in the
+private PATH, returning compact Android BatteryManager cache values
+for percentage, status and plugged. The native Termux executable,
+original XFCE battery plugin 7/position and :0 are unchanged. New
+Android snapshots include actual battery temperature where available.
+
+The previous startup profile copied original xfce4-desktop.xml and
+desktop icon configuration on EVERY Alroot launch, erasing the
+user's Alroot-specific wallpaper on each restart. P08 seeds these
+settings from Termux-X11 only if missing, then preserves subsequent
+Alroot modifications. The source panel configuration can still be
+mirrored separately. Previously overwritten wallpaper choices cannot
+be recovered automatically and must be selected again once.
+
+Non-destructive tests:
+
+    python3 ~/alroot_wayland/tests/p08-profile-battery.py
+    bash ~/alroot_wayland/tests/p08-battery-source.sh
+    bash ~/alroot_wayland/tests/p07-smoke.sh
+
+The profile test uses a synthetic HOME to assert repeated restarts
+preserve the project wallpaper/icons but do not modify the source.
+The actual Termux libacpi.c parser was also compiled in an isolated
+diagnostic and correctly parsed the project cache's battery value.
+The P08 JVM corpus covers 15 typed-text, language-transition and
+deletion scenarios; it does not replace a physical IME test.

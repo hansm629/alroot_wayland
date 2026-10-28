@@ -209,6 +209,34 @@ Do not promote code existence or build success into screen/input PASS.
   direction/dead-zone cases passed; actual finger acceptance is pending.
 - P07 smoke includes the above Java tests and the live Alroot private
   UPower battery property check, plus retained P06 Xvfb Unicode tests.
+
+## P08 2026-10-28 — additional regression root causes
+
+- English-to-Korean echo: P07 alreadyInsertedAscii overwrote the
+  recent English history with the last commit, losing words committed
+  as one character at a time. P08 accumulates the last English run,
+  filters matching echoed prefixes on Hangul composition and commit,
+  and suppresses stale whole-word ASCII composition after finalization.
+  InputConnection now sends fake-cursor selection updates through
+  balanced IME batch edits, matching Termux-X11 conventions. No
+  plaintext keystrokes, clipboard or history are written to logs.
+- Korean caret: mutable Korean preedit stays local to the Android IME;
+  only immutable/committed text is emitted to XTEST. GTK-native inline
+  preedit/XIM remains a follow-on enhancement if truly equivalent
+  Termux-X11 visual composition is required. Physical test pending.
+- Battery question-mark: real installed Termux battery plugin source
+  forks termux-battery-status, not just UPower Percentage. The plugin's
+  background API invocation was unreliable inside isolated Alroot.
+  Project-private PATH now resolves that program to a fast Android
+  BatteryManager JSON cache shim. The original plugin config and
+  native Termux executable remain untouched. The patched libacpi.c
+  parser was compiled and validated on S26U against this JSON.
+- Wallpaper: mirror_xfce overwrote xfce4-desktop.xml plus xfce4/desktop
+  on every restart. These paths are now copied only for clean first
+  launch. A synthetic-home test confirms repeated restarts preserve
+  the Alroot wallpaper and desktop icons. The original :0 is untouched.
+- Only successful test/build evidence may be marked PASS; physical
+  screen/keyboard acceptance remains pending until new APK update.
 - P04 refresh stability: Choreographer measured timestamp jitter briefly
   caused the older code to advertise 122Hz despite the physical mode
   remaining 120Hz. This release retains the actual Android active physical

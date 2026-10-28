@@ -28,3 +28,14 @@ else
     ln -s "$source" "$dest"
 fi
 echo "Alroot-only PRoot shims ready; original Termux mpd/mprun/pdrun untouched"
+source="$HOME/alroot_wayland/termux/alroot-battery-status.sh"
+dest="$STATE/bin/termux-battery-status"
+if [[ -e "$dest" || -L "$dest" ]]; then
+    [[ -L "$dest" && "$(readlink "$dest")" == "$source" ]] || {
+        echo "Refusing to overwrite custom Alroot battery shim $dest" >&2
+        exit 1
+    }
+else
+    ln -s "$source" "$dest"
+fi
+echo "Alroot XFCE battery plugin will read the Android cache via private PATH"

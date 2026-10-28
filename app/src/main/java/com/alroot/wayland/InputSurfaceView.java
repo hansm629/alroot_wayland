@@ -353,7 +353,7 @@ public final class InputSurfaceView extends SurfaceView {
         int a = event.getActionMasked();
         int index = event.getActionIndex();
         if (a == MotionEvent.ACTION_DOWN)
-            ImeBridge.finishComposing();
+            ImeBridge.newEditorContext();
         if (!overlayGesture && event.getPointerCount() >= 3 &&
                 a == MotionEvent.ACTION_POINTER_DOWN) {
             cancelGesture();
@@ -498,6 +498,39 @@ public final class InputSurfaceView extends SurfaceView {
         // rely on stale cursor/selection state and send empty commitText.
         return new BaseInputConnection(this, false) {
             private boolean consumedDraftBackspace;
+            // Termux-X11 keeps a synthetic InputConnection cursor and sends
+            // updateSelection() after commits. P07 left initialSelStart=1
+            // forever; Samsung IME could conclude that its earlier English
+            // text was not consumed, then replay the entire run on 한/영.
+            private int fakeCursorPosition = 1;
+            private int batchDepth;
+            private boolean cursorNeedsReset;
+            private void reportCursor() {
+                InputMethodManager manager = (InputMethodManager)
+                        getContext().getSystemService(Context.INPUT_METHOD_SERVICE);
+                if (manager == null) return;
+                int position = fakeCursorPosition;
+                boolean reset = cursorNeedsReset;
+                cursorNeedsReset = false;
+                Runnable report = () -> {
+                    if (reset)
+                        manager.updateSelection(InputSurfaceView.this,
+                                -1, -1, -1, -1);
+                    manager.updateSelection(InputSurfaceView.this,
+                            position, position, -1, -1);
+                };
+                if (Looper.myLooper() == Looper.getMainLooper()) report.run();
+                else post(report);
+            }
+            @Override public boolean beginBatchEdit() {
+                batchDepth++;
+                return true;
+            }
+            @Override public boolean endBatchEdit() {
+                if (batchDepth > 0) batchDepth--;
+                if (batchDepth == 0) reportCursor();
+                return batchDepth > 0;
+            }
             @Override public android.text.Editable getEditable() { return null; }
             @Override public CharSequence getTextBeforeCursor(int n, int flags) { return " "; }
             @Override public CharSequence getTextAfterCursor(int n, int flags) { return " "; }
@@ -506,12 +539,30 @@ public final class InputSurfaceView extends SurfaceView {
                 return new SurroundingText(before == 0 || after == 0 ? " " : "  ",
                         1, 1, -1);
             }
-            @Override public boolean setSelection(int start, int end) { return true; }
+            @Override public boolean setSelection(int start, int end) {
+                // No X11 caret position is accessible through this view.
+                // Never move a real editor caret based on speculative IME
+                // selection of our synthetic single-space context.
+                if (batchDepth == 0) {
+                    fakeCursorPosition = 1;
+                    cursorNeedsReset = true;
+                    reportCursor();
+                }
+                return true;
+            }
             @Override public boolean commitText(CharSequence text, int newCursorPosition) {
                 boolean x11 = ImeBridge.rootfulX11Active();
                 recordImeEvent(text.length());
                 if (x11) ImeBridge.commitComposed(text.toString());
                 else WaylandCompositor.textInputCommit(text.toString());
+                if (newCursorPosition > 0) {
+                    fakeCursorPosition = Math.max(1,
+                            fakeCursorPosition + text.length() + newCursorPosition - 1);
+                } else {
+                    fakeCursorPosition = 1;
+                    cursorNeedsReset = true;
+                }
+                if (batchDepth == 0) reportCursor();
                 return true;
             }
             @Override public boolean setComposingText(CharSequence text, int newCursorPosition) {
@@ -529,7 +580,15 @@ public final class InputSurfaceView extends SurfaceView {
                 return true;
             }
             @Override public boolean deleteSurroundingText(int beforeLength, int afterLength) {
-                if (ImeBridge.rootfulX11Active()) ImeBridge.delete(beforeLength, afterLength);
+                if (ImeBridge.rootfulX11Active()) {
+                    boolean hadDraft = ImeBridge.hasPendingPreedit();
+                    ImeBridge.delete(beforeLength, afterLength);
+                    if (!hadDraft) {
+                        fakeCursorPosition = Math.max(1,
+                                fakeCursorPosition - Math.max(0, beforeLength));
+                        if (batchDepth == 0) reportCursor();
+                    }
+                }
                 else WaylandCompositor.textInputDelete(beforeLength, afterLength);
                 return true;
             }
