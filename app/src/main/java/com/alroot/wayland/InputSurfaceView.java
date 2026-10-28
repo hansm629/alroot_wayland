@@ -26,6 +26,11 @@ public final class InputSurfaceView extends SurfaceView {
     public static final int MODE_VIRTUAL_TOUCHSCREEN = 1;
     public static final int MODE_DIRECT_TOUCH = 2;
     private final Set<Integer> keys = new HashSet<>();
+    // Termux-X11 keeps one InputConnection throughout a view's lifetime.
+    // Samsung can request it twice on first focus; two independent fake
+    // cursors let the previous English preedit leak into the new connection.
+    private final ImeConnectionHolder<InputConnection> imeConnections =
+            new ImeConnectionHolder<>();
     // Virtual uppercase key-downs are sent as complete scoped keystrokes;
     // their optional later key-up must not release an unrelated guest key.
     private final Set<Integer> syntheticShiftKeyUps = new HashSet<>();
@@ -54,9 +59,11 @@ public final class InputSurfaceView extends SurfaceView {
     private boolean captured;
     private float lastX, lastY;
     private boolean pointerInitialized;
+    private boolean pointerViewSized;
     private float pointerScaleX = 1, pointerScaleY = 1;
     private int imeEventCount;
     private int imeCharacterCount;
+    private int imeFirstEditorDiagnostics;
     private final RectF picture = new RectF();
     private PointerIcon guestIcon;
     private boolean guestCursorHidden;
@@ -69,6 +76,7 @@ public final class InputSurfaceView extends SurfaceView {
                 touchSlop, getResources().getDisplayMetrics().density);
         SharedPreferences p = context.getSharedPreferences("display", Context.MODE_PRIVATE);
         inputMode = p.getInt("input_mode", MODE_TOUCHPAD);
+        touchpadCursorActive = inputMode == MODE_TOUCHPAD;
         pointerSpeed = p.getInt("pointer_speed", 190);
         acceleration = p.getInt("pointer_accel", 110);
         setFocusable(true);
@@ -88,20 +96,27 @@ public final class InputSurfaceView extends SurfaceView {
             // The native host starts at the scene center. Match its cursor
             // immediately, before the first touch or pointer-capture event;
             // never send a late synthetic motion when XFCE becomes ready.
-            lastX = picture.centerX();
-            lastY = picture.centerY();
+            lastX = PointerStartupPolicy.midpoint(picture.left, picture.right);
+            lastY = PointerStartupPolicy.midpoint(picture.top, picture.bottom);
             // Display positioning is not a guest input event. Keep the
             // first real touch/capture responsible for synchronizing with
             // the native pointer if this Activity reattached an old server.
-            if (onCursorMove != null) onCursorMove.run();
         }
+        pointerViewSized = true;
+        if (oldw == 0 && oldh == 0)
+            android.util.Log.i("AlrootWayland", "P18 pointer view ready, " +
+                    "visual-center=" + (int)lastX + "," + (int)lastY +
+                    " touchpad=" + (inputMode == MODE_TOUCHPAD) +
+                    " Android-cursor-hidden=" + (inputMode == MODE_TOUCHPAD));
+        if (onCursorMove != null) onCursorMove.run();
     }
 
     public boolean isCaptured() { return captured; }
     public float pointerX() { return lastX; }
     public float pointerY() { return lastY; }
     public boolean isSoftwareCursorWanted() {
-        return captured || (inputMode == MODE_TOUCHPAD && touchpadCursorActive);
+        return PointerStartupPolicy.showSoftwareCursor(inputMode, captured,
+                touchpadCursorActive, pointerViewSized);
     }
     public float cursorScaleX() { return 1f / pointerScaleX; }
     public float cursorScaleY() { return 1f / pointerScaleY; }
@@ -114,13 +129,15 @@ public final class InputSurfaceView extends SurfaceView {
         if (mode < MODE_TOUCHPAD || mode > MODE_DIRECT_TOUCH) return;
         cancelGesture();
         inputMode = mode;
-        touchpadCursorActive = false;
+        touchpadCursorActive = inputMode == MODE_TOUCHPAD;
         pointerSpeed = Math.max(50, Math.min(300, speed));
         acceleration = Math.max(0, Math.min(200, accel));
         getContext().getSharedPreferences("display", Context.MODE_PRIVATE).edit()
                 .putInt("input_mode", inputMode)
                 .putInt("pointer_speed", pointerSpeed)
                 .putInt("pointer_accel", acceleration).apply();
+        invalidate();
+        if (onCursorMove != null) onCursorMove.run();
     }
     private void sendButton(int evdev, boolean down) {
         WaylandCompositor.nativeSendSceneInput(3, evdev, down ? 1 : 0);
@@ -151,7 +168,8 @@ public final class InputSurfaceView extends SurfaceView {
     }
 
     @Override public PointerIcon onResolvePointerIcon(MotionEvent event, int pointerIndex) {
-        if (captured || guestCursorHidden)
+        if (PointerStartupPolicy.hideSystemCursor(
+                inputMode, captured, guestCursorHidden, touchpadCursorActive))
             return PointerIcon.getSystemIcon(getContext(), PointerIcon.TYPE_NULL);
         return guestIcon != null ? guestIcon : super.onResolvePointerIcon(event, pointerIndex);
     }
@@ -249,6 +267,31 @@ public final class InputSurfaceView extends SurfaceView {
                     imeEventCount + " character-count=" + imeCharacterCount +
                     " X11-active=" + ImeBridge.rootfulX11Active());
         }
+    }
+
+    private void traceFirstEditor(String operation, CharSequence value, boolean accepted) {
+        // Bounded, metadata-only report for the user's *first* editor entry.
+        // There is no plaintext, cursor-surrounding text, clipboard, or key
+        // content in logcat; only route/length/script classes and decisions.
+        if (++imeFirstEditorDiagnostics > 128) return;
+        boolean latin = false, korean = false, other = false;
+        int length = value == null ? 0 : value.length();
+        for (int i = 0; i < length; ) {
+            int cp = Character.codePointAt(value, i);
+            if (cp >= 0x20 && cp < 0x80) latin = true;
+            else if ((cp >= 0x1100 && cp <= 0x11ff) ||
+                    (cp >= 0x3130 && cp <= 0x318f) ||
+                    (cp >= 0xac00 && cp <= 0xd7af)) korean = true;
+            else other = true;
+            i += Character.charCount(cp);
+        }
+        String script = length == 0 ? "EMPTY" :
+                korean && latin ? "MIXED" : korean ? "KOREAN" :
+                latin && !other ? "ASCII" : "OTHER";
+        android.util.Log.i("AlrootWayland",
+                "IME P18 first-editor-event=" + imeFirstEditorDiagnostics +
+                " op=" + operation + " length=" + length +
+                " script=" + script + " delivered=" + accepted);
     }
 
     private int fallbackEvdev(int key) {
@@ -389,6 +432,9 @@ public final class InputSurfaceView extends SurfaceView {
 
     @Override public boolean onGenericMotionEvent(MotionEvent event) {
         if (event.isFromSource(android.view.InputDevice.SOURCE_MOUSE)) {
+            // No spontaneous Android system cursor at startup. After the
+            // first *real* physical-mouse input, switch back to the old fast
+            // Android hardware cursor at its actual event position.
             if (touchpadCursorActive) {
                 touchpadCursorActive = false;
                 if (onCursorMove != null) onCursorMove.run();
@@ -554,14 +600,20 @@ public final class InputSurfaceView extends SurfaceView {
         // keyboards. Match the proven Termux-X11 input editor flags.
         outAttrs.imeOptions = EditorInfo.IME_FLAG_NO_FULLSCREEN;
         outAttrs.actionLabel = "↵";
-        outAttrs.initialSelStart = 1;
-        outAttrs.initialSelEnd = 1;
+        // X11 owns the real editor and there is no Android Editable buffer.
+        // Do not advertise a concrete (1,1) cursor in a one-space phantom
+        // editor, which Samsung may interpret as a real composing range.
+        // Match Termux-X11's unspecified initial selection instead.
+        outAttrs.initialSelStart = -1;
+        outAttrs.initialSelEnd = -1;
         android.util.Log.i("AlrootWayland",
-                "IME InputConnection created focused=" + hasFocus() + " window=" + hasWindowFocus());
+                "IME InputConnection " +
+                (imeConnections.hasConnection() ? "reused" : "created") +
+                " focused=" + hasFocus() + " window=" + hasWindowFocus());
         // X11 apps own the actual text. Android must never pretend this
         // SurfaceView has a real editable buffer; Samsung/Gboard otherwise
         // rely on stale cursor/selection state and send empty commitText.
-        return new BaseInputConnection(this, false) {
+        return imeConnections.getOrCreate(() -> new BaseInputConnection(this, false) {
             private boolean consumedDraftBackspace;
             private final ImeCursorTracker synthetic = new ImeCursorTracker();
             private int lastLoggedPhantomDeletes;
@@ -627,6 +679,7 @@ public final class InputSurfaceView extends SurfaceView {
                 }
                 if (inserted)
                     synthetic.committed(text.length(), newCursorPosition);
+                traceFirstEditor("COMMIT", text, inserted);
                 if (!synthetic.inBatch()) reportCursor();
                 return true;
             }
@@ -638,10 +691,12 @@ public final class InputSurfaceView extends SurfaceView {
                 } else {
                     WaylandCompositor.textInputPreedit(text.toString(), text.length());
                 }
+                traceFirstEditor("COMPOSE", text, true);
                 return true;
             }
             @Override public boolean finishComposingText() {
                 ImeBridge.finishComposing();
+                traceFirstEditor("FINISH", null, true);
                 return true;
             }
             @Override public boolean deleteSurroundingText(int beforeLength, int afterLength) {
@@ -654,6 +709,7 @@ public final class InputSurfaceView extends SurfaceView {
                         android.util.Log.i("AlrootWayland",
                                 "IME ignored phantom editor-space cleanup count=" + count);
                     }
+                    traceFirstEditor("DELETE_PHANTOM", null, false);
                     return true;
                 }
                 if (ImeBridge.rootfulX11Active()) {
@@ -663,8 +719,13 @@ public final class InputSurfaceView extends SurfaceView {
                         synthetic.deleted(beforeLength);
                         if (!synthetic.inBatch()) reportCursor();
                     }
+                    traceFirstEditor(hadDraft ? "DELETE_PREEDIT" : "DELETE_REMOTE",
+                            null, processed);
                 }
-                else WaylandCompositor.textInputDelete(beforeLength, afterLength);
+                else {
+                    WaylandCompositor.textInputDelete(beforeLength, afterLength);
+                    traceFirstEditor("DELETE_WAYLAND", null, true);
+                }
                 return true;
             }
             @Override public boolean deleteSurroundingTextInCodePoints(int before, int after) {
@@ -710,6 +771,6 @@ public final class InputSurfaceView extends SurfaceView {
                 }
                 return super.sendKeyEvent(event);
             }
-        };
+        });
     }
 }

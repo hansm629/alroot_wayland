@@ -943,3 +943,43 @@ Repeat the failing 'hello' → '한글' → delete Hangul test, then verify
 new English typing, P14 composing caret, P15 uppercase and initial
 mouse centering. If the symptom remains, gather only text-free
 'IME P17' counters from logcat; no keystrokes are saved.
+
+## P18: first input-field replay and top-left startup cursor
+
+P18 does not increase the stale-English string filter. It fixes the
+first-editor Android lifecycle: one persistent BaseInputConnection for
+each InputSurfaceView, unspecified initial selection rather than a
+fake concrete cursor, and no new phantom cursor for redundant Samsung
+connection requests. Existing Termux-X11 uses the same connection
+lifetime pattern. The original native Fcitx5 Hangul composition,
+patched VTE cursor, uppercase handling, and unrelated X11 :0 are
+left untouched.
+
+P18 also removes the Android system cursor from the initial touchpad
+display; the Alroot overlay starts centered as soon as view dimensions
+are known. Its temporary arrow is replaced by the actual guest bitmap
+when Labwc delivers it. A real mouse movement returns to the previous
+hardware-cursor path, rather than permanently replacing DeX mouse
+behavior with a software-only cursor. Guest scene input coordinates
+remain unchanged.
+
+Regression commands (no injection into active :0 or :90):
+
+    cd ~/alroot_wayland
+    bash tests/p18-startup-regression.sh
+    bash tests/p13-smoke.sh
+    bash tests/p14-vte-caret-smoke.sh
+    bash tests/p15-uppercase-smoke.sh
+
+After the signed P18 APK update, stop/restart only the Alroot Wayland
+session and check (a) the pointer is centered from the first visible
+frame, before XFCE finishes loading; (b) in a NEW editor, type
+'hello', switch to Hangul, type '한글', delete only '한글' and confirm
+there is exactly one original 'hello'; then repeat once in the SAME
+editor and once in a SECOND new editor. Also verify uppercase,
+visible Korean composing caret, DPI, battery, PiP and two-finger scroll.
+If failure remains, collect only metadata (no actual text) using:
+
+    logcat -d -s AlrootWayland | grep -E 'IME P18|IME InputConnection|P18 pointer' | tail -100
+
+Successful Java/Xvfb/CI checks do not establish real Samsung IME PASS.

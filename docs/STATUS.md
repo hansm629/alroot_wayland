@@ -505,3 +505,47 @@ Do not promote code existence or build success into screen/input PASS.
 - Target APK v0.1.18, versionCode 19. As before, actual on-device
   Samsung-IME acceptance is TEST-PENDING until user verification.
   The known-working P16 pointer and P14/P15 input remain untouched.
+
+## P18 2026-10-28 — first-editor state and startup pointer ownership
+
+- User reports P17 still duplicates earlier English after deleting Korean
+  on the FIRST attempt in each X11 input field; the initial pointer also
+  briefly appears at the top-left before centering after XFCE loads.
+  The earlier P16/P17 string-pattern filters have not resolved either
+  physical-device issue and are not treated as proof of success.
+- S26U logcat on P17 showed two InputConnection creation callbacks within
+  the same millisecond of first keyboard focus, plus many early-IME
+  resends. Before P18, onCreateInputConnection allocated a new anonymous
+  BaseInputConnection and a new ImeCursorTracker on every call, resetting
+  the Android fake editor even while Samsung had an existing connection.
+  The existing Termux-X11 LorieView uses a persistent InputConnection.
+- P18 uses one cached InputConnection per InputSurfaceView, preserving
+  the fake cursor/composing state when Samsung requests it repeatedly.
+  On true Activity/View recreation a distinct connection is created.
+  EditorInfo no longer incorrectly advertises an explicit selection
+  (1,1) in a nonexistent backing Editable; it uses unknown initial
+  selection (-1,-1), consistent with the established Termux-X11 pattern.
+- The host Wayland pointer already starts at scene center, but the Android
+  onResolvePointerIcon used its independent system cursor whenever a
+  guest cursor bitmap was not ready. In touchpad mode this could expose
+  the OS pointer at (0,0) until Labwc supplied a guest cursor image.
+  P18 hides the Android system cursor in touchpad mode and renders one
+  Alroot cursor at the center as soon as view bounds exist, with a
+  small temporary white arrow until the real wl_pointer cursor arrives.
+  Touchpad motion stays on the project cursor; on the first actual
+  physical-mouse event the original low-latency Android mouse cursor
+  path is restored at its event position. Direct-touch/virtual-touchscreen,
+  DeX hardware-mouse and pointer-lock behavior is preserved.
+- Adds bounded diagnostic logcat records for up to 128 first-editor
+  callbacks, recording only operation, text length, broad ASCII/Korean
+  classification and delivery decision. No text, clipboard or keystroke
+  contents are retained or logged. If first-use replay remains, these
+  event categories can locate the actual failing transport rather than
+  expanding guesses or heuristic echo windows.
+- New Android-independent regression: persistent connection identity,
+  stable fake cursor across repeated connection requests, first visible
+  pointer centered and only one cursor drawn in touchpad mode. P13
+  Hangul editing, P14 VTE caret, P15 uppercase and P16/P17 native IME
+  regressions remain required.
+- Target APK v0.1.19 (versionCode 20). Real S26U first-field IME and
+  initial startup pointer acceptance are TEST-PENDING until observed.
