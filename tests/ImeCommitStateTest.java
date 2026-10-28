@@ -347,6 +347,88 @@ public final class ImeCommitStateTest {
         x.check("hellohello");
     }
 
+    // P16: Samsung may send only a PREFIX of the old English run before
+    // Hangul; checking recentAscii.endsWith(prefix) cannot remove "hel".
+    static void partialEnglishSnapshotBeforeKorean() {
+        ImeCommitState s = new ImeCommitState();
+        FakeNative x = new FakeNative();
+        s.committed("hello", 100, x);
+        s.composing("hel한", 3100, x);
+        x.check("hello한");
+        s.committed("hell한", 3200, x);
+        x.check("hello한");
+    }
+
+    // Samsung sometimes clears the composing span BEFORE delivering the
+    // DEL callback. That DEL belongs to the old draft, not the committed
+    // English word underneath; neither may it disarm the stale-echo filter.
+    static void emptyHangulThenBackspaceDoesNotEraseEnglish() {
+        ImeCommitState s = new ImeCommitState();
+        FakeNative x = new FakeNative();
+        s.committed("hello", 100, x);
+        s.composing("한", 4000, x);
+        s.composing("", 4010, x);
+        x.check("hello");
+        s.backspace(4015);
+        s.delete(1, 0, x);
+        x.check("hello");
+        s.committed("hello", 4025, x);
+        x.check("hello");
+    }
+
+    static void progressiveEnglishReplayAfterHangulDeletion() {
+        ImeCommitState s = new ImeCommitState();
+        FakeNative x = new FakeNative();
+        s.committed("hello", 100, x);
+        s.composing("한", 4000, x);
+        s.composing("", 4020, x);
+        s.backspace(4040);
+        s.delete(1, 0, x);
+        x.check("hello");
+        for (String candidate : new String[]{"h", "he", "hel", "hell", "hello"}) {
+            check(s.withholdSuspectedAscii(candidate, 4050),
+                  "Previously committed ASCII prefixes must be withheld after Korean DEL");
+        }
+        check(s.suppressWithheldAsciiCommit("hello", 4070),
+              "Final old English commit must not replay");
+        x.check("hello");
+    }
+
+    static void legitimateEnglishIsStillAcceptedAfterDelete() {
+        ImeCommitState s = new ImeCommitState();
+        FakeNative x = new FakeNative();
+        s.committed("hello", 100, x);
+        s.composing("한", 200, x);
+        s.committed("한", 230, x);
+        s.backspace(250);
+        s.delete(1, 0, x);
+        x.check("hello");
+        check(s.withholdSuspectedAscii("h", 260), "Ambiguous one-letter preedit held");
+        check(!s.suppressWithheldAsciiCommit("h", 270),
+              "Explicit one-letter commit is genuine user input");
+        s.committed("h", 270, x);
+        x.check("helloh");
+        // After accepting fresh Latin input, no stale-echo mode is active.
+        check(!s.withholdSuspectedAscii("hello", 285),
+              "New English input ends Korean-deletion replay protection");
+    }
+
+    static void directOldEnglishPrefixCommitAfterKoreanDeletion() {
+        ImeCommitState s = new ImeCommitState();
+        FakeNative x = new FakeNative();
+        s.committed("hello world", 100, x);
+        s.composing("한", 200, x);
+        s.committed("한", 250, x);
+        s.backspace(300);
+        s.delete(1, 0, x);
+        x.check("hello world");
+        // Some Samsung IMEs replay commitText directly without a preceding
+        // setComposingText. A prefix of the older English run must not be
+        // inserted a second time after the Hangul is deleted.
+        s.committed("hello", 320, x);
+        x.check("hello world");
+    }
+
     public static void main(String[] args) {
         koreanIsVisibleAtFirstPreedit();
         koreanBackspaceIsImmediate();
@@ -372,6 +454,11 @@ public final class ImeCommitStateTest {
         normalEnglishAfterHangulDeleteIsNotLost();
         finishedHangulThenDeleteAndEnglishEcho();
         newEditorDoesNotSuppressLegitimateEnglish();
-        System.out.println("PASS: 24 Android IME event scenarios, Korean DEL and English echo");
+        partialEnglishSnapshotBeforeKorean();
+        emptyHangulThenBackspaceDoesNotEraseEnglish();
+        progressiveEnglishReplayAfterHangulDeletion();
+        legitimateEnglishIsStillAcceptedAfterDelete();
+        directOldEnglishPrefixCommitAfterKoreanDeletion();
+        System.out.println("PASS: 28 Android IME event scenarios, Korean DEL and English echo");
     }
 }

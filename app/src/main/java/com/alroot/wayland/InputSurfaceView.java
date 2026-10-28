@@ -77,6 +77,26 @@ public final class InputSurfaceView extends SurfaceView {
         setOnClickListener(v -> requestFocus());
     }
 
+    @Override protected void onSizeChanged(int w, int h, int oldw, int oldh) {
+        super.onSizeChanged(w, h, oldw, oldh);
+        if (w <= 0 || h <= 0) return;
+        SharedPreferences prefs = getContext().getSharedPreferences(
+                "display", Context.MODE_PRIVATE);
+        updateTransform(prefs.getInt("width", 1920), prefs.getInt("height", 1080),
+                prefs.getBoolean("fullscreen", true) ? 1 : prefs.getInt("mode", 1));
+        if (!pointerInitialized) {
+            // The native host starts at the scene center. Match its cursor
+            // immediately, before the first touch or pointer-capture event;
+            // never send a late synthetic motion when XFCE becomes ready.
+            lastX = picture.centerX();
+            lastY = picture.centerY();
+            // Display positioning is not a guest input event. Keep the
+            // first real touch/capture responsible for synchronizing with
+            // the native pointer if this Activity reattached an old server.
+            if (onCursorMove != null) onCursorMove.run();
+        }
+    }
+
     public boolean isCaptured() { return captured; }
     public float pointerX() { return lastX; }
     public float pointerY() { return lastY; }

@@ -201,6 +201,14 @@ public final class ImeBridge {
                     " (no text recorded)");
         }
         if (asciiOnly(text)) {
+            if (!asciiComposing && composition.withholdSuspectedAscii(text, ms)) {
+                // A speculative Samsung English snapshot must not appear in
+                // X11, even for its first one-letter prefix. A later genuine
+                // commitText("h") will still be forwarded normally.
+                flushDeferredEmpty();
+                maybeLogEchoSuppressions();
+                return;
+            }
             if (!asciiComposing && composition.duplicateAsciiComposing(text, ms)) {
                 // This English preedit was filtered, so it will not replace
                 // the previous Korean glyph. Preserve the pending deletion.
@@ -221,6 +229,7 @@ public final class ImeBridge {
             io.post(() -> send('C', value));
             return;
         }
+        composition.discardWithheldAscii();
         if (asciiComposing) {
             // The visible English preedit is already present in X11.
             // Finalize the native composing range without retransmitting it.
@@ -237,6 +246,10 @@ public final class ImeBridge {
     /** Whether the real remote editor received a commit (for fake cursor). */
     public static synchronized boolean commitComposed(String text) {
         long ms = SystemClock.elapsedRealtime();
+        if (composition.suppressWithheldAsciiCommit(text, ms)) {
+            maybeLogEchoSuppressions();
+            return false;
+        }
         if (asciiComposing && asciiOnly(text)) {
             asciiComposing = false;
             asciiDraft = "";
@@ -268,6 +281,11 @@ public final class ImeBridge {
     }
 
     public static synchronized void finishComposing() {
+        String withheld = composition.takeWithheldAsciiOnFinish(
+                SystemClock.elapsedRealtime());
+        if (!withheld.isEmpty())
+            composition.committed(withheld, SystemClock.elapsedRealtime(),
+                    compositionSink);
         if (asciiComposing) {
             finalizeNativeAscii(SystemClock.elapsedRealtime());
             return;
@@ -332,7 +350,8 @@ public final class ImeBridge {
     }
 
     public static boolean hasPendingPreedit() {
-        return composition.hasDraft();
+        return composition.hasDraft() ||
+                composition.hasRecentClearedKoreanPreedit(SystemClock.elapsedRealtime());
     }
 
     /** Apply DEL to the native, already-visible preedit immediately. */

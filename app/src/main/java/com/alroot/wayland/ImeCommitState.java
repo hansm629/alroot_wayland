@@ -38,6 +38,20 @@ public final class ImeCommitState {
     private boolean lastCommittedWasKorean;
     private long lastKoreanDeleteAt = -1;
     private boolean mayReplayEnglishAfterKoreanDelete;
+    // Samsung may clear native Hangul preedit with C("") *before* its DEL.
+    // Without remembering that short-lived transition the DEL erases the
+    // preceding committed English instead, and stale IME context can replay.
+    private long clearedKoreanPreeditAt = -1;
+    private boolean clearedKoreanPreedit;
+    private boolean consumeClearedPreeditDelete;
+    private long lastKoreanActivityAt = -1;
+    // The Android fake editor has no real English backing text. Following
+    // Hangul DEL Samsung may rebuild the *previous* Latin run one prefix at
+    // a time ("h" -> "he" -> "hel" ...). Never send that speculative C to X11
+    // until a genuine new ASCII commit distinguishes it from cached context.
+    private String withheldAscii = "";
+    private static final long EMPTY_KOREAN_DELETE_MS = 120;
+    private static final long KOREAN_CONTEXT_MS = 3000;
 
     private static boolean korean(String text) {
         for (int i = 0; i < text.length(); i++) {
@@ -95,16 +109,66 @@ public final class ImeCommitState {
                 lastKoreanDeleteAt >= 0 && nowMs >= lastKoreanDeleteAt &&
                 nowMs - lastKoreanDeleteAt < DELETION_ECHO_MS;
     }
+    private boolean matchesPriorAscii(String text) {
+        return text != null && !text.isEmpty() && ascii(text) &&
+                !recentAscii.isEmpty() &&
+                (recentAscii.startsWith(text) || recentAscii.endsWith(text));
+    }
+    private boolean inKoreanDeletionBoundary(long ms) {
+        return isPostKoreanDeletion(ms) || hasRecentClearedKoreanPreedit(ms);
+    }
+    /**
+     * Hold only a possible old ASCII snapshot from Samsung after a Korean
+     * edit; ordinary English C/T and native Hangul C/T remain immediate.
+     */
+    public synchronized boolean withholdSuspectedAscii(String text, long ms) {
+        if (inKoreanDeletionBoundary(ms) && matchesPriorAscii(text)) {
+            withheldAscii = text;
+            return true;
+        }
+        withheldAscii = "";
+        return false;
+    }
+    public synchronized boolean suppressWithheldAsciiCommit(String text, long ms) {
+        boolean had = !withheldAscii.isEmpty();
+        withheldAscii = "";
+        if (had && text != null && text.length() >= 2 &&
+                inKoreanDeletionBoundary(ms) && matchesPriorAscii(text)) {
+            echoSuppressions++;
+            return true;
+        }
+        return false;
+    }
+    /** Preserve genuine single-character English if the IME finishes it. */
+    public synchronized String takeWithheldAsciiOnFinish(long ms) {
+        String value = withheldAscii;
+        withheldAscii = "";
+        if (value.length() >= 2 && inKoreanDeletionBoundary(ms) &&
+                matchesPriorAscii(value)) {
+            echoSuppressions++;
+            return "";
+        }
+        return value;
+    }
+    public synchronized void discardWithheldAscii() { withheldAscii = ""; }
     /** Called for either Android deletion API, before the remote Backspace. */
     public synchronized void backspace(long nowMs) {
-        if (lastCommittedWasKorean || korean(draft)) {
+        if (lastCommittedWasKorean || korean(draft) ||
+                (lastKoreanActivityAt >= 0 && nowMs >= lastKoreanActivityAt &&
+                nowMs - lastKoreanActivityAt <= KOREAN_CONTEXT_MS)) {
             lastKoreanDeleteAt = nowMs;
             mayReplayEnglishAfterKoreanDelete = true;
         }
+        consumeClearedPreeditDelete = hasRecentClearedKoreanPreedit(nowMs);
         lastCommittedWasKorean = false;
     }
     public synchronized void keyboardSwitchedToKorean(long ms) {
         koreanTransition = true;
+    }
+    public synchronized boolean hasRecentClearedKoreanPreedit(long ms) {
+        return clearedKoreanPreedit && clearedKoreanPreeditAt >= 0 &&
+                ms >= clearedKoreanPreeditAt &&
+                ms - clearedKoreanPreeditAt <= EMPTY_KOREAN_DELETE_MS;
     }
     private String removeEnglishEcho(String text, long ms) {
         if (!korean(text) || recentAsciiAt < 0 || ms < recentAsciiAt ||
@@ -114,7 +178,8 @@ public final class ImeCommitState {
         // text we actually delivered, but only if followed by Hangul.
         int limit = Math.min(text.length(), recentAscii.length());
         for (int n = limit; n >= 2; n--) {
-            if (recentAscii.endsWith(text.substring(0, n)) &&
+            if ((recentAscii.endsWith(text.substring(0, n)) ||
+                    recentAscii.startsWith(text.substring(0, n))) &&
                     korean(text.substring(n))) {
                 echoSuppressions++;
                 return text.substring(n);
@@ -124,8 +189,18 @@ public final class ImeCommitState {
     }
     public synchronized void composing(String text, long ms, Sink sink) {
         if (text == null) text = "";
-        if (korean(text)) koreanTransition = true;
+        if (korean(text)) {
+            koreanTransition = true;
+            lastKoreanActivityAt = ms;
+        }
         String normalized = removeEnglishEcho(text, ms);
+        if (normalized.isEmpty() && korean(draft)) {
+            clearedKoreanPreeditAt = ms;
+            clearedKoreanPreedit = true;
+        } else if (!normalized.isEmpty()) {
+            clearedKoreanPreedit = false;
+            consumeClearedPreeditDelete = false;
+        }
         if (normalized.equals(draft)) return;
         int priorInitial = initialHangulConsonant(draft);
         int nextInitial = initialHangulConsonant(normalized);
@@ -147,13 +222,16 @@ public final class ImeCommitState {
     public synchronized void committed(String text, long ms, Sink sink) {
         if (text == null) text = "";
         if (text.length() >= 2 && ascii(text) &&
-                isPostKoreanDeletion(ms) && recentAscii.endsWith(text)) {
+                isPostKoreanDeletion(ms) && matchesPriorAscii(text)) {
             echoSuppressions++;
             // This is the final commit of an already ignored English echo,
             // not a new keystroke. Never duplicate the old English text.
             return;
         }
-        if (korean(text)) koreanTransition = true;
+        if (korean(text)) {
+            koreanTransition = true;
+            lastKoreanActivityAt = ms;
+        }
         if (koreanTransition && !text.isEmpty() && ascii(text) &&
                 text.length() >= 2 && recentAscii.endsWith(text)) {
             echoSuppressions++; // stale English commit during 한/영 switch
@@ -187,6 +265,8 @@ public final class ImeCommitState {
         draft = "";
         koreanTransition = false;
         finishEchoPending = false;
+        clearedKoreanPreedit = false;
+        consumeClearedPreeditDelete = false;
     }
     public synchronized void finished(long ms, Sink sink) {
         if (!draft.isEmpty()) {
@@ -199,10 +279,19 @@ public final class ImeCommitState {
         }
         draft = "";
         koreanTransition = false;
+        clearedKoreanPreedit = false;
+        consumeClearedPreeditDelete = false;
     }
     public synchronized boolean delete(int before, int after, Sink sink) {
         int b = Math.max(0, Math.min(before, 128));
         int a = Math.max(0, Math.min(after, 128));
+        if (consumeClearedPreeditDelete && b > 0) {
+            // The already-cleared composing glyph accounts for one DEL.
+            // Do not forward that DEL to previously committed English.
+            b--;
+            consumeClearedPreeditDelete = false;
+            clearedKoreanPreedit = false;
+        }
         int pending = draft.codePointCount(0, draft.length());
         if (pending > 0 && b > 0) {
             // The composing glyph is ALREADY visible in X11. Replacing it
@@ -224,6 +313,9 @@ public final class ImeCommitState {
         draft = "";
         koreanTransition = false;
         finishEchoPending = false;
+        clearedKoreanPreedit = false;
+        consumeClearedPreeditDelete = false;
+        withheldAscii = "";
         // Reinitializing IME's composing state is not an editor focus
         // change. Retain English context and last committed script until
         // clearEditorContext() is explicitly requested.
@@ -237,5 +329,7 @@ public final class ImeCommitState {
         lastCommittedWasKorean = false;
         lastKoreanDeleteAt = -1;
         mayReplayEnglishAfterKoreanDelete = false;
+        lastKoreanActivityAt = -1;
+        clearedKoreanPreeditAt = -1;
     }
 }

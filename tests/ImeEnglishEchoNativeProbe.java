@@ -30,12 +30,33 @@ public final class ImeEnglishEchoNativeProbe {
         }
     }
     public static void main(String[] args) throws Exception {
-        if (args.length != 1) throw new IllegalArgumentException("socket");
+        if (args.length != 1 && args.length != 2)
+            throw new IllegalArgumentException("socket [p16]");
         try (SocketChannel socket = SocketChannel.open(StandardProtocolFamily.UNIX)) {
             socket.connect(UnixDomainSocketAddress.of(args[0]));
             ImeCommitState state = new ImeCommitState();
             ImeCursorTracker fake = new ImeCursorTracker();
             NativeSink x = new NativeSink(socket);
+            if (args.length == 2 && "p16".equals(args[1])) {
+                state.committed("hello", 100, x);
+                Thread.sleep(110);
+                state.composing("hel한", 5000, x); // old English prefix + Hangul
+                Thread.sleep(95);
+                state.composing("", 5010, x); // Samsung clears the native preedit first
+                Thread.sleep(45);
+                state.backspace(5050);
+                state.delete(1, 0, x); // must not delete 'o' in prior hello
+                for (String prefix : new String[]{"h", "he", "hel", "hell", "hello"}) {
+                    if (!state.withholdSuspectedAscii(prefix, 5060))
+                        throw new AssertionError("P16 old English replay prefix was not withheld");
+                }
+                if (!state.suppressWithheldAsciiCommit("hello", 5070))
+                    throw new AssertionError("P16 old ASCII commit was not suppressed");
+                Thread.sleep(135);
+                System.out.println("P16_PREFIX_REPLAY_FILTERED=1 "
+                        + "cleared_korean_preedit=1 old_english_remains_once");
+                return;
+            }
             state.committed("hello", 100, x); // existing English committed
             fake.begin();
             fake.committed(5, 1);

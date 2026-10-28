@@ -421,3 +421,43 @@ Do not promote code existence or build success into screen/input PASS.
 - Real S26U Samsung keyboard Shift, double-Shift, English→Korean→DEL and
   GUI caret appearance require updated APK installation and user test;
   a successful JVM/Xvfb/CI test alone is not on-device acceptance.
+
+## P16 2026-10-28 — stale ASCII after Hangul deletion and initial pointer
+
+- User confirms P15 uppercase and P14 visible Korean caret are correct,
+  but past English may still reappear after composing/deleting Korean.
+  They also observe a cursor at the top-left before XFCE finishes, then
+  a spontaneous jump to the display center.
+- A failing Java regression reproduced the precise missed prefix case:
+  delivered 'hello' + composing 'hel한' yielded 'hellohel한'. The prior
+  filter only matched a suffix of already committed English; a
+  partial prefix escaped. It now checks both without changing the
+  ordinary native Fcitx Hangul C/T route.
+- Samsung can issue an empty C to clear Hangul before reporting DEL.
+  A short, one-use Korean-preedit deletion marker prevents that same
+  DEL from erasing previously committed Latin text. The Korean editing
+  context remains armed briefly even when the intermediate draft is
+  already empty. The old English echo filter no longer misses that case.
+- A progressively rebuilt old ASCII snapshot ('h'→'he'→'hello')
+  following Hangul deletion is withheld before it reaches XTEST.
+  Confirmed old text is dropped; a genuinely committed single new
+  ASCII character remains accepted, and diverging fresh text uses the
+  original immediate input path. This guard is scoped to the short
+  Hangul-deletion boundary, not normal English typing or other editors.
+- The Wayland host previously started at pointer coordinates (0,0);
+  Android's uninitialized cursor overlay also defaulted to (0,0).
+  The native seat now starts centered and sends its first enter/motion
+  once a real desktop or mapped toplevel and pointer resource exist.
+  Initial centering uses actual scene dimensions, and any user
+  pointer event disables subsequent bootstrap, avoiding late warps.
+  Android mirrors the visual center when its surface is first sized,
+  without generating a premature guest move or resetting a moved
+  pointer on ordinary resize. Capture/touch remains the authoritative
+  first actual pointer action when reattaching an Activity.
+- Regression coverage: extended Java event sequences; an actual
+  private-Xvfb GTK/Fcitx/native-socket P16 prefix-replay case; P13
+  Korean edits, P14 VTE cursor and P15 uppercase smoke tests. None
+  inject into the user's live :0/:90 sessions.
+- APK v0.1.17 (versionCode 18). Pointer visual timing and real Samsung
+  IME on the newly installed APK remain TEST-PENDING until user review;
+  do not promote CI/native Xvfb success to physical display PASS.

@@ -311,6 +311,9 @@ static struct {
 } g_perf;
 
 static void schedule_render(void);
+/* Initial pointer focus is delivered only once, when a real desktop/toplevel
+ * and its wl_seat pointer are ready. No later session/PiP/resize recentering. */
+static void pointer_bootstrap_if_ready(void);
 
 static int64_t now_ns(void) {
     struct timespec ts; clock_gettime(CLOCK_MONOTONIC, &ts);
@@ -1172,6 +1175,8 @@ static void surface_commit(struct wl_client *c, struct wl_resource *r) {
         if (s->has_content) map_toplevel(s);
         else unmap_toplevel(s);
     }
+    if (s->role == ROLE_TOPLEVEL || s->role == ROLE_DESKTOP)
+        pointer_bootstrap_if_ready();
     schedule_render();
 }
 static void surface_set_buffer_transform(struct wl_client *c, struct wl_resource *r, int32_t t) {}
@@ -1629,6 +1634,7 @@ static void desktop_set_desktop(struct wl_client *c, struct wl_resource *r, stru
     s->role = ROLE_DESKTOP;
     g_desktop = s;
     alroot_log("desktop", "Windows virtual desktop created by %s", client_name(c));
+    pointer_bootstrap_if_ready();
     schedule_render();
 }
 static void desktop_set_window(struct wl_client *c, struct wl_resource *r, struct wl_resource *surface,
@@ -2357,6 +2363,7 @@ static void seat_get_pointer(struct wl_client *c, struct wl_resource *r, uint32_
     if (!p) { wl_client_post_no_memory(c); return; }
     wl_resource_set_implementation(p, &pointer_impl, NULL, pointer_res_destroy);
     if (g_nptrs < MAX_PTRS) { g_ptrs[g_nptrs].ptr = p; g_ptrs[g_nptrs].focus = NULL; g_nptrs++; }
+    pointer_bootstrap_if_ready();
 }
 static void seat_get_keyboard(struct wl_client *c, struct wl_resource *r, uint32_t id) {
     struct wl_resource *k = wl_resource_create(c, &wl_keyboard_interface, wl_resource_get_version(r), id);
@@ -2501,9 +2508,41 @@ struct relative_pointer {
 };
 static struct wl_list g_relative_pointers;
 
-static double g_ptr_x, g_ptr_y;
+static double g_ptr_x = INPUT_SPACE_W / 2.0;
+static double g_ptr_y = INPUT_SPACE_H / 2.0;
 static double g_raw_x, g_raw_y;
 static int g_raw_valid;
+static int g_pointer_bootstrap_pending = 1;
+static int g_pointer_input_seen;
+
+static void pointer_input(double x, double y, int relative, uint32_t button, int pressed);
+static void pointer_bootstrap_if_ready(void) {
+    if (!g_pointer_bootstrap_pending || !g_display || !g_nptrs) return;
+    struct surface *target = NULL;
+    if (g_desktop) {
+        if (!g_desktop->has_content) return;
+        target = g_desktop;
+    } else {
+        target = toplevel_at(g_ptr_x, g_ptr_y);
+        if (!target || !target->mapped) return;
+    }
+    if (!pointer_for(wl_resource_get_client(target->resource))) return;
+    // The first mapped desktop can use a different resolution. Only center
+    // while no user movement has occurred. A tap during server startup must
+    // instead receive its first wl_pointer.enter at its real coordinates.
+    if (!g_pointer_input_seen) {
+        int scene_w, scene_h;
+        scene_size(&scene_w, &scene_h);
+        g_ptr_x = (scene_w - 1) / 2.0;
+        g_ptr_y = (scene_h - 1) / 2.0;
+    }
+    g_pointer_bootstrap_pending = 0;
+    // Emit the initial enter/motion at the already-central host position.
+    // Do NOT warp after an actual pointer event, focus change or reattach.
+    pointer_input(g_ptr_x, g_ptr_y, 0, 0, 0);
+    alroot_log("pointer", "initial seat focus at %d,%d (once per host)",
+               (int)g_ptr_x, (int)g_ptr_y);
+}
 
 extern void alroot_on_pointer_lock(int locked, int x, int y);
 
@@ -2830,6 +2869,7 @@ static int send_relative_motion(struct wl_client *client, double dx, double dy) 
 
 
 static void pointer_input(double x, double y, int relative, uint32_t button, int pressed) {
+    g_pointer_input_seen = 1;
     struct surface *target;
     struct constraint *k = g_active_constraint;
     double dx, dy;
@@ -2867,6 +2907,7 @@ static void pointer_input(double x, double y, int relative, uint32_t button, int
         }
     }
     if (!target) return;
+    g_pointer_bootstrap_pending = 0;
 
     struct wl_client *client = wl_resource_get_client(target->resource);
     struct seat_pointer *sp;
@@ -3493,6 +3534,11 @@ static void start_test_input(struct wl_event_loop *loop) {
 static struct wl_listener g_client_created = { .notify = on_client_created };
 
 int alroot_wayland_run(void) {
+    g_ptr_x = INPUT_SPACE_W / 2.0;
+    g_ptr_y = INPUT_SPACE_H / 2.0;
+    g_raw_valid = 0;
+    g_pointer_bootstrap_pending = 1;
+    g_pointer_input_seen = 0;
     wl_list_init(&g_surfaces);
     wl_list_init(&g_toplevels);
     wl_list_init(&g_outputs);

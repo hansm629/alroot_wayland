@@ -878,3 +878,37 @@ then type `ABC xyz !?`, switch English→Korean, type/delete `한글`, and
 check that old English does not reappear and the composing cursor stays
 visible. The real Android display acceptance remains TEST-PENDING until
 the user confirms it; private Xvfb is not a substitute for a Samsung IME.
+
+## P16: Samsung English replay on Hangul DEL and cursor at startup
+
+Preserve the working P14 VTE caret and P15 uppercase Shift logic. P16
+changes only Android IME replay bookkeeping, short duplicate-delete
+handling, and the initial Android/Wayland pointer coordinates. No
+global VTE, keyboard map, X11 :0, DPI, battery, Labwc or XFCE profile
+replacement is involved.
+
+Regression tests on a disposable Xvfb:
+
+    cd ~/alroot_wayland
+    mkdir -p .source/p16-jvm
+    javac -encoding UTF-8 -d .source/p16-jvm app/src/main/java/com/alroot/wayland/ImeCommitState.java tests/ImeCommitStateTest.java
+    java -cp .source/p16-jvm ImeCommitStateTest
+    bash tests/p11-native-integration.sh
+    bash tests/p14-vte-caret-smoke.sh
+    bash tests/p15-uppercase-smoke.sh
+
+The new P16 GTK case explicitly reproduces an old English prefix
+attached to native Hangul, an IME preedit clear before Backspace, and
+a progressive old-English replay. It expects exactly the original
+'hello' with no duplicate and no unexpected deletion. The pointer
+startup has an Android-native portion; validate its first position on
+real S26U after the APK update, not with Xvfb alone.
+
+After saving current Alroot XFCE work, install the locally signed
+v0.1.17 through the existing 'awstart --install-apk' Android
+confirmation flow. Stop/restart ONLY the Alroot session to load the
+new native host (do not restart or kill unrelated Termux-X11).
+Test fresh host→Labwc→XFCE without touching the screen and check that
+the cursor is centered from the first visible desktop frame. Then
+test 'hello'→'한글'→delete Hangul→'hello' remains exactly once, followed
+by new English 'h', Korean caret, uppercase and two-finger scroll.
