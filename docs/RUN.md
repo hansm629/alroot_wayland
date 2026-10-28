@@ -600,6 +600,65 @@ Test typing and immediate Backspace in both XFCE terminal and Mousepad
 just after switching from English to Korean. Do not mark actual Samsung
 keyboard experience PASS on headless evidence alone.
 
+## P11: native Fcitx5 Hangul composition with XTEST fallback
+
+The remaining Korean cursor flicker came from XTEST: changing a
+composing syllable such as 한 to 하 required Backspace plus inserting
+another Unicode character. This causes GTK to recalculate cursor/text
+positions, even if the intermediate empty rendered frame is avoided.
+
+P11 introduces an Alroot-only Fcitx5 addon built against the installed
+Termux Fcitx5Core C++ API. Android InputConnection still emits C
+(composition) and T (commit) over the existing persistent local socket.
+The native broker asks the addon whether the focused GTK/Qt input
+context supports true client-side preedit. On acceptance it calls
+InputPanel::setClientPreedit / InputContext::updatePreedit and final
+InputContext::commitString instead of destructive XTEST replacements.
+The addon acknowledges each accepted request with a one-byte reply;
+if no focused compatible frontend exists the broker uses its existing
+Unicode XTEST path. It never duplicates a request after an uncertain
+acknowledgment. Ordinary English/ASCII stays on the old XTEST path.
+
+All native addon libraries/configuration are isolated to
+~/.alroot-wayland/fcitx-addon and ~/.alroot-wayland/fcitx-data.
+GTK_IM_MODULE, QT_IM_MODULE and XMODIFIERS are overridden only for
+the project's XFCE child session, not for the original Termux-X11 :0
+session or global Termux. The APK's JNI graphics/backend and Vulkan
+paths are unchanged.
+
+Run the isolated non-destructive P11 test suite:
+
+    bash ~/alroot_wayland/tests/p11-smoke.sh
+
+Tests include private Xvfb/D-Bus native GTK preedit (three preedit
+changes, one actual text commit); XFCE VTE terminal Korean text;
+English/ASCII unchanged XTEST; focused raw Xlib XTEST fallback both
+before and after GTK; Korean commit then Backspace and a new syllable;
+and English followed by Korean without duplication. It also retains
+the P10 XTEST-only and P08 battery/wallpaper regression coverage.
+
+The native input frontend was additionally tested on the S26U's real
+Alroot Xwayland :90: the addon loaded, GTK preedit/commit and terminal
+Korean text worked, and raw Xlib Korean/English fallback remained
+available. Physical Samsung soft-keyboard cursor appearance is still
+an on-device acceptance step and cannot be proven from synthetic input.
+
+The new Fcitx5 input backend is selected by default on the Alroot
+project only when its private build succeeds. To switch back to the
+previous stable XTEST path if an app misbehaves:
+
+    awstart --ime-xtest
+    awstart --restart
+
+To select native Fcitx5 again:
+
+    awstart --ime-fcitx
+    awstart --restart
+
+The preference is stored only in ~/.alroot-wayland/ime-backend.
+An awstart --status check shows NATIVE_FCITX when the addon's private
+Unix socket is ready. No global desktop/input settings are modified.
+
 ## P10: smooth Korean caret during Backspace and composition
 
 User P09 acceptance: the critical Korean typing/deletion delay was fixed.

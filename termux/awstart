@@ -28,6 +28,8 @@ awstart --logs                    Show project-specific logs
 awstart --doctor                  Check APK, CLI, Labwc and Termux dependencies
 awstart --smoke                   Run safe local preflight checks
 awstart --refresh-diag            Check actual Xwayland mode and Android VSync logs
+awstart --ime-fcitx               Prefer native Fcitx5 Hangul preedit on next start
+awstart --ime-xtest               Restore legacy XTEST input on next start
 awstart --install-apk             Open Android installer for signed P01 APK
 awstart --debug                   Show more launch and status information
 awstart --dry-run                 Preview without opening apps or changing files
@@ -112,7 +114,7 @@ while (($#)); do
         --no-wait) no_wait=1 ;;
         --debug) debug=1 ;;
         --dry-run) dry_run=1 ;;
-        --open|--stop|--status|--logs|--doctor|--smoke|--refresh-diag|--install-apk|--restart)
+        --open|--stop|--status|--logs|--doctor|--smoke|--refresh-diag|--install-apk|--restart|--ime-fcitx|--ime-xtest)
             ((primary_action_count+=1))
             action="${1#--}" ;;
         --nogpu|--no-gpu)
@@ -129,6 +131,16 @@ done
 [[ -r "$CLI" ]] || die "Missing Alroot session CLI: $CLI"
 
 case "$action" in
+    ime-fcitx|ime-xtest)
+        preferred="${action#ime-}"
+        ((dry_run)) && { msg "Would use $preferred IME on the next project session start"; exit 0; }
+        mkdir -p "$STATE"
+        chmod 700 "$STATE"
+        printf '%s\n' "$preferred" > "$STATE/ime-backend"
+        chmod 600 "$STATE/ime-backend"
+        msg "Alroot IME preference: $preferred (takes effect after awstart --restart)"
+        msg 'Original Termux-X11 :0 and installed APK were not changed.'
+        exit 0 ;;
     status)
         app_status
         exec "$PREFIX/bin/bash" "$CLI" status ;;

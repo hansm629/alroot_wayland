@@ -291,6 +291,33 @@ Do not promote code existence or build success into screen/input PASS.
   It cannot guarantee zero GTK internal change notifications or
   eliminate every possible visual cursor animation. True inline
   composition would require later XIM/GTK bridge work.
+
+## P11 2026-10-28 — Fcitx5 native preedit integrated
+
+- User P10 acceptance: serious Korean input latency was fixed, but
+  cursor movement/flickering remained while composing/deleting Korean.
+  XTEST Backspace+Unicode cannot truly emulate GTK preedit.
+- New Termux-native, project-private Fcitx5 addon uses focused input
+  context's clientPreedit/updatePreedit and commitString methods.
+  The broker preserves existing XTEST for English, raw Xlib/unsupported
+  clients, and committed-text deletion. Reply acknowledgments prevent
+  double delivery; no clipboard access or typed-text logging.
+- Project-only Fcitx5 build, private XFCE session GTK/Qt input module
+  environment, automatic addon loading and opt-out preference via
+  awstart --ime-xtest were implemented. No global Fcitx5 changes.
+- On isolated Xvfb/D-Bus, native GTK saw three preedit notifications
+  and only ONE real text change at commit. XFCE VTE received Hangul
+  correctly. English unchanged XTEST and raw Xlib fallback passed;
+  switching GTK -> Xlib -> GTK worked with zero uncertain deliveries.
+- Extra native GTK edit checks passed for committed Korean deletion
+  followed by another syllable, and English-to-Korean no-duplication.
+  Previous P10 XTEST-only and P08 battery/wallpaper tests were retained.
+- On live S26U Alroot :90 (not just Xvfb) the addon autoloaded,
+  correct GTK/terminal native preedit and raw Xlib Korean/ASCII XTEST
+  fallback were observed. P10 battery, wallpaper, PiP, real 120Hz
+  display mode, and original Termux-X11 :0 remained untouched.
+- User's actual Samsung touch-keyboard UI and visual cursor flicker
+  acceptance are still TEST-PENDING after the new signed APK.
 - P04 refresh stability: Choreographer measured timestamp jitter briefly
   caused the older code to advertise 122Hz despite the physical mode
   remaining 120Hz. This release retains the actual Android active physical

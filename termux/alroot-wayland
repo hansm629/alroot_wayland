@@ -161,6 +161,14 @@ xfce_start() {
         # socket in this isolated runtime despite DISPLAY pointing at Xwayland.
         # This is the *rootful X11 desktop*, NOT Labwc or the Android host.
         export GDK_BACKEND=x11 QT_QPA_PLATFORM=xcb SDL_VIDEODRIVER=x11
+        if [[ -f "$STATE/ime-fcitx-enabled" ]]; then
+            # Isolated Xwayland desktop only. GTK/Qt with native IM can
+            # update actual preedit; other clients retain XTEST fallback.
+            export GTK_IM_MODULE=fcitx QT_IM_MODULE=fcitx XMODIFIERS=@im=fcitx
+            export FCITX_DATA_HOME="$STATE/fcitx-data"
+            export FCITX_ADDON_DIRS="$STATE/fcitx-addon:$PREFIX/lib/fcitx5"
+            export ALROOT_FCITX_BRIDGE_SOCKET="$STATE/ipc/ime-fcitx.sock"
+        fi
         export DESKTOP_SESSION=xfce XDG_CURRENT_DESKTOP=XFCE
         unset WAYLAND_DISPLAY DBUS_SESSION_BUS_ADDRESS SESSION_MANAGER
         export NO_AT_BRIDGE=1
@@ -195,6 +203,9 @@ ime_start() {
     (
         export DISPLAY="$display" XAUTHORITY="$STATE/Xauthority" \
                HOME PREFIX PATH="$PREFIX/bin:$PREFIX/bin/applets"
+        if [[ -f "$STATE/ime-fcitx-enabled" ]]; then
+            export ALROOT_FCITX_BRIDGE_SOCKET="$STATE/ipc/ime-fcitx.sock"
+        fi
         exec "$binary" "$STATE/ipc/ime.sock"
     ) > "$LOGS/ime-server.log" 2>&1 &
     record_pid ime "$!"
@@ -259,7 +270,7 @@ start_xwayland() {
 }
 
 start_session() {
-    local profile="$1"
+    local profile="$1" preferred_ime="fcitx"
     [[ "$profile" == xfce-labwc || "$profile" == xfce-shm-direct ]] || {
         echo "Unsupported profile: $profile" >&2; return 2;
     }
@@ -316,6 +327,25 @@ start_session() {
         fi
     fi
     start_xwayland "$parent"
+    rm -f "$STATE/ime-fcitx-enabled" "$STATE/ipc/ime-fcitx.sock"
+    if [[ -r "$STATE/ime-backend" ]]; then
+        IFS= read -r preferred_ime < "$STATE/ime-backend" || true
+    fi
+    preferred_ime="${ALROOT_IME_BACKEND:-$preferred_ime}"
+    if [[ "$preferred_ime" != fcitx && "$preferred_ime" != xtest ]]; then
+        echo 'WARNING: invalid private IME preference; using XTEST' >&2
+        preferred_ime=xtest
+    fi
+    if [[ "$preferred_ime" == fcitx ]]; then
+        if "$PREFIX/bin/bash" "$HOME/alroot_wayland/termux/build-fcitx-bridge.sh" \
+                > "$LOGS/ime-fcitx-build.log" 2>&1; then
+            touch "$STATE/ime-fcitx-enabled"
+            chmod 600 "$STATE/ime-fcitx-enabled"
+        else
+            echo 'WARNING: Fcitx native bridge build unavailable; use XTEST' >&2
+        fi
+    fi
+    echo "IME route requested: $preferred_ime (XTEST fallback available)"
     ime_start "$(cat "$STATE/display")"
     xfce_start "$(cat "$STATE/display")"
     clipboard_start "$(cat "$STATE/display")"
@@ -368,6 +398,17 @@ case "${1:-}" in
             if alive "$role"; then echo "$role: RUNNING $(cut -d' ' -f1 "$STATE/$role.pid")"
             else echo "$role: DOWN"; fi
         done
+        if [[ -f "$STATE/ime-fcitx-enabled" ]]; then
+            if [[ -S "$STATE/ipc/ime-fcitx.sock" ]]; then
+                echo 'ime_frontend: NATIVE_FCITX (ready; XTEST fallback supported)'
+            else
+                echo 'ime_frontend: NATIVE_FCITX (waiting; XTEST fallback)'
+            fi
+        else
+            echo 'ime_frontend: XTEST (legacy)'
+        fi
+        [[ ! -r "$STATE/ime-backend" ]] ||
+            echo "ime_preference: $(cat "$STATE/ime-backend")"
         if x11_desktop_ready; then
             echo 'x11_desktop: READY (xfwm4 + xfdesktop + xfce4-panel on isolated Xwayland)'
         else
@@ -378,6 +419,7 @@ case "${1:-}" in
         ;;
     stop)
         rm -f "$STATE/ime-active"
+        rm -f "$STATE/ime-fcitx-enabled"
         stop_one ime
         stop_one clipboard
         stop_one xfce
@@ -390,7 +432,7 @@ case "${1:-}" in
         am start -n com.alroot.wayland/.MainActivity
         ;;
     logs)
-        for f in "$LOGS"/{labwc,xwayland,xfce,clipboard,ime-server,ime-build,refresh,upower}.log "$STATE/spawn.log"; do
+        for f in "$LOGS"/{labwc,xwayland,xfce,clipboard,ime-server,ime-build,ime-fcitx-build,refresh,upower}.log "$STATE/spawn.log"; do
             if [[ -r "$f" ]]; then echo "--- $f"; tail -24 "$f"; fi
         done
         ;;

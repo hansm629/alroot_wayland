@@ -18,6 +18,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <time.h>
 #include <sys/socket.h>
 #include <sys/stat.h>
 #include <sys/un.h>
@@ -41,6 +42,85 @@ static char socket_path[sizeof(((struct sockaddr_un*)0)->sun_path)];
 static char composing[MAX_TEXT+1];
 static uint64_t count_ok, count_err, output_bytes;
 static uint64_t total_ns;
+static char fcitx_socket_path[sizeof(((struct sockaddr_un*)0)->sun_path)];
+static int fcitx_fd = -1;
+static int64_t last_fcitx_attempt_ns;
+static uint64_t native_preedit, xtest_preedit, native_uncertain;
+enum { ROUTE_UNDECIDED, ROUTE_FCITX, ROUTE_XTEST };
+static int active_route = ROUTE_UNDECIDED;
+static Window route_focus = None;
+static int64_t ns_now(void);
+
+static void fcitx_disconnect(void) {
+    if (fcitx_fd >= 0) close(fcitx_fd);
+    fcitx_fd = -1;
+}
+/*
+ * Returns 1 only when the focused GTK/Qt input context acknowledges native
+ * clientPreedit/commit, 0 when no usable frontend exists, -1 when delivery
+ * may have occurred but acknowledgment was lost. NEVER fall back to XTEST
+ * after an uncertain send; it could double-insert the same character.
+ */
+static int fcitx_request(char operation, const char *data, size_t size) {
+    if (!fcitx_socket_path[0]) return 0;
+    if (fcitx_fd < 0) {
+        const int64_t now = ns_now();
+        if (last_fcitx_attempt_ns &&
+            now - last_fcitx_attempt_ns < 150000000LL) return 0;
+        last_fcitx_attempt_ns = now;
+        int fd = socket(AF_UNIX,
+                        SOCK_STREAM | SOCK_CLOEXEC | SOCK_NONBLOCK, 0);
+        if (fd < 0) return 0;
+        struct sockaddr_un address = {0};
+        address.sun_family = AF_UNIX;
+        strncpy(address.sun_path, fcitx_socket_path,
+                sizeof(address.sun_path)-1);
+        int rc = connect(fd, (struct sockaddr *)&address, sizeof(address));
+        if (rc < 0 && errno == EINPROGRESS) {
+            struct pollfd p = {.fd = fd, .events = POLLOUT};
+            if (poll(&p, 1, 30) != 1 || !(p.revents & POLLOUT)) {
+                close(fd);
+                return 0;
+            }
+            int error=0;
+            socklen_t bytes=sizeof(error);
+            if (getsockopt(fd,SOL_SOCKET,SO_ERROR,&error,&bytes)<0 || error) {
+                close(fd);
+                return 0;
+            }
+        } else if (rc < 0) {
+            close(fd);
+            return 0;
+        }
+        fcitx_fd=fd;
+    }
+    unsigned char frame[MAX_TEXT+5];
+    frame[0]=(unsigned char)operation;
+    uint32_t length=htonl((uint32_t)size);
+    memcpy(frame+1,&length,4);
+    if (size) memcpy(frame+5,data,size);
+    const ssize_t sent=send(fcitx_fd,frame,size+5,MSG_NOSIGNAL);
+    if (sent < 0 && (errno==EPIPE || errno==ECONNRESET ||
+                     errno==ENOTCONN || errno==EAGAIN)) {
+        fcitx_disconnect();
+        return 0;  // Kernel accepted no data.
+    }
+    if (sent != (ssize_t)(size+5)) {
+        fcitx_disconnect();
+        return -1; // Partial write may have reached the addon.
+    }
+    struct pollfd p={.fd=fcitx_fd,.events=POLLIN};
+    if (poll(&p,1,30)!=1 || !(p.revents & POLLIN)) {
+        fcitx_disconnect();
+        return -1;
+    }
+    char ack=0;
+    if (recv(fcitx_fd,&ack,1,MSG_DONTWAIT)!=1) {
+        fcitx_disconnect();
+        return -1;
+    }
+    return ack=='1' ? 1 : (ack=='0' ? 0 : -1);
+}
 
 static int64_t ns_now(void) {
     struct timespec t;
@@ -210,8 +290,49 @@ static Window current_focus(void) {
 static void process(char op, const char *text, size_t len) {
     int64_t start=ns_now();
     bool good=true;
+    Window focus=current_focus();
+    if (focus != route_focus) {
+        route_focus=focus;
+        active_route=ROUTE_UNDECIDED;
+        composing[0]=0;
+    }
     if (op=='C' || op=='T') {
-        Window focus=current_focus();
+        // Keep the previously working English/ASCII XTEST path unchanged.
+        // Native Fcitx composition is selected for Unicode (Hangul) text
+        // or for a composition already owned by the native frontend.
+        bool unicode = false;
+        for (size_t i=0; i<len; ++i) {
+            if (((unsigned char)text[i]) & 0x80) { unicode=true; break; }
+        }
+        if (active_route!=ROUTE_XTEST &&
+                (active_route==ROUTE_FCITX || unicode)) {
+            int result=fcitx_request(op,text,len);
+            if (result==1) {
+                native_preedit++;
+                composing[0]=0; // Native GTK preedit is not real X11 text.
+                active_route=(op=='C')?ROUTE_FCITX:ROUTE_UNDECIDED;
+                good=true;
+                goto processed;
+            }
+            if (result<0 || active_route==ROUTE_FCITX) {
+                // A native preedit may already exist. Falling back now
+                // could double-insert its final text. Wait for a new focus
+                // or future composition rather than corrupting the editor.
+                native_uncertain++;
+                good=false;
+                goto processed;
+            }
+            active_route=ROUTE_XTEST;
+        }
+        xtest_preedit++;
+    } else if (op=='F' || op=='R') {
+        if (active_route==ROUTE_FCITX)
+            (void)fcitx_request(op,text,len);
+        active_route=ROUTE_UNDECIDED;
+        composing[0]=0;
+        goto processed;
+    }
+    if (op=='C' || op=='T') {
         if (focus != focus_at_composition && composing[0]) composing[0]=0;
         if (op=='C') focus_at_composition=focus;
         size_t prior=common_prefix(composing,text);
@@ -226,7 +347,10 @@ static void process(char op, const char *text, size_t len) {
             if(good && len>prior)good=send_utf8(text+prior,len-prior);
             if(good) {
                 if(op=='C')memcpy(composing,text,len+1);
-                else composing[0]=0;
+                else {
+                    composing[0]=0;
+                    active_route=ROUTE_UNDECIDED;
+                }
             }
         }
     } else if(op=='D') {
@@ -235,23 +359,28 @@ static void process(char op, const char *text, size_t len) {
             erase(before,XK_BackSpace);erase(after,XK_Delete);
             composing[0]=0;
         } else good=false;
-    } else if(op=='F' || op=='R') {
-        composing[0]=0;
     } else good=false;
     XFlush(display);
+processed:
     if(good)count_ok++;else count_err++;
     output_bytes+=len;
     total_ns+=(uint64_t)(ns_now()-start);
     if((count_ok+count_err)%40==0) {
-        fprintf(stderr,"IME-SERVER events=%llu failed=%llu avg-delivery-ms=%.3f bytes=%llu clipboard=UNTOUCHED\n",
+        fprintf(stderr,"IME-SERVER events=%llu failed=%llu avg-delivery-ms=%.3f bytes=%llu XIM=%llu XTEST=%llu uncertain=%llu clipboard=UNTOUCHED\n",
                 (unsigned long long)count_ok,(unsigned long long)count_err,
                 total_ns/1000000.0/(count_ok+count_err),
-                (unsigned long long)output_bytes);
+                (unsigned long long)output_bytes,
+                (unsigned long long)native_preedit,
+                (unsigned long long)xtest_preedit,
+                (unsigned long long)native_uncertain);
     }
 }
 static void client_close(void) {
+    if (active_route==ROUTE_FCITX)
+        (void)fcitx_request('R',"",0);
     if(client>=0)close(client);
     client=-1;incoming_len=0;composing[0]=0;
+    active_route=ROUTE_UNDECIDED;
 }
 static bool receive_packets(void) {
     ssize_t count=recv(client,incoming+incoming_len,
@@ -286,6 +415,9 @@ int main(int argc,char **argv) {
         return 2;
     }
     strcpy(socket_path,argv[1]);
+    const char *fcitx_env=getenv("ALROOT_FCITX_BRIDGE_SOCKET");
+    if (fcitx_env && strlen(fcitx_env)<sizeof(fcitx_socket_path))
+        strcpy(fcitx_socket_path,fcitx_env);
     signal(SIGINT,shutdown_flag);
     signal(SIGTERM,shutdown_flag);
     display=XOpenDisplay(NULL);
@@ -320,10 +452,14 @@ int main(int argc,char **argv) {
     }
     client_close();
     if(server>=0)close(server);
+    fcitx_disconnect();
     unlink(socket_path);
     restore_keymap();
     XCloseDisplay(display);
-    fprintf(stderr,"IME-SERVER stopped events=%llu failures=%llu\n",
-            (unsigned long long)count_ok,(unsigned long long)count_err);
+    fprintf(stderr,"IME-SERVER stopped events=%llu failures=%llu native_preedit=%llu xtest_preedit=%llu uncertain=%llu\n",
+            (unsigned long long)count_ok,(unsigned long long)count_err,
+            (unsigned long long)native_preedit,
+            (unsigned long long)xtest_preedit,
+            (unsigned long long)native_uncertain);
     return 0;
 }
