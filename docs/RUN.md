@@ -800,3 +800,51 @@ because the current compatibility layer uses XTEST Backspace+Unicode,
 not full XIM/GTK composing-range integration. If real device flicker
 persists, XIM integration is the appropriate next step; avoid adding
 large delays to a working input path.
+
+## P14: visible Hangul composing caret in XFCE terminal
+
+P13 user acceptance: Korean input/deletion works well, but the regular
+insertion caret is visible for English/symbols and hidden for Korean
+composition. This is a VTE renderer behavior: VTE 0.84.1 does not draw
+its usual cursor while native preedit is active, and only draws a
+preedit-specific cursor if its position is *inside* the composing
+string. At the end of a Hangul syllable the Fcitx5 cursor is correctly
+equal to the preedit length, so nothing is drawn.
+
+P14 patches only the preedit cursor drawing within GNOME VTE 0.84.1.
+The new position includes the end of the text and respects the
+terminal's selected I-beam, block or underline cursor shape. It does
+NOT change the Android InputConnection, Fcitx5 C/T/D protocol, English
+typing, IME timing, Xwayland, DPI, battery, wallpaper, PiP, or GPU.
+
+The original source checkout is pinned to GNOME/vte release 0.84.1 and
+its exact commit; see termux/patches/vte-0.84.1-caret.patch. The
+project-private build enables GnuTLS, ICU, accessibility and GTK3 and
+installs the library under ~/.alroot-wayland/vte-private/. A scoped
+terminal launcher in ~/.alroot-wayland/bin/xfce4-terminal resolves
+only Alroot Xwayland :90 or :90.0, checks the installed VTE version,
+and loads the patched library only in a new Alroot terminal process.
+Pre-P14 terminal singleton processes are not killed; while they
+remain alive, newly launched scoped terminals use a separate instance.
+Original Termux-X11 :0 and system libvte are never overwritten.
+
+Build and test:
+
+    bash ~/alroot_wayland/termux/build-vte-caret.sh
+    bash ~/alroot_wayland/tests/p14-vte-caret-smoke.sh
+    awstart --status
+
+The private Xvfb A/B regression compares original and modified VTE
+screenshots with a real native Fcitx5 Hangul composition. On S26U it
+found 84 different pixels confined to the composing caret rectangle
+(2 by 42 pixels) and zero difference after the same syllable was
+committed. A live Alroot :90.0 terminal launched via the scoped wrapper
+was also confirmed to map the project-private VTE library.
+
+No APK update is needed for P14, because only the Termux/XFCE VTE
+library changes. Keep Android helper P13 v0.1.15 installed. Open a
+new XFCE terminal after applying this build; any previously running
+unmodified terminal continues to use its existing system VTE. To
+open a legacy unmodified terminal explicitly, run the original
+Termux path /data/data/com.termux/files/usr/bin/xfce4-terminal
+with --disable-server rather than the Alroot launcher.

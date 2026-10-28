@@ -374,3 +374,26 @@ Do not promote code existence or build success into screen/input PASS.
   remaining 120Hz. This release retains the actual Android active physical
   Display rate as the wl_output authority; timing measurements remain
   diagnostic only, preventing transient nonphysical modes.
+
+## P14 2026-10-28 — scoped native Hangul caret renderer in VTE
+
+- P13 user acceptance: Korean typing/deletion nearly perfect, but the
+  ordinary insertion caret disappears during native Hangul composing.
+- Reproduced the issue in both a pure GTK3/VTE test and XFCE terminal,
+  while GTK text-entry widgets showed a normal caret. In pinned VTE
+  0.84.1, paint_cursor skips preedit, and paint_im_preedit_string draws
+  a caret only for preedit_cursor less than len. Native Fcitx5 correctly
+  reports a position equal to len after the last Hangul character.
+- Patched only the preedit caret drawing logic, keeping all Fcitx5 and
+  Android input, text, clipboard and GPU paths unchanged. Builds
+  LGPL-compliant project-only VTE with GnuTLS, ICU and a11y support.
+- Verified private Xvfb original-vs-patched screenshots: composing
+  differed by exactly 84 pixels at the insertion caret; committed
+  display was byte-for-byte pixel identical. Visual regression suite
+  now lives at tests/p14-vte-caret-smoke.sh.
+- Project-only XFCE terminal wrapper loads private VTE at Alroot :90
+  or :90.0. Live /proc process map verified the patched library. The
+  installed native Termux libvte SHA256 and original X11 :0 remained
+  unchanged. Existing terminal server processes are never killed.
+- The Android helper APK remains P13 v0.1.15. P14 needs no new APK,
+  only the scoped VTE build/launcher and a new XFCE terminal window.

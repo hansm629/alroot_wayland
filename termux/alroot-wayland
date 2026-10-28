@@ -151,6 +151,22 @@ xfce_start() {
     "$PREFIX/bin/python3" "$HOME/alroot_wayland/termux/configure-fastfetch.py" \
         >> "$LOGS/profile.log" 2>&1 ||
         echo 'WARNING: project fastfetch format override could not be prepared' >&2
+    # P14: native Fcitx5 preedit is already correct, but VTE 0.84.1 hides
+    # its ordinary caret during any IM preedit. A pinned LGPL VTE patch
+    # draws the composing caret *only* for Alroot XFCE terminal. Its
+    # native library/launcher are project-local; original Termux-X11 :0,
+    # global libvte and other GTK clients are never modified.
+    if [[ -f "$STATE/ime-fcitx-enabled" ]]; then
+        local private_vte="$STATE/vte-private/libvte-2.91.so.0"
+        local terminal_link="$STATE/bin/xfce4-terminal"
+        local caret_patch="$HOME/alroot_wayland/termux/patches/vte-0.84.1-caret.patch"
+        if [[ ! -s "$private_vte" || "$caret_patch" -nt "$private_vte" ||
+              ! -L "$terminal_link" ]]; then
+            "$PREFIX/bin/bash" "$HOME/alroot_wayland/termux/build-vte-caret.sh" \
+                > "$LOGS/vte-caret-build.log" 2>&1 ||
+                echo 'WARNING: Alroot-only VTE caret build unavailable; system terminal remains usable' >&2
+        fi
+    fi
     (
         # Only this Alroot XFCE session gets private mpd/mprun/pdrun wrappers.
         export HOME PREFIX PATH="$STATE/bin:$PREFIX/bin:$PREFIX/bin/applets"
@@ -447,6 +463,13 @@ case "${1:-}" in
             echo "ime_preference: $(cat "$STATE/ime-backend")"
         [[ ! -r "$STATE/labwc-geometry" ]] ||
             echo "labwc_geometry: $(cat "$STATE/labwc-geometry") (X11 DPI 96)"
+        if [[ -f "$STATE/ime-fcitx-enabled" &&
+              -s "$STATE/vte-private/libvte-2.91.so.0" &&
+              -L "$STATE/bin/xfce4-terminal" ]]; then
+            echo 'xfce_terminal_caret: PRIVATE_VTE_0.84.1 (native Hangul preedit cursor)'
+        else
+            echo 'xfce_terminal_caret: SYSTEM_VTE (no scoped cursor override)'
+        fi
         if x11_desktop_ready; then
             echo 'x11_desktop: READY (xfwm4 + xfdesktop + xfce4-panel on isolated Xwayland)'
         else
@@ -471,7 +494,7 @@ case "${1:-}" in
         am start -n com.alroot.wayland/.MainActivity
         ;;
     logs)
-        for f in "$LOGS"/{labwc,nested-output,nested-output-build,xwayland,xfce,clipboard,ime-server,ime-build,ime-fcitx-build,refresh,upower}.log "$STATE/spawn.log"; do
+        for f in "$LOGS"/{labwc,nested-output,nested-output-build,xwayland,xfce,clipboard,ime-server,ime-build,ime-fcitx-build,vte-caret-build,refresh,upower}.log "$STATE/spawn.log"; do
             if [[ -r "$f" ]]; then echo "--- $f"; tail -24 "$f"; fi
         done
         ;;

@@ -28,3 +28,12 @@ Purism SPC, permission/notice text included verbatim in that XML). The
 client implementation is Alroot project source, generated protocol stubs
 are compiled locally with wayland-scanner, and no Termux global library or
 original X11 output configuration is modified.
+
+P14 includes an Alroot-only patch to GNOME VTE 0.84.1 (pinned source
+commit f2223e45d7f04c5383c59e76772501f0ed4215bc). VTE retains its
+LGPL-3.0-or-later, GPL-3.0-or-later and MIT licenses and upstream
+copyright notices. The corresponding patch is retained in
+termux/patches/vte-0.84.1-caret.patch. The build script fetches and
+retains the matching upstream source in .source/p14-vte-src. Only the
+Alroot XFCE terminal loads the project-private modified VTE library;
+the native Termux libvte, Termux-X11 :0 and Android APK are unchanged.

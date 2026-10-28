@@ -1,0 +1,62 @@
+diff --git a/src/vte.cc b/src/vte.cc
+index 4f6b437..e389d19 100644
+--- a/src/vte.cc
++++ b/src/vte.cc
+@@ -9962,21 +9962,42 @@ Terminal::paint_im_preedit_string()
+ 							width, height);
+ 		preedit_cursor = m_im_preedit_cursor;
+ 
+-		if (preedit_cursor >= 0 && preedit_cursor < len) {
+-                        uint32_t fore, back, deco;
+-                        vte_color_triple_get(m_color_defaults.attr.colors(), &fore, &back, &deco);
+-
+-			/* Cursored letter in reverse. */
+-			draw_cells(
+-						&items[preedit_cursor], 1,
+-                                                fore, back, deco,
+-                                                TRUE,  /* clear */
+-                                                TRUE,  /* draw_default_bg */
+-                                                VTE_ATTR_NONE | VTE_ATTR_BOXED,
+-                                                FALSE, /* hyperlink */
+-                                                FALSE, /* hilite */
+-						width, height);
+-		}
++                if (preedit_cursor >= 0 && preedit_cursor <= len &&
++                    m_has_focus && m_modes_private.DEC_TEXT_CURSOR()) {
++                        // Keep the cursor visible at the actual preedit
++                        // insertion point, including AFTER the last glyph.
++                        // Existing VTE drops its normal cursor whenever
++                        // m_im_preedit_active and previously drew no cursor
++                        // at all for preedit_cursor == len.
++                        int before_columns = 0;
++                        for (int j = 0; j < preedit_cursor; ++j)
++                                before_columns += items[j].columns;
++                        const int cursor_col =
++                                std::clamp(int(vcol) + before_columns, 0,
++                                           int(m_column_count) - 1);
++                        const int cx = cursor_col * width;
++                        const int cy = row_to_pixel(m_screen->cursor.row);
++                        auto const fg = get_color(ColorPaletteIndex::default_fg());
++                        const int stroke = CLAMP(
++                                int(float(m_char_ascent + m_char_descent) *
++                                    m_cursor_aspect_ratio + 0.5f),
++                                VTE_LINE_WIDTH, m_cell_width);
++                        switch (decscusr_cursor_shape()) {
++                        case CursorShape::eIBEAM:
++                                m_draw.fill_rectangle(cx, cy + m_char_padding.top,
++                                                      stroke,
++                                                      m_char_ascent + m_char_descent, fg);
++                                break;
++                        case CursorShape::eUNDERLINE:
++                                m_draw.fill_rectangle(cx,
++                                                      cy + height - m_char_padding.bottom - stroke,
++                                                      width, stroke, fg);
++                                break;
++                        default:
++                                m_draw.fill_rectangle(cx, cy, width, height, fg);
++                                break;
++                        }
++                }
+ 		g_free(items);
+ 	}
+ }
