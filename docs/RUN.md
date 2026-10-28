@@ -548,3 +548,54 @@ The actual Termux libacpi.c parser was also compiled in an isolated
 diagnostic and correctly parsed the project cache's battery value.
 The P08 JVM corpus covers 15 typed-text, language-transition and
 deletion scenarios; it does not replace a physical IME test.
+
+## P09: restore responsive Korean composition and deletion
+
+User P08 acceptance: XFCE battery percentage and desktop wallpaper
+persistence were FIXED. In contrast, Korean typing and Backspace
+regressed to very late display after switching from English.
+
+Root cause: P07/P08 withheld every mutable Korean setComposingText
+from the X11 client until commitText, finish or a stable later syllable.
+The native input socket was fast, but X11 received no display changes
+for the currently composing character.
+
+P09 restores P06's immediate C composing path through the existing
+persistent UNIX socket and Unicode XTEST daemon, while retaining the
+P08 English echo-suppression history. The T commit operation finalizes
+already-visible text without reinserting it. Backspace edits currently
+visible composing text immediately. Duplicate KEYCODE_DEL and
+deleteSurroundingText events from a single keystroke are guarded in a
+short cross-source 55ms window while preserving same-source repeats.
+
+The native daemon now prewarms the next Unicode keymap before queueing
+Backspace and avoids a separate intermediate XFlush, reducing visible
+cursor clearing. It retains P06's spare Unicode keycode pool for
+different adjacent syllables. No clipboard/paste fallback is used.
+
+Standalone S26U regression suite (only private Xvfb, never :0 or :90):
+
+    bash ~/alroot_wayland/tests/p09-smoke.sh
+
+Tests include 20 JVM IME sequences covering immediate Hangul preedit
+and DEL, English-to-Korean switching, absence of double insertion and
+multi-syllable snapshots; 7 cross-API Backspace duplicate tests; actual
+Java state → UNIX socket → native XTEST → Xvfb GTK for immediate Korean
+visible on first preedit (roughly 1–2ms synthetic send-to-GTK); and
+existing P04 GTK/terminal plus P06 10/24 distinct syllable regressions.
+
+These results exclude actual Samsung IME touch handling and real display
+presentation. Fully native GTK/XIM inline preedit (underline/composing
+range) remains a later protocol integration; the XTEST workaround can
+replace a composing glyph but cannot implement full XIM semantics.
+Android logs aggregate queue time every 64 native composing requests
+without storing any user text.
+
+After installing the signed APK:
+
+    awstart --debug
+    logcat -d -s AlrootWayland | grep -E 'IME preedit received|IME real-time C queue|IME socket'
+
+Test typing and immediate Backspace in both XFCE terminal and Mousepad
+just after switching from English to Korean. Do not mark actual Samsung
+keyboard experience PASS on headless evidence alone.

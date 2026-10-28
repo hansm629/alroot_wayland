@@ -30,11 +30,37 @@ public final class ImeBridge {
     private static final HandlerThread ioThread = new HandlerThread("AlrootX11IME");
     private static final Handler io;
     private static final ImeCommitState composition = new ImeCommitState();
+    private static final ImeBackspaceGuard backspaceGuard =
+            new ImeBackspaceGuard();
     private static boolean asciiComposing;
     private static String asciiDraft = "";
     private static int lastLoggedEchoCount;
+    private static int receivedPreeditCount;
+    private static int measuredPreeditCount;
+    private static long measuredPreeditQueueNs;
+    private static long longestPreeditQueueNs;
     private static final ImeCommitState.Sink compositionSink =
             new ImeCommitState.Sink() {
+                @Override public void composing(String text) {
+                    // Native 'C' displays the mutable Korean syllable now,
+                    // matching the working P06/Termux-X11 immediate input.
+                    final long enqueuedNs = SystemClock.elapsedRealtimeNanos();
+                    io.post(() -> {
+                        long elapsed = Math.max(0,
+                                SystemClock.elapsedRealtimeNanos() - enqueuedNs);
+                        measuredPreeditCount++;
+                        measuredPreeditQueueNs += elapsed;
+                        longestPreeditQueueNs = Math.max(longestPreeditQueueNs, elapsed);
+                        send('C', text);
+                        if (measuredPreeditCount % 64 == 0) {
+                            Log.i(TAG, "IME real-time C queue avg-us=" +
+                                    measuredPreeditQueueNs / measuredPreeditCount / 1000 +
+                                    " max-us=" + longestPreeditQueueNs / 1000 +
+                                    " count=" + measuredPreeditCount +
+                                    " (no text captured)");
+                        }
+                    });
+                }
                 @Override public void committed(String text) {
                     io.post(() -> send('T', text));
                 }
@@ -103,6 +129,13 @@ public final class ImeBridge {
 
     public static synchronized void composing(String text) {
         long ms = SystemClock.elapsedRealtime();
+        receivedPreeditCount++;
+        if (receivedPreeditCount % 64 == 0) {
+            Log.i(TAG, "IME preedit received=" + receivedPreeditCount +
+                    " forwarded=" + composition.composingCount() +
+                    " socket-fallback=" + fallbacks +
+                    " (no text recorded)");
+        }
         if (asciiOnly(text)) {
             if (!asciiComposing && composition.duplicateAsciiComposing(text, ms)) {
                 maybeLogEchoSuppressions();
@@ -123,9 +156,10 @@ public final class ImeBridge {
             // Finalize the native composing range without retransmitting it.
             finalizeNativeAscii(ms);
         }
-        // Mutable Korean preedit stays in the Android IME. Only syllables
-        // proven stable by a later event are transmitted to Xwayland.
-        // This removes every speculative Backspace/insert repaint.
+        // DO NOT buffer Hangul until commitText. P07/P08's commit-only
+        // route was observed to freeze input and Backspace until the IME
+        // finalized the next syllable. We now forward every changed Korean
+        // composing string immediately to the persistent native C route.
         composition.composing(text, ms, compositionSink);
         maybeLogEchoSuppressions();
     }
@@ -172,16 +206,21 @@ public final class ImeBridge {
     public static synchronized void resetComposing() {
         finalizeNativeAscii(SystemClock.elapsedRealtime());
         composition.reset();
+        backspaceGuard.reset();
         io.post(() -> send('R', ""));
     }
 
     public static synchronized void newEditorContext() {
         finishComposing();
         composition.clearEditorContext();
+        backspaceGuard.reset();
         Log.d(TAG, "IME synthetic text context reset after pointer focus change");
     }
 
     public static synchronized void delete(int before, int after) {
+        if (before == 1 && after == 0 && backspaceGuard.isEcho(
+                ImeBackspaceGuard.SURROUNDING_TEXT, SystemClock.elapsedRealtime()))
+            return; // the same keypress was already sent via KEYCODE_DEL
         if (asciiComposing) {
             // Preserve the English composing range that is already visible
             // inside X11. Deleting one composing character is a native C
@@ -204,8 +243,11 @@ public final class ImeBridge {
         return composition.hasDraft();
     }
 
-    /** A software-keyboard DEL of uncommitted preedit must not erase X11. */
+    /** Apply DEL to the native, already-visible preedit immediately. */
     public static boolean deletePendingPreedit() {
+        if (backspaceGuard.isEcho(ImeBackspaceGuard.KEY_EVENT,
+                SystemClock.elapsedRealtime()))
+            return true; // surrounding-text Backspace already handled it
         if (!composition.hasDraft()) return false;
         composition.delete(1, 0, compositionSink);
         return true;

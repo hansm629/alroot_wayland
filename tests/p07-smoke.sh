@@ -7,9 +7,12 @@ cd "$PROJECT"
 mkdir -p .source/p07-java-test
 javac -encoding UTF-8 -d .source/p07-java-test \
     app/src/main/java/com/alroot/wayland/ImeCommitState.java \
+    app/src/main/java/com/alroot/wayland/ImeBackspaceGuard.java \
     app/src/main/java/com/alroot/wayland/TouchpadScrollState.java \
-    tests/ImeCommitStateTest.java tests/TouchpadScrollStateTest.java
+    tests/ImeCommitStateTest.java tests/ImeBackspaceGuardTest.java \
+    tests/TouchpadScrollStateTest.java
 java -cp .source/p07-java-test ImeCommitStateTest
+java -cp .source/p07-java-test ImeBackspaceGuardTest
 java -cp .source/p07-java-test TouchpadScrollStateTest
 bash -n termux/alroot-wayland termux/alroot-xfce-session.sh
 python3 -m py_compile termux/alroot-upower.py

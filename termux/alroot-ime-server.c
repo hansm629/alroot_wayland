@@ -87,11 +87,13 @@ static void keypress(KeySym symbol) {
     XTestFakeKeyEvent(display,key,True,CurrentTime);
     XTestFakeKeyEvent(display,key,False,CurrentTime);
 }
-static bool unicode_scalar(uint32_t cp) {
-    if (cp == '\n' || cp == '\r') { keypress(XK_Return); return true; }
-    if (cp == '\t') { keypress(XK_Tab); return true; }
+static KeyCode unicode_keycode(uint32_t cp) {
+    if (cp == '\n' || cp == '\r')
+        return XKeysymToKeycode(display, XK_Return);
+    if (cp == '\t')
+        return XKeysymToKeycode(display, XK_Tab);
     if (cp < 0x20 || cp == 0x7f || cp > 0x10ffff ||
-        (cp>=0xd800 && cp<=0xdfff)) return false;
+        (cp>=0xd800 && cp<=0xdfff)) return 0;
     KeySym sym=cp>=0x100 ? (KeySym)(0x01000000u|cp) : (KeySym)cp;
     // GTK interprets XTEST keypresses asynchronously. If a single spare
     // keycode is remapped on every Korean syllable, the client can decode
@@ -121,10 +123,37 @@ static bool unicode_scalar(uint32_t cp) {
         key_symbols[slot]=sym;
     }
     key_recency[slot]=++key_clock;
-    XTestFakeKeyEvent(display,(unsigned)key_codes[slot],True,CurrentTime);
-    XTestFakeKeyEvent(display,(unsigned)key_codes[slot],False,CurrentTime);
+    return (KeyCode)key_codes[slot];
+}
+static bool unicode_scalar(uint32_t cp) {
+    KeyCode code = unicode_keycode(cp);
+    if (!code) return false;
+    XTestFakeKeyEvent(display,(unsigned)code,True,CurrentTime);
+    XTestFakeKeyEvent(display,(unsigned)code,False,CurrentTime);
     XSync(display,False);
     return true;
+}
+static bool prewarm_first_utf8(const char *text, size_t length) {
+    if (!length) return true;
+    unsigned char start = (unsigned char)text[0];
+    uint32_t cp;
+    size_t tails;
+    if (start < 0x80) { cp=start; tails=0; }
+    else if ((start & 0xe0)==0xc0) { cp=start&0x1f; tails=1; }
+    else if ((start & 0xf0)==0xe0) { cp=start&0x0f; tails=2; }
+    else if ((start & 0xf8)==0xf0) { cp=start&7; tails=3; }
+    else return false;
+    if (tails + 1 > length) return false;
+    for(size_t j=0;j<tails;j++) {
+        unsigned char next=(unsigned char)text[j+1];
+        if ((next&0xc0)!=0x80) return false;
+        cp=(cp<<6)|(next&0x3f);
+    }
+    // First install the Unicode keysym while the previous glyph is still
+    // visible. Only THEN enqueue its Backspace + replacement keypresses.
+    // Otherwise the XChangeKeyboardMapping/XSync during unicode_scalar()
+    // flushed an isolated Backspace frame, making the caret flash.
+    return unicode_keycode(cp) != 0;
 }
 static bool send_utf8(const char *s, size_t size) {
     size_t i=0;
@@ -169,7 +198,7 @@ static int characters(const char *s,size_t n) {
 static void erase(size_t count,KeySym symbol) {
     if(count>128)count=128;
     for(size_t i=0;i<count;i++)keypress(symbol);
-    XFlush(display);
+    // Keep Backspace buffered until its replacement is enqueued.
 }
 static Window current_focus(void) {
     Window win=None;
@@ -188,9 +217,12 @@ static void process(char op, const char *text, size_t len) {
         if (op=='T' && len==0) {
             composing[0]=0;
         } else {
-            if(composing[prior])erase(characters(composing+prior,
-                                            strlen(composing+prior)),XK_BackSpace);
-            if (len>prior)good=send_utf8(text+prior,len-prior);
+            if (len>prior)
+                good=prewarm_first_utf8(text+prior,len-prior);
+            if (good && composing[prior])
+                erase(characters(composing+prior,
+                                 strlen(composing+prior)),XK_BackSpace);
+            if(good && len>prior)good=send_utf8(text+prior,len-prior);
             if(good) {
                 if(op=='C')memcpy(composing,text,len+1);
                 else composing[0]=0;

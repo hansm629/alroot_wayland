@@ -237,6 +237,31 @@ Do not promote code existence or build success into screen/input PASS.
   the Alroot wallpaper and desktop icons. The original :0 is untouched.
 - Only successful test/build evidence may be marked PASS; physical
   screen/keyboard acceptance remains pending until new APK update.
+
+## P09 (2026-10-28): real-time Hangul regression repair
+
+- P08 battery percentage and wallpaper persistence confirmed by user.
+  Those functional paths are retained unchanged.
+- Korean typing/deleting became very delayed after English-to-Korean
+  switching: P07/P08 Java commit-only IME state withheld mutable
+  preedit from X11. Native daemon event processing was sub-millisecond
+  but had no composing requests to render.
+- P09 now streams each changed Korean composing string immediately as a
+  native C operation; finalized text uses T. Backspace revises the
+  currently rendered preedit, not merely a Java-side draft.
+- P08 English replay filtering/synthetic cursor, no clipboard typing
+  fallback, Unicode spare key pool remain intact. The native daemon
+  prewarms Unicode mapping before enqueueing Backspace to avoid
+  a separate intermediate XFlush frame.
+- Added a short cross-source duplicate DEL guard for IMEs that call both
+  sendKeyEvent and deleteSurroundingText for one keypress.
+- S26U private headless tests: 20 JVM event scenarios, 7 duplicate
+  Backspace scenarios, Java → socket → XTEST → Xvfb GTK with first Hangul
+  visible around 1–2ms after synthetic send and correct final text,
+  plus P04 GTK/terminal and P06 distinct Unicode regression tests.
+  This is NOT physical Samsung keyboard-to-pixel evidence.
+- Native IO HandlerThread queue delay now logged in aggregate without
+  typed text. Physical keyboard acceptance is TEST-PENDING after APK.
 - P04 refresh stability: Choreographer measured timestamp jitter briefly
   caused the older code to advertise 122Hz despite the physical mode
   remaining 120Hz. This release retains the actual Android active physical
