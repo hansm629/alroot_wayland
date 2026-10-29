@@ -269,3 +269,48 @@ out with "Error getting buffer" in its real Alroot-connected test.
 That optional Adreno backend is not the universal GPU path and must not
 be enabled on Mali, PowerVR or Xclipse. RADV-Xclipse will use the common
 Vulkan Wayland transport when later tested on S24+.
+
+## GPU-S1.1 — AHB lifetime, XDG geometry and resize
+
+The S26U GPU-copy baseline completed real FIFO and MAILBOX Vulkan
+vkcube frames using an AHB-only wl_buffer. The next host-side
+stabilization changes remain independent of GPU vendor or desktop:
+
+- Normal XDG windowed surfaces receive configure(0,0), allowing the
+  client to choose its own initial 640x360 or other size. Fullscreen,
+  maximized and compositor-designated desktop surfaces alone receive
+  the output size, such as 1920x1080. Unsetting those states returns to
+  an unconstrained size. Output rotation and resize reconfigure
+  constrained surfaces without forcing unrelated windowed buffers.
+- AHB-backed wl_buffers now have final-reference accounting: live,
+  peak, total created/freed and estimated RGBA8 byte counts, reported
+  periodically with the existing host stats. These bytes are estimates
+  and exclude gralloc alignment/metadata; they are NOT true GPU memory
+  consumption. This adds observability, not a new release policy.
+- Real-device EGL and Vulkan client tests exercise 640x360 -> 320x240
+  -> 800x450, require exactly-once wl_buffer.release on buffer
+  replacement/detach, reuse released AHBs, and finally destroy a
+  wl_buffer while its surface still retains the image.
+
+Against the S26U pre-S1.1 GPU host, EGL passed 32 reuse cycles (35
+expected releases, zero unexpected) and Vulkan wrapper passed 20 cycles
+(23 releases, zero unexpected). Both also passed destroying an attached
+buffer. This verifies the original release behavior before changing
+timer pacing or removing correctness fences.
+
+The offline geometry unit test has 12 cases, including Xwayland desktop
+root and rotated output, and matches the compiled host helper. An
+independent live xdg_toplevel test confirms the old S26U host always
+configured 1920x1080 for a normal window. After explicitly installing
+the S1.1 host APK it must return configure(0,0) for windowed surfaces
+while keeping fullscreen/maximized at the output resolution.
+
+    bash graphics/tools/test-s11-geometry.sh
+    bash graphics/tools/test-s11-acceptance.sh
+
+The second command requires the signed S1.1 test APK, and exercises
+XDG configure, EGL/Vulkan AHB buffer lifecycle, FIFO/MAILBOX 360-frame
+present, host AHB reference telemetry and protected Termux-X11 DRI3.
+It does not install an APK or restart XFCE. Preserve P20 Korean IME,
+caret, pointer, DPI, battery and PiP. Fences and zero-copy are separate
+future stages and MUST NOT be removed as a supposed S1.1 fix.

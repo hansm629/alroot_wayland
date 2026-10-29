@@ -36,6 +36,7 @@
 #include "alroot_ext.h"
 #include "alroot_color.h"
 #include "compositor_internal.h"
+#include "xdg_geometry_policy.h"
 
 #define WLOGI(...) __android_log_print(ANDROID_LOG_INFO, "AlrootWayland", __VA_ARGS__)
 #define WLOGE(...) __android_log_print(ANDROID_LOG_ERROR, "AlrootWayland", __VA_ARGS__)
@@ -242,6 +243,7 @@ struct surface {
     int sub_x, sub_y, sub_pending_x, sub_pending_y, sub_pending;
     int below_parent;
     int fullscreen;
+    int maximized;
     int toplevel_committed;
 
     char *title;
@@ -501,7 +503,13 @@ static void constraints_focus_entered(struct wl_resource *target, struct wl_clie
 void dmabuf_buffer_unref(struct dmabuf_buffer *b) {
     if (!b || --b->refs > 0) return;
     vkp_image_destroy(b->img);
-    if (b->gpu_ahb) AHardwareBuffer_release(b->gpu_ahb);
+    if (b->gpu_ahb) {
+        /* wl_buffer.destroy does not free the actual gralloc allocation
+         * while a surface still holds its reference. Count destruction
+         * only on the final unref, after the host VkImage is destroyed. */
+        alroot_gpu_buffer_note_freed(b);
+        AHardwareBuffer_release(b->gpu_ahb);
+    }
     for (int i = 0; i < b->n_planes; i++)
         if (b->fd[i] >= 0) close(b->fd[i]);
     free(b);
@@ -1506,8 +1514,16 @@ static void send_toplevel_configure(struct surface *s) {
         st = wl_array_add(&states, sizeof(uint32_t));
         *st = XDG_TOPLEVEL_STATE_FULLSCREEN;
     }
-    xdg_toplevel_send_configure(s->xdg_toplevel, g_output_w > 0 ? g_output_w : 0,
-                                g_output_h > 0 ? g_output_h : 0, &states);
+    if (s->maximized) {
+        st = wl_array_add(&states, sizeof(uint32_t));
+        *st = XDG_TOPLEVEL_STATE_MAXIMIZED;
+    }
+    int configured_w, configured_h;
+    alroot_xdg_configure_dimensions(g_output_w, g_output_h,
+                                    s->fullscreen, s->maximized,
+                                    s->role == ROLE_DESKTOP,
+                                    &configured_w, &configured_h);
+    xdg_toplevel_send_configure(s->xdg_toplevel, configured_w, configured_h, &states);
     wl_array_release(&states);
     xdg_surface_send_configure(s->xdg_surface, wl_display_next_serial(g_display));
 }
@@ -1524,6 +1540,18 @@ static void xdg_toplevel_unset_fullscreen(struct wl_client *c, struct wl_resourc
     s->fullscreen = 0;
     send_toplevel_configure(s);
 }
+static void xdg_toplevel_set_maximized(struct wl_client *c, struct wl_resource *r) {
+    struct surface *s = wl_resource_get_user_data(r);
+    if (!s || !s->xdg_surface || !s->xdg_toplevel || s->maximized) return;
+    s->maximized = 1;
+    send_toplevel_configure(s);
+}
+static void xdg_toplevel_unset_maximized(struct wl_client *c, struct wl_resource *r) {
+    struct surface *s = wl_resource_get_user_data(r);
+    if (!s || !s->xdg_surface || !s->xdg_toplevel || !s->maximized) return;
+    s->maximized = 0;
+    send_toplevel_configure(s);
+}
 static const struct xdg_toplevel_interface xdg_toplevel_impl = {
     .destroy = xdg_toplevel_destroy_req,
     .set_parent = xdg_toplevel_noop_parent,
@@ -1534,8 +1562,8 @@ static const struct xdg_toplevel_interface xdg_toplevel_impl = {
     .resize = xdg_toplevel_resize,
     .set_max_size = xdg_toplevel_set_i32,
     .set_min_size = xdg_toplevel_set_i32,
-    .set_maximized = xdg_toplevel_noop,
-    .unset_maximized = xdg_toplevel_noop,
+    .set_maximized = xdg_toplevel_set_maximized,
+    .unset_maximized = xdg_toplevel_unset_maximized,
     .set_fullscreen = xdg_toplevel_set_fullscreen,
     .unset_fullscreen = xdg_toplevel_unset_fullscreen,
     .set_minimized = xdg_toplevel_noop,
@@ -1651,6 +1679,8 @@ static void desktop_set_desktop(struct wl_client *c, struct wl_resource *r, stru
     if (!s || (s->role != ROLE_NONE && s->role != ROLE_DESKTOP)) return;
     s->role = ROLE_DESKTOP;
     g_desktop = s;
+    if (s->xdg_toplevel && s->toplevel_committed)
+        send_toplevel_configure(s);
     alroot_log("desktop", "Windows virtual desktop created by %s", client_name(c));
     pointer_bootstrap_if_ready();
     schedule_render();
@@ -3499,6 +3529,7 @@ static int on_stats_timer(void *data) {
         memset(&g_perf, 0, sizeof(g_perf));
     }
     g_stat_frames = g_stat_dmabuf = g_stat_shm = 0;
+    alroot_gpu_buffer_stats_tick();
     alroot_color_stats_tick();
 
 

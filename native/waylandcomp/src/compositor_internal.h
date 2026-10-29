@@ -60,6 +60,10 @@ COMPOSITOR_INTERNAL void dmabuf_buffer_unref(struct dmabuf_buffer *b);
 COMPOSITOR_INTERNAL extern const struct wl_buffer_interface dbuf_buffer_impl;
 COMPOSITOR_INTERNAL extern const struct wl_buffer_interface alroot_gpu_buffer_impl;
 COMPOSITOR_INTERNAL void alroot_gpu_buffer_init(struct wl_display *display);
+/* Reference-counted AHB-only wl_buffer diagnostics. All mutations run
+ * on the compositor Wayland event thread, not the Android graphics thread. */
+COMPOSITOR_INTERNAL void alroot_gpu_buffer_note_freed(const struct dmabuf_buffer *buffer);
+COMPOSITOR_INTERNAL void alroot_gpu_buffer_stats_tick(void);
 extern volatile int g_ubwc;
 extern volatile int g_no_render_node;
 

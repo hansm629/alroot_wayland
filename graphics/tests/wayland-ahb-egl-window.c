@@ -41,7 +41,15 @@ struct demo {
     struct xdg_toplevel *toplevel;
     struct wl_buffer *buffer;
     int configured, closed, released;
+    int configured_width, configured_height;
+    struct wl_buffer *expected_release;
+    int unexpected_releases;
 };
+
+static int render_vulkan_and_transfer(struct demo *d,
+                                      uint32_t width, uint32_t height);
+static int render_and_transfer(struct demo *d,
+                               uint32_t width, uint32_t height);
 
 static void reg_global(void *data, struct wl_registry *reg, uint32_t id,
                        const char *iface, uint32_t ver) {
@@ -72,7 +80,10 @@ static void xdg_configure(void *data, struct xdg_surface *surf, uint32_t serial)
 static const struct xdg_surface_listener xdg_listener = { .configure=xdg_configure };
 static void top_configure(void *data, struct xdg_toplevel *t, int32_t w, int32_t h,
                           struct wl_array *states) {
-    (void)data; (void)t; (void)w; (void)h; (void)states;
+    (void)t; (void)states;
+    struct demo *d=data;
+    d->configured_width=w;
+    d->configured_height=h;
 }
 static void top_close(void *data, struct xdg_toplevel *t) {
     (void)t;
@@ -81,10 +92,103 @@ static void top_close(void *data, struct xdg_toplevel *t) {
 static const struct xdg_toplevel_listener top_listener =
     { .configure=top_configure, .close=top_close };
 static void buffer_release(void *data, struct wl_buffer *buffer) {
-    (void)buffer;
-    ((struct demo *)data)->released++;
+    struct demo *d=data;
+    if (d->expected_release != buffer) {
+        d->unexpected_releases++;
+        puts("S11_UNEXPECTED_BUFFER_RELEASE=1");
+    }
+    d->released++;
 }
 static const struct wl_buffer_listener buffer_listener = { .release=buffer_release };
+
+static int wait_for_release(struct demo *d, int expected_count) {
+    /* Wait for a real wl_buffer.release event, not a fixed timer guess.
+     * The live GPU-copy compositor may pace releases to its refresh rate. */
+    struct timespec now;
+    clock_gettime(CLOCK_MONOTONIC,&now);
+    int64_t deadline=(int64_t)now.tv_sec*1000 + now.tv_nsec/1000000 + 2000;
+    while (d->released < expected_count && !d->unexpected_releases) {
+        clock_gettime(CLOCK_MONOTONIC,&now);
+        int64_t remaining=deadline-(int64_t)now.tv_sec*1000-now.tv_nsec/1000000;
+        if (remaining<=0) break;
+        wl_display_flush(d->display);
+        struct pollfd pf={ .fd=wl_display_get_fd(d->display), .events=POLLIN };
+        int rc=poll(&pf,1,remaining>60?60:(int)remaining);
+        if (rc<0 || (rc>0 && wl_display_dispatch(d->display)<0))
+            return -1;
+        if (wl_display_dispatch_pending(d->display)<0) return -1;
+    }
+    if (d->released != expected_count || d->unexpected_releases) {
+        printf("S11_RELEASE_INVARIANT=FAIL expected=%d seen=%d unexpected=%d\n",
+               expected_count,d->released,d->unexpected_releases);
+        return -1;
+    }
+    return 0;
+}
+
+static void attach_and_commit(struct demo *d, struct wl_buffer *buffer,
+                              int width,int height) {
+    wl_surface_attach(d->surface,buffer,0,0);
+    wl_surface_damage_buffer(d->surface,0,0,width,height);
+    wl_surface_commit(d->surface);
+    wl_display_flush(d->display);
+}
+
+static int stress_buffer_lifetime(struct demo *d,int use_vk,int repeat) {
+    /* Replace with different-sized real GPU images, checking the PREVIOUS
+     * buffer is released exactly once. Then detach/reattach the SAME image
+     * repeatedly, proving a released wl_buffer can be safely reused. */
+    const int width[]={320,800},height[]={240,450};
+    for (int i=0;i<2;i++) {
+        struct wl_buffer *old=d->buffer;
+        if ((use_vk ? render_vulkan_and_transfer(d,width[i],height[i])
+                    : render_and_transfer(d,width[i],height[i]))!=0)
+            return -1;
+        d->expected_release=old;
+        attach_and_commit(d,d->buffer,width[i],height[i]);
+        if (wait_for_release(d,d->released+1)!=0) return -1;
+        wl_buffer_destroy(old);
+        printf("S11_RESIZE_BUFFER=%dx%d old_buffer_released_once=PASS\n",
+               width[i],height[i]);
+    }
+    d->expected_release=d->buffer;
+    attach_and_commit(d,NULL,0,0);
+    if (wait_for_release(d,d->released+1)!=0) return -1;
+    puts("S11_DETACH_BUFFER_RELEASE=PASS");
+    for (int i=0;i<repeat;i++) {
+        d->expected_release=NULL;
+        attach_and_commit(d,d->buffer,800,450);
+        /* Let the host observe the attach and render it before detaching.
+         * The host's frame clock remains independent of this test. */
+        if (wl_display_roundtrip(d->display)<0) return -1;
+        struct timespec ts={.tv_sec=0,.tv_nsec=30000000};
+        nanosleep(&ts,NULL);
+        d->expected_release=d->buffer;
+        attach_and_commit(d,NULL,0,0);
+        if (wait_for_release(d,d->released+1)!=0) return -1;
+    }
+    printf("S11_REUSE_CYCLES=%d expected_releases=%d unexpected=%d PASS\n",
+           repeat,d->released,d->unexpected_releases);
+    if (getenv("ALROOT_GPU_S11_DESTROY_ATTACHED")) {
+        /* A client may destroy wl_buffer while the compositor still holds
+         * its gralloc image. The compositor must retain its own reference
+         * until detach. No release can target a destroyed wl_buffer. */
+        d->expected_release=NULL;
+        attach_and_commit(d,d->buffer,800,450);
+        if (wl_display_roundtrip(d->display)<0) return -1;
+        struct timespec ts={.tv_sec=0,.tv_nsec=30000000};
+        nanosleep(&ts,NULL);
+        wl_buffer_destroy(d->buffer);
+        d->buffer=NULL;
+        attach_and_commit(d,NULL,0,0);
+        if (wl_display_roundtrip(d->display)<0 ||
+            wl_display_get_error(d->display)!=0 ||
+            d->unexpected_releases)
+            return -1;
+        puts("S11_DESTROY_WHILE_ATTACHED=PASS");
+    }
+    return d->unexpected_releases? -1 : 0;
+}
 
 static void *resolve(void *lib, const char *name) {
     void *p=dlsym(lib,name);
@@ -345,6 +449,10 @@ int main(int argc,char **argv) {
     wl_surface_commit(d.surface);
     for (int i=0;i<12 && !d.configured;i++)
         if (wl_display_roundtrip(d.display)<0) break;
+    if (getenv("ALROOT_GPU_S11_STRESS")) {
+        printf("S11_XDG_INITIAL_CONFIGURE=%dx%d\n",
+               d.configured_width,d.configured_height);
+    }
     const int use_vk=getenv("ALROOT_AHB_RENDERER") &&
                      !strcmp(getenv("ALROOT_AHB_RENDERER"),"vulkan");
     if (!d.configured ||
@@ -359,12 +467,29 @@ int main(int argc,char **argv) {
     wl_display_flush(d.display);
     puts("AHB_EGL_WINDOW=FRAME_COMMITTED");
     fflush(stdout);
+    if (getenv("ALROOT_GPU_S11_STRESS")) {
+        int repeat=12;
+        const char *setting=getenv("ALROOT_GPU_S11_CYCLES");
+        if (setting) {
+            repeat=atoi(setting);
+            if (repeat<1 || repeat>64) {
+                fputs("S11_CYCLES_OUT_OF_RANGE (1..64)\n",stderr);
+                return 5;
+            }
+        }
+        if (stress_buffer_lifetime(&d,use_vk,repeat)!=0) {
+            puts("S11_GPU_BUFFER_LIFETIME=FAIL");
+            return 5;
+        }
+        puts("S11_GPU_BUFFER_LIFETIME=PASS");
+    } else {
     time_t until=time(NULL)+seconds;
     while (time(NULL)<until && !d.closed) {
         struct pollfd pf={ .fd=wl_display_get_fd(d.display), .events=POLLIN };
         int ready=poll(&pf,1,90);
         if (ready>0 && wl_display_dispatch(d.display)<0) break;
         wl_display_flush(d.display);
+    }
     }
     printf("AHB_EGL_WINDOW_BUFFER_RELEASE_EVENTS=%d\n",d.released);
     if (d.buffer) wl_buffer_destroy(d.buffer);

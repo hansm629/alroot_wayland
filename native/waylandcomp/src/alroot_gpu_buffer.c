@@ -10,6 +10,55 @@
 #include "compositor_internal.h"
 #include "vk_present.h"
 
+/* Small, always-available stability counters, not a memory allocator.
+ * Estimated RGBA8 bytes exclude gralloc padding, alignment and metadata. */
+static struct {
+    uint64_t created, freed, live_bytes, peak_bytes;
+    uint64_t last_report_created, last_report_freed;
+    unsigned live, peak;
+} g_ahb_lifetime;
+
+static void gpu_buffer_note_allocated(const struct dmabuf_buffer *b) {
+    const uint64_t bytes = (uint64_t)b->width * (uint64_t)b->height * 4u;
+    g_ahb_lifetime.created++;
+    g_ahb_lifetime.live++;
+    g_ahb_lifetime.live_bytes += bytes;
+    if (g_ahb_lifetime.peak < g_ahb_lifetime.live)
+        g_ahb_lifetime.peak = g_ahb_lifetime.live;
+    if (g_ahb_lifetime.peak_bytes < g_ahb_lifetime.live_bytes)
+        g_ahb_lifetime.peak_bytes = g_ahb_lifetime.live_bytes;
+}
+
+void alroot_gpu_buffer_note_freed(const struct dmabuf_buffer *b) {
+    if (!b || !b->gpu_ahb) return;
+    const uint64_t bytes = (uint64_t)b->width * (uint64_t)b->height * 4u;
+    if (!g_ahb_lifetime.live || g_ahb_lifetime.live_bytes < bytes) {
+        alroot_log("error", "S1.1 AHB buffer accounting underflow (final reference mismatch)");
+        return;
+    }
+    g_ahb_lifetime.live--;
+    g_ahb_lifetime.live_bytes -= bytes;
+    g_ahb_lifetime.freed++;
+}
+
+void alroot_gpu_buffer_stats_tick(void) {
+    if (!g_ahb_lifetime.created) return;
+    if (!g_ahb_lifetime.live &&
+        g_ahb_lifetime.last_report_created == g_ahb_lifetime.created &&
+        g_ahb_lifetime.last_report_freed == g_ahb_lifetime.freed)
+        return;
+    alroot_log("gpu-lifetime",
+               "S1.1 AHB wl_buffers live=%u peak=%u created=%llu freed=%llu "
+               "estimated_live=%llu bytes estimated_peak=%llu bytes",
+               g_ahb_lifetime.live,g_ahb_lifetime.peak,
+               (unsigned long long)g_ahb_lifetime.created,
+               (unsigned long long)g_ahb_lifetime.freed,
+               (unsigned long long)g_ahb_lifetime.live_bytes,
+               (unsigned long long)g_ahb_lifetime.peak_bytes);
+    g_ahb_lifetime.last_report_created = g_ahb_lifetime.created;
+    g_ahb_lifetime.last_report_freed = g_ahb_lifetime.freed;
+}
+
 /* This wl_buffer contains a real Android AHardwareBuffer, *not* a DRM
  * dma-buf emulation. It uses the ordinary compositor surface lifecycle,
  * imports with vkp_image_from_ahb(), and is composited into the host Vulkan
@@ -107,6 +156,7 @@ static void gpu_manager_create(struct wl_client *client,
     buffer->gpu_ahb = ahb;
     buffer->n_planes = 0;
     for (int i = 0; i < MAX_PLANES; ++i) buffer->fd[i] = -1;
+    gpu_buffer_note_allocated(buffer);
     wl_resource_set_implementation(resource, &alroot_gpu_buffer_impl, buffer,
                                    gpu_buffer_resource_destroy);
     struct client_info *info = client_info_of(client);
