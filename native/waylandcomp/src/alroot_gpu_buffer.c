@@ -23,8 +23,8 @@ static int probe_bgra8_import(void) {
         .usage=AHARDWAREBUFFER_USAGE_GPU_COLOR_OUTPUT |
                AHARDWAREBUFFER_USAGE_GPU_SAMPLED_IMAGE,
     };
-    if (!AHardwareBuffer_isSupported(&desc))
-        return 0;
+    /* AHardwareBuffer_isSupported is API 29+, but this helper still targets
+     * API 26. Allocation + Vulkan import below is the definitive probe. */
     AHardwareBuffer *buffer=NULL;
     if (AHardwareBuffer_allocate(&desc,&buffer)!=0 || !buffer)
         return 0;
