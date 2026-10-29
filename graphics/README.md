@@ -507,3 +507,10 @@ Xwayland GLAMOR. It is NOT installed for general applications. Standard
 Mesa EGL/Gallium integration and correctness under these transitions
 must be developed and tested separately. Visual confirmation of the
 animated frame colors/cropping by a person remains necessary.
+
+## GPU-S1.4 — pinned lfdevs PR #25 Mesa 27 revalidation
+
+See [Mesa 27 PR #25 revalidation](docs/mesa27-pr25-revalidation.md) for the
+fixed source/patch hashes, private build recipe, Turnip/Zink/KGSL GPU test
+matrix and explicit Xwayland DRI3/GLAMOR limitations. **Never replace the
+known-good Termux 26.3 packages or helper APK during this staged validation.**

@@ -40,9 +40,12 @@ static int private_egl_library_mapped(void) {
     FILE *f=fopen("/proc/self/maps","r");
     if(!f)return 0;
     int found=0;
+    const char *needle=getenv("ALROOT_PRIVATE_EGL_MAP_NEEDLE");
+    if(!needle||!*needle)
+        needle="/mesa-egl/private-runtime/lib/libEGL_mesa.so";
     char line[1024];
     while(fgets(line,sizeof(line),f))
-        if(strstr(line,"/mesa-egl/private-runtime/lib/libEGL_mesa.so")) {
+        if(strstr(line,needle)) {
             found=1;
             break;
         }

@@ -1,0 +1,14 @@
+b7eb87464cdeba43a51db092322976edf9019501c91b6722d3db902e9ec02999  graphics/patches/mesa/pr25/0000-disable-android-detection.patch
+af8317dd901987eb4fef8ffbf7d5f31d57ad4a3bc1b08936085cffa5f72aac51  graphics/patches/mesa/pr25/0001-disable-multithreading-for-llvmpipe.patch
+58d8672360c8c38ec7bb22785685f39c68de9b81ee3c48e5141f2ec35efe1111  graphics/patches/mesa/pr25/0002-fix-for-getprogname.patch
+946cb24e67e0a2d83fbff8004bd33ed97749918a78b4086add0f880d6d0e23ee  graphics/patches/mesa/pr25/0003-fix-for-anon-file.patch
+b08f31284e18bc03509cdd0a88eb4b1c1e247032140467a6dfaa92c970250886  graphics/patches/mesa/pr25/0004-do-not-check-xlocale.patch
+96656faee2407cf20cdcfb9cf8455d097db51bb7a0d6e0b97091aef610879bb0  graphics/patches/mesa/pr25/0005-virgl-socket-path.patch
+9ecdfc951cb60331250c1a4d410a797bbbc2d945e399b6d8dfdf6d33760db721  graphics/patches/mesa/pr25/0006-wsi-no-pthread_cancel.patch
+27b7bc421d1981d0e26ddaceac800b3dbb4e3c8b038b236d14f0aef7b2289203  graphics/patches/mesa/pr25/0007-use-mtx_t-operations-in-turnip.patch
+ad321249d18a67f6168e1a58a5c47c981d57e7caad26db6d593cf3c3d58b1bc9  graphics/patches/mesa/pr25/0008-workaround-fortify-check.patch
+82a6393517a702624a8adf9a7ecc91fc8d646d6f413504802eae042ba7088d8c  graphics/patches/mesa/pr25/0009-disable-resource_create_front-for-vtest.patch
+e6b51f429f7361f37e9fe8ed6448959230e3d77ff8eb65e74ca1b26604f29d43  graphics/patches/mesa/pr25/0012-always-use-software-for-swrast.patch
+84b35de37de9a74b3cc52d35f42d9bff1044eeca06a00fd03804868604fb7ef4  graphics/patches/mesa/pr25/0015-define-reallocarray.patch
+442a54875e1fbb42b57858a1aa1cd0095b81690c80392ab7a5a6bbf83f700747  graphics/patches/mesa/pr25/0019-enforce-memfd-create-syscall.patch
+8323e7e69e9d8b238985be95fc410a9efeb4f2ae4a234228071efcc86614d998  graphics/patches/mesa/pr25/0022-fix-epoll-header-inclusion.patch
