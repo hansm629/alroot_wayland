@@ -59,3 +59,52 @@ For an experimental future installed helper with the new host code, test the **d
 **Before any visible-present acceptance**: build and install the tested S16 Android host (currently no SDK in Termux; CI GitHub Actions can build an opt-in branch), run actual private Xwayland GLAMOR on the new host, show and move glxgears/glmark2 in a real window; confirm GPU imported frame, window content/pixel correctness, resize, desktop session, `:0` DRI3 regression, 60/120Hz frame pacing, GPU fences. Until then label **GPU path integration staged, visible GPU present NOT_VERIFIED**.
 
 **Strict GPU-copy vs zero-copy:** This S1.6 implementation is **GPU-copy from imported shared `VkBuffer` into host `VkImage`**. It removes the broken direct `VkImage` import and CPU pixel upload; it does **not** claim full end-to-end scanout zero-copy. Future Vulkan SSBO fragment composition can remove this *intermediate copy* once real on-screen output has been validated.
+
+## 2026-10-30 continuation: real Debian 13 glibc GLX GPU execution
+
+With the actual Alroot LD_PRELOAD runtime and a **private, never-installed**
+Xwayland instance on `:241` connected to the existing `wayland-0` host,
+Mesa Freedreno KGSL OpenGL works **inside Debian glibc**, not just in
+Termux's Bionic client:
+
+```
+S16_PRIVATE_XWAYLAND_DRI3=1
+S16_PRIVATE_XWAYLAND_GLX=1
+S16_PRIVATE_XWAYLAND_Present=1
+S16_GLIBC_GLXINFO_EXIT=0
+S16_GLIBC_GL_RENDERER=OpenGL renderer string: Adreno (TM) 840
+S16_GLIBC_GLXGEARS_FPS_SAMPLE=6153.501
+S16_GLIBC_GLX_GPU_EXECUTION=PASS
+S16_ANDROID_HOST_GPU_PRESENT=NOT_VERIFIED_OLD_INSTALLED_HOST
+```
+
+**Reproduce** from Termux, without installing the S1.6 APK or altering XFCE
+`:90` / Termux-X11 `:0`:
+
+```bash
+python3 graphics/tools/test-s16-xwayland-glibc-glx.py
+```
+
+The diagnostic opens exactly one free private Unix socket `:241..:270`,
+`chmod 0600`, TCP disabled, maps that socket into Debian's **temporary**
+`/tmp/.X11-unix` (unlinked at exit), launches opt-in private KGSL GLAMOR,
+then runs *actual* Debian `/usr/bin/glxinfo` and `/usr/bin/glxgears` through
+`alroot_run.sh --raw` before cleanly terminating **only** the private test
+server. It leaves the permanent X displays and users' Xauthority untouched.
+
+**Security: test only.** This diagnostic invokes `-ac` **only on the temporary
+private test display**, because glibc/X11 currently fails to send an
+acceptable authentication record even when `libXau` can read and locate a
+valid private FamilyWild cookie. The same cookie succeeds with Termux-native
+`xdpyinfo`; the guest's raw socket path is accessible. **Never use `-ac` on
+production `:90` or `:0`**, and do not claim secure production glibc X11
+login is solved. The private test closes its socket and releases temporary
+rootfs `/tmp` symlink immediately afterward. Investigating glibc libxcb/Xlib
+automatic auth selection is a follow-on compatibility task.
+
+The `glxgears` FPS is a diagnostic confirming the GPU GLX client executed,
+not a visible screen-rendering FPS or a compositor frame pacing benchmark.
+The **old installed** Android helper still refuses Xwayland's plain LINEAR
+DMA-BUF as a Vulkan external `VkImage` (`INVALID_EXTERNAL_HANDLE`); signed
+S1.6 host APK is staged in a separate local test file but was not installed.
+Full GLAMOR → Android Stage-1 frame presentation remains unverified.

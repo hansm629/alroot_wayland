@@ -541,3 +541,11 @@ See `graphics/docs/gpu-s16-xwayland-vkbuffer.md` for exact limits, the
 1024x768 unpadded allocation size blocker, private Xwayland GLX timeout
 and pending visible-present/fence requirements. Do not infer that a glxinfo
 GPU renderer string is evidence of a successful on-screen GPU frame.
+
+The follow-on isolated Debian glibc Xwayland GLX GPU test is
+`python3 graphics/tools/test-s16-xwayland-glibc-glx.py` (S26U, KGSL only).
+It confirms direct Debian glibc `glxinfo` and timed `glxgears` run on Adreno
+840 through Alroot, without replacing the current APK/XFCE/Termux-X11.
+**CAUTION**: its local private X socket uses test-only `-ac` (mode 0600,
+TCP disabled, immediate cleanup); production Xauthority/visible GPU
+presentation are still not verified.
