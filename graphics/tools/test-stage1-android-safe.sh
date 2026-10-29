@@ -30,4 +30,5 @@ fi
 echo '=== FINAL SAFETY GATE ==='
 bash graphics/tools/snapshot-termux-x11.sh verify
 echo 'PASS: all available safe Stage-1 diagnostics'
-echo 'IMPORTANT: actual Wayland/Xwayland GPU pixels + fence + screen present NOT TESTED'
+echo 'IMPORTANT: visible Wayland vkcube requires separate opt-in test-vkcube-stage1.sh'
+echo '          Xwayland GPU composition and explicit acquire/release fences remain unverified'

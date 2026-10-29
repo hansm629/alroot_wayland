@@ -67,7 +67,47 @@ tests pass real GPU enumeration, VK_KHR_wayland_surface, cross-process
 AHB import and a completed VkCmdClearColorImage with no CPU pixel
 copy. Global Termux ICDs and Termux-X11 DRI3 stay unchanged.
 
-Actual visible vkcube, full Wayland WSI Present, resizing,
-FIFO/MAILBOX and explicit acquire/release synchronization remain
-TEST-PENDING until the experimental Alroot host APK is installed and
-the actual frames are observed.
+These build/import tests are distinct from actual frame Present.
+The first-frame Present fix and its S26U FIFO/MAILBOX results are
+documented immediately below. On-device visual quality, resizing and
+explicit acquire/release fence optimization remain TEST-PENDING.
+
+## 2026-10-29: first-frame Present failure and fix
+
+The original vkcube run selected Adreno 840 and created eight AHB-backed
+wl_buffers, but never called wl_surface.commit. WSI instrumentation showed
+vkQueueSubmit2 returned VK_SUCCESS, followed by a failure from the
+**DRM DMA-BUF-only** sync-file transfer:
+
+    common: DMA_BUF_SEMAPHORE_SIGNAL=-8
+
+-8 is VK_ERROR_FEATURE_NOT_PRESENT. Generic wsi_swapchain_init had created
+a DMA-BUF implicit-sync semaphore for the Android AHB image even though
+that image has no DRM DMA-BUF FD. The export-to-sync-file step aborted
+the present before reaching the Wayland surface.
+
+Apply 0002-alroot-ahb-no-dmabuf-sync.patch after the first patch.
+It skips DRM implicit-sync semaphore setup only for the Android WSI
+image type, guarded by __TERMUX__ and ALROOT_WSI_AHB. Normal Wayland
+DMA-BUF and the X11 DRI3 image type are entirely unchanged. The AHB
+Wayland path still waits on the per-image Vulkan submission fence before
+surface commit for Stage-1 correctness; removing that wait is NOT part
+of this fix.
+
+On S26U, the initial diagnostic patch submitted 120 FIFO frames with
+120 successful WaitForFences results and 120 wl_surface.commit calls;
+host logs confirmed imported AHB VkImages and opening the vkcube window.
+After removing the trace code and rebuilding from both isolated patches,
+120 FIFO and 120 MAILBOX frames each exited successfully, with the host
+again importing the vkcube AHB images. IMMEDIATE was *not* advertised by
+the current compositor, so vkcube correctly rejected that mode rather
+than treating it as a GPU failure.
+
+To reproduce against an active experimental host, run:
+
+    bash graphics/tools/test-vkcube-stage1.sh fifo 120
+    bash graphics/tools/test-vkcube-stage1.sh mailbox 120
+
+These run the PRIVATE ICD; they never replace Termux drivers. Full visual
+acceptance (correct cube colors/rotation, stutter, resize and later
+explicit fences) still requires inspection on the actual Android display.

@@ -1,0 +1,27 @@
+diff --git a/src/vulkan/wsi/wsi_common.c b/src/vulkan/wsi/wsi_common.c
+--- a/src/vulkan/wsi/wsi_common.c
++++ b/src/vulkan/wsi/wsi_common.c
+@@ -604,9 +604,20 @@
+       goto fail;
+ 
+ #ifdef HAVE_LIBDRM
+-   result = wsi_drm_init_swapchain_implicit_sync(chain);
+-   if (result != VK_SUCCESS)
+-      goto fail;
++#if defined(__TERMUX__) && defined(ALROOT_WSI_AHB)
++   /* Alroot's AHB-only Wayland wl_buffer has no DMA-BUF FD. The generic
++    * DRM implicit sync-file semaphore must not be created for its Vulkan
++    * swapchain: otherwise vkQueuePresentKHR tries to attach a sync-file
++    * to FD=-1, returns VK_ERROR_FEATURE_NOT_PRESENT and never commits the
++    * first frame. All DRM image paths (including Termux-X11 DRI3) retain
++    * the upstream DMA-BUF implicit sync behavior unchanged. */
++   if (image_params->image_type != WSI_IMAGE_TYPE_ANDROID)
++#endif
++   {
++      result = wsi_drm_init_swapchain_implicit_sync(chain);
++      if (result != VK_SUCCESS)
++         goto fail;
++   }
+ #endif
+ 
+    if ((pCreateInfo->flags & VK_SWAPCHAIN_CREATE_PRESENT_TIMING_BIT_EXT) ||

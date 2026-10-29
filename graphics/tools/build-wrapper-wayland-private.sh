@@ -9,6 +9,7 @@ WORK="$ROOT/.source/gpu-stage1/wrapper-meson"
 SRC="$WORK/source"
 BUILD="$WORK/build"
 PATCH="$ROOT/graphics/patches/mesa/wrapper/0001-alroot-ahb-wayland-wsi-vkimage.patch"
+SYNC_PATCH="$ROOT/graphics/patches/mesa/wrapper/0002-alroot-ahb-no-dmabuf-sync.patch"
 PREFIX="${PREFIX:-/data/data/com.termux/files/usr}"
 cd "$ROOT"
 test -f "$REF/meson.build" && test -f "$REF/src/vulkan/wsi/wsi_common_wayland.c"
@@ -35,11 +36,12 @@ for f in "$REF/src/vulkan"/*; do
 done
 for f in "$REF/src/vulkan/wsi"/*; do
     [[ "$(basename "$f")" == meson.build ||
-       "$(basename "$f")" == wsi_common_wayland.c ]] && continue
+       "$(basename "$f")" == wsi_common_wayland.c ||
+       "$(basename "$f")" == wsi_common.c ]] && continue
     [[ -e "$SRC/src/vulkan/wsi/$(basename "$f")" ]] ||
         ln -s "$f" "$SRC/src/vulkan/wsi/$(basename "$f")"
 done
-current_patch_hash="$(sha256sum "$PATCH" | cut -d' ' -f1)"
+current_patch_hash="$(sha256sum "$PATCH" "$SYNC_PATCH" | sha256sum | cut -d' ' -f1)"
 previous_patch_hash=""
 if [[ -r "$WORK/.alroot-wsi-patch.sha256" ]]; then
     read -r previous_patch_hash < "$WORK/.alroot-wsi-patch.sha256"
@@ -50,17 +52,26 @@ if [[ ! -f "$SRC/src/vulkan/wsi/alroot-gpu-buffer-v1-protocol.c" ||
     # accidentally testing a stale WSI library after changing the patch.
     cp "$REF/src/vulkan/wsi/meson.build" "$SRC/src/vulkan/wsi/"
     cp "$REF/src/vulkan/wsi/wsi_common_wayland.c" "$SRC/src/vulkan/wsi/"
+    # If this is an older overlay, remove the symlink *before* copying.
+    # Never overwrite a symlink into the user's reference Mesa tree.
+    if [[ -L "$SRC/src/vulkan/wsi/wsi_common.c" ]]; then
+        rm "$SRC/src/vulkan/wsi/wsi_common.c"
+    fi
+    cp "$REF/src/vulkan/wsi/wsi_common.c" "$SRC/src/vulkan/wsi/"
     rm -f "$SRC/src/vulkan/wsi/alroot-gpu-buffer-v1-client-protocol.h" \
           "$SRC/src/vulkan/wsi/alroot-gpu-buffer-v1-protocol.c"
     (cd "$REF" && git apply --check "$PATCH")
+    (cd "$REF" && git apply --check "$SYNC_PATCH")
     # The overlay lives underneath the Alroot Git checkout. git apply
     # silently SKIPS paths outside that enclosing Git worktree prefix;
     # use the cwd-relative POSIX patch utility in this disposable tree.
     (cd "$SRC" && patch --batch --forward -p1 -i "$PATCH")
+    (cd "$SRC" && patch --batch --forward -p1 -i "$SYNC_PATCH")
     printf '%s\n' "$current_patch_hash" > "$WORK/.alroot-wsi-patch.sha256"
 fi
 rg -q 'ALROOT_WSI_AHB=1' "$SRC/src/vulkan/wsi/meson.build"
 test -s "$SRC/src/vulkan/wsi/alroot-gpu-buffer-v1-protocol.c"
+rg -q 'image_params->image_type != WSI_IMAGE_TYPE_ANDROID' "$SRC/src/vulkan/wsi/wsi_common.c"
 
 # Meson is installed as a Python module on the device, not on PATH.
 # Run it from an absolute shim in the private build folder; passing

@@ -240,8 +240,28 @@ to the pinned S26U Mesa wrapper source and the generated client protocol
 matches the host XML. The full private wrapper ICD now builds and
 detects Adreno 840 / Vulkan 1.4.295, once staged outside Meson's dummy
 libnativewindow.so RUNPATH. Private ICD AHB import and GPU clear pass.
-Actual visible vkcube, complete Wayland WSI Present and explicit
-acquire/release synchronization remain TEST-PENDING.
+The first-frame WSI failure was traced to Mesa's common DRM implicit
+sync-file semaphore erroneously being initialized for an AHB-only image
+(which has no DMA-BUF FD). vkQueuePresentKHR then failed with
+VK_ERROR_FEATURE_NOT_PRESENT before wl_surface.commit. The isolated
+wrapper patch 0002-alroot-ahb-no-dmabuf-sync.patch disables that
+DMA-BUF-only synchronization setup exclusively for the opt-in Android
+AHB image type, preserving X11 DRI3 and standard DRM Wayland.
+
+After rebuilding the private ICD, S26U completed 120 FIFO and 120
+MAILBOX vkcube presents, returned 0, and host logs confirmed opening
+the vkcube window and importing AHB images through Vulkan VkImage
+GPU-copy. A separate private Vulkan wrapper XCB vkcube (:0) regression
+also exited successfully, with DRI3 and installed drivers unchanged.
+IMMEDIATE was not advertised by the current compositor and is not
+claimed as supported. The user still needs to verify the on-device
+rotation/visual correctness; Xwayland GLAMOR, other ICDs and explicit
+cross-process fences remain pending.
+
+The reusable visible-frame acceptance command is
+graphics/tools/test-vkcube-stage1.sh fifo 120 (or mailbox 120).
+It never installs or replaces a system driver or APK and checks both
+client exit and current host import logs.
 
 An isolated KGSL GLAMOR/DRI3 Xwayland implementation is retained in
 graphics/patches/xwayland/kgsl and compiles on S26U, but glxinfo timed

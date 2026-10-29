@@ -7,19 +7,25 @@ ROOT="$(cd "$(dirname "$0")/../.." && pwd -P)"
 PREFIX="${PREFIX:-/data/data/com.termux/files/usr}"
 SRC="${ALROOT_WRAPPER_SOURCE:-$HOME/alroot-vk-lab/vulkan-wrapper-android}"
 PATCH="$ROOT/graphics/patches/mesa/wrapper/0001-alroot-ahb-wayland-wsi-vkimage.patch"
+SYNC_PATCH="$ROOT/graphics/patches/mesa/wrapper/0002-alroot-ahb-no-dmabuf-sync.patch"
 TMP="$(mktemp -d "${TMPDIR:-$PREFIX/tmp}/alroot-wrapper-wsi.XXXXXXXX")"
 trap 'rm -rf "$TMP"' EXIT
 cd "$ROOT"
 mkdir -p "$TMP/src/vulkan/wsi"
 cp "$SRC/src/vulkan/wsi/meson.build" "$TMP/src/vulkan/wsi/"
 cp "$SRC/src/vulkan/wsi/wsi_common_wayland.c" "$TMP/src/vulkan/wsi/"
+cp "$SRC/src/vulkan/wsi/wsi_common.c" "$TMP/src/vulkan/wsi/"
 (cd "$SRC" && git apply --check "$PATCH")
+(cd "$SRC" && git apply --check "$SYNC_PATCH")
 (cd "$TMP" && git apply "$PATCH")
+(cd "$TMP" && git apply "$SYNC_PATCH")
 
 WSI="$TMP/src/vulkan/wsi"
 rg -q 'WSI_WL_BUFFER_ALROOT_AHB' "$WSI/wsi_common_wayland.c"
 rg -q 'VK_FORMAT_R8G8B8A8_UNORM' "$WSI/wsi_common_wayland.c"
 rg -q 'Put the supported AHB format first' "$WSI/wsi_common_wayland.c"
+rg -q 'image_params->image_type != WSI_IMAGE_TYPE_ANDROID' "$WSI/wsi_common.c"
+rg -q 'wsi_drm_init_swapchain_implicit_sync' "$WSI/wsi_common.c"
 rg -q 'AHardwareBuffer_sendHandleToUnixSocket' "$WSI/wsi_common_wayland.c"
 rg -q 'ALROOT_WSI_AHB=1' "$WSI/meson.build"
 rg -q 'with_wrapper_vk' "$WSI/meson.build"
@@ -45,6 +51,7 @@ PY
 clang --target=aarch64-linux-android35 -std=c11 -Wall -Wextra -Werror \
     -fsyntax-only "$WSI/alroot-gpu-buffer-v1-protocol.c"
 echo 'PASS: opt-in wrapper Wayland AHB image WSI patch applies'
+echo 'PASS: AHB-only swapchain skips DRM sync-file path; X11 DRI3 unchanged'
 echo 'PASS: public-NDK AHB protocol matches host, Wayland only (X11 untouched)'
 echo 'PASS: wrapper-only Meson guard + scoped Stage-1 wait-fence present'
-echo 'NOTE: entire Mesa wrapper WSI C compilation and visible present remain TEST-PENDING'
+echo 'NOTE: run build-wrapper-wayland-private.sh for full Mesa WSI + ICD compilation'
