@@ -549,3 +549,13 @@ It confirms direct Debian glibc `glxinfo` and timed `glxgears` run on Adreno
 **CAUTION**: its local private X socket uses test-only `-ac` (mode 0600,
 TCP disabled, immediate cleanup); production Xauthority/visible GPU
 presentation are still not verified.
+
+
+Rootful S1.6 Xwayland startup (no `-listenfd`) now also uses the two
+Android-only private patches for `TMPDIR` server lock files and atomic
+`renameat2(RENAME_NOREPLACE)` fallback when app-data hardlinks are denied.
+`python3 graphics/tools/test-s16-xwayland-rootful-lock.py` proves a real
+private GLAMOR/DRI3 server and a fresh Android VkBuffer GPU-copy host log
+without stopping the active XFCE or replacing the installed APK. Full
+user-visible desktop pixels/input and long-running frame pacing remain
+unverified. See `graphics/patches/xwayland/README.md`.

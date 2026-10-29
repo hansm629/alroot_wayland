@@ -108,3 +108,86 @@ The **old installed** Android helper still refuses Xwayland's plain LINEAR
 DMA-BUF as a Vulkan external `VkImage` (`INVALID_EXTERNAL_HANDLE`); signed
 S1.6 host APK is staged in a separate local test file but was not installed.
 Full GLAMOR → Android Stage-1 frame presentation remains unverified.
+
+
+## GPU-S1.6 rootful Xwayland lock repair (2026-10-30)
+
+The first real `awstart --restart --direct --no-topapp` with the private
+KGSL GLAMOR Xwayland failed **before** GLAMOR, with
+`Could not create lock file in /tmp/.tX92-lock`. Upstream Xorg's
+`os/utils.c` defaults `LockServer()` to `/tmp`, which Android reserves for
+`shell`; Alroot's existing `TMPDIR=$PREFIX/tmp` export was ignored. After
+fixing its lock directory, a second Android filesystem restriction blocked
+`link(tmp, LockFile)` with `EACCES`. A direct on-device syscall test proved
+`renameat2(RENAME_NOREPLACE)` works and **refuses to overwrite an existing
+lock**. Two minimal Android-only private patches, `0003` and `0004`,
+restore the normal single-instance lock semantics without chmod of `/tmp`,
+`-nolock` or changes to the global Termux Xwayland.
+
+Rebuild (if checking out the source on a clean device):
+
+```
+cd ~/alroot_wayland
+ALROOT_XWAYLAND_VARIANT=kgsl bash graphics/tools/build-xwayland-private.sh
+```
+
+Reproduce the exact **rootful, no `-listenfd`** startup without stopping an
+existing XFCE, and verify the Android host imported its GPU frame:
+
+```
+python3 graphics/tools/test-s16-xwayland-rootful-lock.py
+```
+
+Expected actual S26U findings (2026-10-30):
+
+```
+S16_ROOTFUL_INVOCATION=NO_LISTENFD
+S16_ROOTFUL_START=PASS
+S16_TERMUX_TMP_ATOMIC_LOCK=PASS
+S16_TERMUX_UNIX_X_SOCKET=PASS
+S16_ROOTFUL_DRI3=1
+S16_ROOTFUL_GLX=1
+S16_ROOTFUL_Present=1
+S16_LOCK_COLLISION_REJECTED=1
+S16_ROOTFUL_GLXINFO_EXIT=0
+S16_ROOTFUL_GLX_RENDERER=OpenGL renderer string: Adreno (TM) 840
+S16_HOST_NEW_GPU_LOG_ENTRIES=14
+S16_ANDROID_HOST_VKBUFFER_GPU_COPY=LOG_CONFIRMED
+S16_PRIVATE_X_LOCK_RELEASED=YES
+S16_PRIVATE_X_SOCKET_RELEASED=YES
+```
+
+The test captures Android logcat **before and after**, matching only fresh
+entries, rather than treating historical success as a current pass. The
+actual installed S1.6 helper logged:
+
+```
+[gpu] LINEAR DMA-BUF -> Vulkan VkBuffer GPU-copy: 640x360,
+      pitch 2560, fd 1048576 B; no CPU pixels, VkImage import not used
+[vulkan] "Xwayland on :201" ... presenting GPU frames through Wayland
+```
+
+**The GPU-copy protocol is now integrated at the logged host-presentation
+level**, not just a standalone Vulkan diagnostic. This is Stage 1 GPU-copy,
+not zero-copy/direct scanout. Final observable 120Hz XFCE desktop pixels,
+input, X11 font/UI compatibility, window moves/resizes, and CPU fence
+performance remain unverified; the private standalone Xwayland closes its
+test display immediately after the proof. The active user's `:92`
+`xfce-labwc` session was preserved.
+
+For a user-authorized live full XFCE test, save all desktop work first,
+then in **Termux native** (the command intentionally restarts only Alroot):
+
+```
+cd ~/alroot_wayland
+ALROOT_XWAYLAND_BINARY="$PWD/.source/gpu-stage1/xwayland-kgsl/build/hw/xwayland/Xwayland" \
+ALROOT_XWAYLAND_GLAMOR=es \
+XWAYLAND_FORCE_KGSL_SURFACELESS=1 FD_KGSL_ENABLE_DMABUF=1 \
+MESA_LOADER_DRIVER_OVERRIDE=kgsl GALLIUM_DRIVER=freedreno \
+awstart --restart --direct --no-topapp
+```
+
+No APK reinstall is needed for these Xwayland-only fixes because the S1.6
+host APK already contains the Vulkan VkBuffer GPU-copy path. The opt-in
+KGSL adapter remains hardware-specific, while the common host importer
+remains Vulkan capability-gated.

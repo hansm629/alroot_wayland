@@ -1,0 +1,25 @@
+diff --git a/os/utils.c b/os/utils.c
+--- a/os/utils.c
++++ b/os/utils.c
+@@ -98,0 +99,8 @@
++
++#ifdef __ANDROID__
++#include <sys/syscall.h>
++#include <fcntl.h>
++#ifndef RENAME_NOREPLACE
++#define RENAME_NOREPLACE 1u
++#endif
++#endif
+@@ -333,0 +342,12 @@
++#ifdef __ANDROID__
++        /* Android app data can forbid hard links (EACCES/EPERM) even within
++         * the same writable Termux directory. An ordinary rename() here
++         * would overwrite a live X server's lock and is NOT acceptable.
++         * renameat2(RENAME_NOREPLACE) publishes the fully written PID
++         * atomically without replacing an existing lock. Its EEXIST is
++         * handled by the original Xorg live/stale PID logic below. */
++        if (!haslock && (errno == EACCES || errno == EPERM)) {
++            haslock = (syscall(__NR_renameat2, AT_FDCWD, tmp,
++                               AT_FDCWD, LockFile, RENAME_NOREPLACE) == 0);
++        }
++#endif

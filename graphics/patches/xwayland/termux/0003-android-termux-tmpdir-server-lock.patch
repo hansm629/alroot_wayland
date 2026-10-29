@@ -1,0 +1,15 @@
+diff --git a/os/utils.c b/os/utils.c
+--- a/os/utils.c
++++ b/os/utils.c
+@@ -268,0 +269,11 @@
++#ifdef __ANDROID__
++    /* Termux Xtrans uses $PREFIX/tmp/.X11-unix for sockets. Android /tmp
++     * belongs to shell and is not writable by the Termux app UID; use
++     * the same per-app temp directory for the Xorg display lock.
++     * The private Alroot launcher already exports TMPDIR=$PREFIX/tmp.
++     * Do not modify Android's /tmp or alter non-Android X servers. */
++    const char *android_tmpdir = getenv("TMPDIR");
++    if (!android_tmpdir || android_tmpdir[0] != '/')
++        FatalError("Android Xwayland needs an absolute TMPDIR for lock files\n");
++    tmppath = android_tmpdir;
++#endif

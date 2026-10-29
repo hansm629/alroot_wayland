@@ -35,7 +35,7 @@ require matching real/effective UID and GID, then execute the child
 under the already-restricted app identity without these syscalls.
 Ordinary Linux builds retain the original Xorg privilege-drop code.
 
-With both Android patches, private rootful Xwayland starts and accepts
+With the original two Android patches, private rootful Xwayland starts and accepts
 X clients through an explicitly supplied listen FD against a private
 headless Labwc. GLX and Present initialize in -glamor off and es
 modes. The headless server cannot offer linux-dmabuf-v4 or wl_drm,
@@ -61,3 +61,50 @@ buffer", so this is **not** a passed visible-screen GPU test.
 For Xclipse/RADV-Xclipse, Mali and PowerVR the common DRM/GBM or
 AHB-backed Vulkan route remains separate. Never make /dev/kgsl-3d0 a
 default device or bypass DRI3 regressions for those GPUs.
+
+
+## GPU-S1.6 — fix Android Xwayland rootful display locks (2026-10-30)
+
+Unlike a `-listenfd`-based isolated smoke test, the real Alroot launcher
+starts Xwayland rootful **without `-listenfd`**. The pinned upstream Xorg
+`os/utils.c` then enters `LockServer()`. On S26U Android 17 the actual
+`/tmp` directory is owned by `shell` and unwritable by Termux's unprivileged
+app UID, producing:
+
+```
+Fatal server error:
+Could not create lock file in /tmp/.tX92-lock
+```
+
+Two *Android-only*, generic (not KGSL-specific) private patches address it:
+
+- `termux/0003-android-termux-tmpdir-server-lock.patch`: read an **absolute**
+  `TMPDIR` at `LockServer()` time. The Alroot shell launcher already exports
+  `TMPDIR=$PREFIX/tmp`, matching Termux Xtrans's prebuilt
+  `$PREFIX/tmp/.X11-unix/X`. Non-Android Xorg still locks in `/tmp`.
+- `termux/0004-android-atomic-no-replace-lock.patch`: Android denies `link()`
+  with `EACCES` even within the app-private directory. Use
+  `renameat2(RENAME_NOREPLACE)` as a fallback (only for `EACCES`/`EPERM`),
+  publishing the fully-written PID lock **atomically** without overwriting
+  another active display's lock. Preserve the original `EEXIST` process/PID
+  collision handling. Never use plain `rename()` or globally disable X11
+  locking, and never change Android's `/tmp` permissions.
+
+Both patches apply through the existing private `build-xwayland-private.sh`
+`000*.patch` loop for **both generic and KGSL variants**. Neither patches
+Termux's installed Xwayland nor changes a system renderer or APK.
+
+```
+ALROOT_XWAYLAND_VARIANT=kgsl bash graphics/tools/build-xwayland-private.sh
+python3 graphics/tools/test-s16-xwayland-rootful-lock.py
+```
+
+On the S26U the test started a disposable `:201` private rootful server
+without `-listenfd`; created `$PREFIX/tmp/.X201-lock`; exposed GLAMOR,
+DRI3/GLX/Present; ran KGSL `glxinfo -B` (`Adreno (TM) 840`); rejected a
+second server on **the same display** (`Server is already active`) while
+preserving the first lock's inode; and cleaned its lock/socket at exit.
+Live **Android S1.6 host logs** freshly reported this private Xwayland's
+LINEAR DMA-BUF → VkBuffer → VkImage GPU-copy path as imported. User GUI
+visual/pixel correctness, resizing and full XFCE remain separate gates.
+Do not auto-enable KGSL surfaceless on Mali/PowerVR/Xclipse.
