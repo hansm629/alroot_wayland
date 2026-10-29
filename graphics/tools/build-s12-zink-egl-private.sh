@@ -150,6 +150,10 @@ mkdir -p "$runtime/lib/dri"
 cp "$BUILD/src/egl/libEGL_mesa.so" "$runtime/lib/libEGL_mesa.so"
 cp "$BUILD/src/gallium/targets/dri/libgallium-26.3.0-devel.so" \
    "$runtime/lib/libgallium-26.3.0-devel.so"
+cmp -s "$BUILD/src/egl/libEGL_mesa.so" "$runtime/lib/libEGL_mesa.so"
+cmp -s "$BUILD/src/gallium/targets/dri/libgallium-26.3.0-devel.so" \
+       "$runtime/lib/libgallium-26.3.0-devel.so"
+echo 'S12_PRIVATE_EGL_STAGING=BUILD_MATCH'
 ln -sfn ../libgallium-26.3.0-devel.so "$runtime/lib/dri/zink_dri.so"
 python3 - "$runtime" <<'PY'
 from pathlib import Path

@@ -20,6 +20,25 @@ zink)
             echo 'Private Mesa EGL/Gallium missing; build with graphics/tools/build-s12-zink-egl-private.sh' >&2
             exit 2
         }
+        build="$ROOT/.source/gpu-stage2/mesa-egl/build"
+        if ! cmp -s "$build/src/egl/libEGL_mesa.so" "$runtime/lib/libEGL_mesa.so" ||
+           ! cmp -s "$build/src/gallium/targets/dri/libgallium-26.3.0-devel.so" \
+                    "$runtime/lib/libgallium-26.3.0-devel.so"; then
+            echo 'S12_PRIVATE_EGL_STAGING=STALE_OR_MISMATCHED' >&2
+            echo 'Rebuild/restage with: bash graphics/tools/build-s12-zink-egl-private.sh' >&2
+            exit 2
+        fi
+        patch_dir="$ROOT/graphics/patches/mesa/egl"
+        source_hash="$(sha256sum \
+            "$patch_dir/0001-zink-kopper-ahb-wayland-no-rendernode.patch" \
+            "$patch_dir/0002-bionic-glapi-emutls-symbols.patch" \
+            "$patch_dir/0003-zink-optional-driconf-kopper.patch" | sha256sum | cut -d' ' -f1)"
+        stored_hash="$(cat "$ROOT/.source/gpu-stage2/mesa-egl/patch.sha256" 2>/dev/null || true)"
+        if [[ "$source_hash" != "$stored_hash" ]]; then
+            echo 'S12_PRIVATE_EGL_PATCHES=CHANGED_SINCE_BUILD' >&2
+            echo 'Rebuild/restage with: bash graphics/tools/build-s12-zink-egl-private.sh' >&2
+            exit 2
+        fi
         export __EGL_VENDOR_LIBRARY_FILENAMES="$runtime/egl_vendor.private.json"
         export LIBGL_DRIVERS_PATH="$runtime/lib/dri"
         export LD_LIBRARY_PATH="$runtime/lib${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
@@ -64,20 +83,44 @@ if [[ "${ALROOT_S12_KOPPER_EXPERIMENT:-0}" == 1 && "$mode" == zink ]]; then
     export ALROOT_EGL_WAYLAND_KOPPER=1
 fi
 set +e
-timeout -s TERM 18s env -u DISPLAY \
-    XDG_RUNTIME_DIR="$HOME/.alroot-wayland/runtime" \
-    WAYLAND_DISPLAY=wayland-0 \
-    EGL_PLATFORM=wayland \
-    "$TMP/wayland-egl" "$frames"
-rc=$?
-set -e
 OUT="$ROOT/.source/gpu-stage2/egl-results"
 mkdir -p "$OUT"
+if [[ "${ALROOT_S12_WIRE_VERIFY:-0}" == 1 ]]; then
+    WIRE_LOG="$OUT/wire-${mode}-${frames}.log"
+    timeout -s TERM 18s env -u DISPLAY \
+        WAYLAND_DEBUG=client \
+        XDG_RUNTIME_DIR="$HOME/.alroot-wayland/runtime" \
+        WAYLAND_DISPLAY=wayland-0 \
+        EGL_PLATFORM=wayland \
+        "$TMP/wayland-egl" "$frames" > "$WIRE_LOG" 2>&1
+    rc=$?
+    grep '^S12_' "$WIRE_LOG" || :
+else
+    timeout -s TERM 18s env -u DISPLAY \
+        XDG_RUNTIME_DIR="$HOME/.alroot-wayland/runtime" \
+        WAYLAND_DISPLAY=wayland-0 \
+        EGL_PLATFORM=wayland \
+        "$TMP/wayland-egl" "$frames"
+    rc=$?
+fi
+set -e
 HOST_LOG="$OUT/host-${mode}-${frames}.log"
 logcat -d -t "$timestamp" -s AlrootWayland > "$HOST_LOG" 2>&1 || :
 if ((rc!=0)); then
     echo "S12_NATIVE_EGL_TEST=FAILED code=$rc"
     exit "$rc"
+fi
+if [[ "${ALROOT_S12_WIRE_VERIFY:-0}" == 1 && "$mode" == zink ]]; then
+    ahb_count="$(grep -Ec ' -> alroot_gpu_buffer_v1#[0-9]+\.create_buffer(_with_format)?\(' "$WIRE_LOG" || true)"
+    shm_count="$(grep -Ec ' -> wl_shm_pool#[0-9]+\.create_buffer\(' "$WIRE_LOG" || true)"
+    echo "S12_WIRE_AHB_BUFFERS=$ahb_count"
+    echo "S12_WIRE_SHM_BUFFERS=$shm_count"
+    echo "S12_WIRE_CLIENT_LOG=$WIRE_LOG"
+    if ((ahb_count==0 || shm_count!=0)); then
+        echo 'S12_WIRE_GPU_TRANSPORT=FAIL (AHB absent or wl_shm fallback)' >&2
+        exit 6
+    fi
+    echo 'S12_WIRE_GPU_TRANSPORT=AHB_ONLY'
 fi
 if grep -q 'AHB -> VkImage GPU-copy:' "$HOST_LOG" &&
    grep -q '"Alroot S1.2 Wayland EGL/GLES swap test".*presenting GPU frames through Wayland' "$HOST_LOG"; then

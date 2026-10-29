@@ -38,6 +38,12 @@ ALROOT_S12_PRIVATE_EGL=1 ALROOT_S12_REQUIRE_GPU_COPY=1 \
     bash graphics/tools/test-s12-wayland-egl.sh zink 90 |
     tee "$logs/zink-kopper-ahb.log"
 
+echo 'S1.2: prove Zink/Kopper used the AHB protocol, not wl_shm'
+ALROOT_S12_PRIVATE_EGL=1 ALROOT_S12_REQUIRE_GPU_COPY=1 \
+    ALROOT_S12_WIRE_VERIFY=1 \
+    bash graphics/tools/test-s12-wayland-egl.sh zink 6 |
+    tee "$logs/zink-kopper-wire.log"
+
 echo 'S1.2: protect prior Vulkan and Termux-X11 DRI3 paths'
 bash graphics/tools/test-vkcube-stage1.sh fifo 120 |
     tee "$logs/vkcube-regression.log"

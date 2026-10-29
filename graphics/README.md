@@ -365,14 +365,42 @@ Reusable probes:
     bash graphics/tools/test-s12-ahb-formats.sh
     bash graphics/tools/test-s12-android-gles-ahb.sh 90 rgba8
 
-After explicitly installing a new host APK that advertises v2:
+After explicitly installing a host APK that advertises v2, first
+rebuild the **private** Mesa EGL/Gallium library from the current patch
+set, then test:
 
+    bash graphics/tools/build-s12-zink-egl-private.sh
     bash graphics/tools/test-s12-acceptance.sh
 
 The full acceptance verifies direct EGL RGBA8, optional Android EGL
 BGRA8, native Mesa Zink/Kopper EGL, Vulkan vkcube and Termux-X11 DRI3.
-The current S1.1 host only advertises version 1 and MUST NOT be
-replaced automatically. Until the new host is actually installed and
-its frames are visible, Zink/Kopper GPU-copy is not accepted.
+The older S1.1 host advertises version 1 and MUST NOT be replaced
+automatically. The new S1.2 host advertises v2 on compatible hardware.
+The test refuses a stale private ELF staging directory, an outdated
+patch hash or a host with only v1. The optional six-frame wire check
+inspects actual Wayland AHB buffer creation and rejects wl_shm fallback.
 The KGSL direct DRM/DMA-BUF import and MobileGL/virgl Wayland
 presenters remain separate targets; neither is counted as completed.
+
+### S1.2 S26U resumed acceptance (2026-10-29)
+
+The first v2-host test had 90 successful Zink eglSwapBuffers but no
+AHB VkImage import. A Wayland protocol trace showed two wl_shm buffers
+and no alroot_gpu_buffer_v1 bind. The private Mesa build/patch manifest
+was not synchronized with the current source patches. After rebuilding
+both private EGL and Gallium from all three pinned patches and restaging
+the shared objects (no global library replacement), the same test
+presented BGRA8 AHB images through Vulkan Kopper WSI successfully.
+
+The uninstrumented private runtime passed 90/90 EGL swaps with host
+AHB -> VkImage import. A separate six-frame WAYLAND_DEBUG=client test
+showed four alroot_gpu_buffer_v1.create_buffer_with_format requests,
+zero wl_shm_pool.create_buffer calls, and host GPU-copy import.
+Android GLES RGBA8 passed 90/90, optional BGRA8 passed 45/45, the
+original Vulkan vkcube path passed another 120 FIFO frames, and
+Termux-X11 :0 DRI3 plus protected renderer file hashes remained intact.
+The host's last AHB lifetime tick reported created=80, freed=80,
+live=0. This is host transport acceptance, not proof of real display
+pixel correctness, zero-copy, async fence removal, Xwayland GLAMOR,
+non-Adreno drivers or other desktop compositors. User visual inspection
+is still required. The installed S1.2 APK need not be updated again.
