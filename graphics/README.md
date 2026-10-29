@@ -514,3 +514,10 @@ See [Mesa 27 PR #25 revalidation](docs/mesa27-pr25-revalidation.md) for the
 fixed source/patch hashes, private build recipe, Turnip/Zink/KGSL GPU test
 matrix and explicit Xwayland DRI3/GLAMOR limitations. **Never replace the
 known-good Termux 26.3 packages or helper APK during this staged validation.**
+
+## GPU-S1.5 — Turnip 27 Wayland AHB WSI (private, experimental)
+
+See [Turnip 27 AHB WSI](docs/gpu-s15-turnip-wayland-ahb-wsi.md) for the
+separate opt-in Vulkan ICD build, real cross-driver AHB memory proof,
+GPU-copy architecture and host-confirmed acceptance requirements. This stage
+is not a system Mesa update, not an Xwayland DRI3 patch and not zero-copy.
