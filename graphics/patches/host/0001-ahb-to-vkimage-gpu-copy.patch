@@ -36,31 +36,32 @@ index f2424ce..9fd1824 100644
  int ahb_swapchain_defer_release(struct dmabuf_buffer *b, struct wl_resource *buffer, struct surface *s, int paced);
  void ahb_swapchain_surface_gone(struct surface *s);
 diff --git a/native/waylandcomp/src/compositor.c b/native/waylandcomp/src/compositor.c
-index 9b8666c..204e575 100644
+index 9b8666c..9927277 100644
 --- a/native/waylandcomp/src/compositor.c
 +++ b/native/waylandcomp/src/compositor.c
-@@ -770,8 +770,24 @@ static void take_dmabuf(struct surface *s, struct dmabuf_buffer *b, struct wl_re
+@@ -770,8 +770,23 @@ static void take_dmabuf(struct surface *s, struct dmabuf_buffer *b, struct wl_re
          wl_resource_add_destroy_listener(buffer, &s->dmabuf_destroy);
      }
      if (!b->img && !b->import_failed && b->n_planes >= 1) {
-+        /* Stage 1, vendor-neutral GPU-copy: first attempt the ordinary
-+         * dma-buf/modifier VkImage import exactly as before. If it fails,
-+         * optionally try an AHardwareBuffer which the CLIENT explicitly
-+         * associated with this wl_buffer via banner_ahb_v1. The Android
-+         * host's Vulkan driver must actually accept that gralloc handle.
-+         * This is an import/compose path, NOT direct zero-copy presentation.
-+         * No AHB: unchanged dma-buf path, unchanged failure behavior. */
-         b->img = vkp_image_from_dmabuf(b->fd[0], b->format, b->modifier, b->width, b->height,
-                                        b->stride[0], b->offset[0]);
-+        if (!b->img) {
-+            AHardwareBuffer *ahb = ahb_swapchain_borrow_ahb(b);
-+            if (ahb) {
-+                b->img = vkp_image_from_ahb(ahb);
-+                if (b->img)
-+                    alroot_log("vulkan", "AHB fallback -> VkImage GPU-copy import: %dx%d",
-+                               b->width, b->height);
-+            }
+-        b->img = vkp_image_from_dmabuf(b->fd[0], b->format, b->modifier, b->width, b->height,
+-                                       b->stride[0], b->offset[0]);
++        /* Stage 1 vendor-neutral GPU-copy. If the client *actually* sent
++         * a gralloc AHardwareBuffer for this wl_buffer, use the host's
++         * native Vulkan AHB importer FIRST, avoiding a known-bad generic
++         * DMA-BUF import attempt. If AHB import fails, try the original
++         * DMA-BUF path unchanged. Without AHB: original path only.
++         * The resulting VkImage still goes through GPU composition/copy;
++         * there is no direct scanout/zero-copy at this stage. */
++        AHardwareBuffer *ahb = ahb_swapchain_borrow_ahb(b);
++        if (ahb) {
++            b->img = vkp_image_from_ahb(ahb);
++            if (b->img)
++                alroot_log("vulkan", "AHB -> VkImage GPU-copy: %dx%d (host imported actual gralloc buffer)",
++                           b->width, b->height);
 +        }
++        if (!b->img)
++            b->img = vkp_image_from_dmabuf(b->fd[0], b->format, b->modifier, b->width, b->height,
++                                           b->stride[0], b->offset[0]);
          if (b->img && g_zero_copy) sc_layer_probe_dmabuf_fd(b->fd[0]);
          if (!b->img) {
              b->import_failed = 1;

@@ -118,3 +118,56 @@ and the Android Vulkan host presented it. Test both windowed/fullscreen and
 the XFCE desktop, with resize, FIFO/MAILBOX, suspend/resume and keyboard.
 Any Xclipse ANGLE or Mali/PowerVR result is **TEST-PENDING** until a suitable
 physical device proves it.
+
+## Android system ANGLE/Vulkan: minimal-translation target
+
+graphics/tools/probe-android-egl.sh queries the REAL Android system EGL/GLES
+loader, distinct from Termux Mesa. This matters especially on Xclipse
+devices whose GLES is implemented by ANGLE over Vulkan. S26U reported
+Android EGL 1.5 with native-buffer and native-fence support, no EGL
+DMA-BUF export, and Qualcomm native GLES. Xclipse is not yet tested.
+
+graphics/tools/probe-android-ahb-egl.sh creates a GPU-only AHardwareBuffer,
+imports it through Android EGLImage into a GLES framebuffer and submits a
+GPU clear without CPU readback. It passed on S26U, but reports Wayland
+present as NOT_TESTED. On S24+ this probe will test ANGLE's actual AHB
+render target, without assuming that the driver supports DMA-BUF export.
+
+For GLES apps with a verified ANGLE Vulkan AHB path, the performance goal
+is GLES -> ANGLE Vulkan -> AHB -> host Vulkan VkImage GPU-copy. Do not
+add GL4ES -> ANGLE -> additional GPU-copy stages by default. OpenGL apps
+prefer native EGL or a proven Zink -> Vulkan ICD route; DXVK/VKD3D and
+native Vulkan apps use direct Vulkan WSI. A future RADV-Xclipse ICD
+uses the same Vulkan interface as Turnip/wrapper; common code does
+not branch on the vendor name. API translation counts are structural
+estimates, NOT measured FPS or CPU fence performance.
+
+The policy is implemented as stand-alone C at
+graphics/include/alroot_render_plan.h and graphics/src/render_plan.c,
+with Xclipse ANGLE, future RADV, Mali/PowerVR and virgl cases tested.
+The planner is NOT yet wired into the running launcher; success flags
+must only be set after real buffer export/import/present tests.
+
+## Stage-1 host and private Xwayland validation
+
+graphics/patches/host/README.md documents two independent patches:
+AHB-first GPU-copy import and the version-3 banner_ahb_v1 capability
+event. Version 3 separates GPU-copy from direct-layer zero-copy and
+retains the existing version-2 mode/HDR semantics. The client XML
+is graphics/protocols/banner-ahb-v3.xml.
+
+graphics/tools/probe-ahb-wsi.sh queries a host read-only. Current P20
+reported version 2 with no copy event. Test-ahb-protocol.sh passed for
+both versions against private fake Wayland servers, including a v3
+GPU-copy-only host with direct layers OFF. The patched host C code
+passes syntax-checking on Android API 35; the active APK is unmodified.
+
+graphics/tools/build-xwayland-private.sh builds a separate Xwayland
+24.1.14 with GLAMOR+DRI3 enabled from SHA-256-pinned upstream sources.
+The Bionic SHMLBA fix is isolated in graphics/patches/xwayland/termux.
+The binary BUILT on S26U, but private headless Xwayland runtime did not
+yet establish DRI3/GLAMOR GPU presentation. It MUST NOT replace the
+current Alroot Xwayland or global Termux Xwayland without runtime tests.
+
+Run graphics/tools/test-stage1-inert.sh for non-invasive policy,
+host-overlay, protocol v2/v3 and Termux-X11 DRI3 protection checks.

@@ -18,3 +18,11 @@ required EGL export contract is absent. PowerVR/Mali follow the same rule.
 
 No new global Xwayland, Termux-X11 DRI3 patch or runtime auto-configuration
 exists yet. The current P20 Xwayland remains pixman and undisturbed.
+
+The isolated Android/Bionic fix at
+termux/0001-android-bigfont-pagesize-fallback.patch uses sysconf for the
+actual kernel page size when SHMLBA is undefined. It does not alter
+global packages. On S26U the GLAMOR+DRI3 Xwayland 24.1.14 binary
+compiled successfully after this patch. Headless runtime DRI3 and
+GPU frame import remain NOT ACCEPTED, so the executable must not be
+automatically selected by Alroot yet.

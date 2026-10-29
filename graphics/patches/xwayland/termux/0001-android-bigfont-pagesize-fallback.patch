@@ -1,0 +1,11 @@
+diff --git a/Xext/xf86bigfont.c b/Xext/xf86bigfont.c
+--- a/Xext/xf86bigfont.c
++++ b/Xext/xf86bigfont.c
+@@ -720,7 +720,7 @@
+         FontShmdescIndex = xfont2_allocate_font_private_index();
+ 
+-#if !defined(CSRG_BASED) && !defined(__CYGWIN__)
++#if !defined(CSRG_BASED) && !defined(__CYGWIN__) && defined(SHMLBA)
+         pagesize = SHMLBA;
+ #else
+ #ifdef _SC_PAGESIZE

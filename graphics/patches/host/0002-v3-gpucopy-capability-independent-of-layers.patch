@@ -1,0 +1,208 @@
+diff --git a/native/waylandcomp/generated/banner-ahb-v1-protocol.c b/native/waylandcomp/generated/banner-ahb-v1-protocol.c
+index 17b0c0d..b44a4ed 100644
+--- a/native/waylandcomp/generated/banner-ahb-v1-protocol.c
++++ b/native/waylandcomp/generated/banner-ahb-v1-protocol.c
+@@ -57,11 +57,12 @@ static const struct wl_message banner_ahb_v1_requests[] = {
+ 
+ static const struct wl_message banner_ahb_v1_events[] = {
+ 	{ "mode", "2u", banner_ahb_v1_types + 0 },
++	{ "gpu_capabilities", "3u", banner_ahb_v1_types + 0 },
+ };
+ 
+ WL_PRIVATE const struct wl_interface banner_ahb_v1_interface = {
+-	"banner_ahb_v1", 2,
++	"banner_ahb_v1", 3,
+ 	2, banner_ahb_v1_requests,
+-	1, banner_ahb_v1_events,
++	2, banner_ahb_v1_events,
+ };
+ 
+diff --git a/native/waylandcomp/generated/banner-ahb-v1-server-protocol.h b/native/waylandcomp/generated/banner-ahb-v1-server-protocol.h
+index 788982c..89bf1ac 100644
+--- a/native/waylandcomp/generated/banner-ahb-v1-server-protocol.h
++++ b/native/waylandcomp/generated/banner-ahb-v1-server-protocol.h
+@@ -66,8 +66,10 @@ struct banner_ahb_v1_interface {
+ };
+ 
+ #define BANNER_AHB_V1_MODE 0
++#define BANNER_AHB_V1_GPU_CAPABILITIES 1
+ 
+ #define BANNER_AHB_V1_MODE_SINCE_VERSION 2
++#define BANNER_AHB_V1_GPU_CAPABILITIES_SINCE_VERSION 3
+ 
+ #define BANNER_AHB_V1_DESTROY_SINCE_VERSION 1
+ #define BANNER_AHB_V1_ATTACH_SINCE_VERSION 1
+@@ -78,6 +80,12 @@ banner_ahb_v1_send_mode(struct wl_resource *resource_, uint32_t enabled)
+ 	wl_resource_post_event(resource_, BANNER_AHB_V1_MODE, enabled);
+ }
+ 
++static inline void
++banner_ahb_v1_send_gpu_capabilities(struct wl_resource *resource_, uint32_t flags)
++{
++	wl_resource_post_event(resource_, BANNER_AHB_V1_GPU_CAPABILITIES, flags);
++}
++
+ #ifdef  __cplusplus
+ }
+ #endif
+diff --git a/native/waylandcomp/protocols/banner-ahb-v1.xml b/native/waylandcomp/protocols/banner-ahb-v1.xml
+index 1560c8f..283e619 100644
+--- a/native/waylandcomp/protocols/banner-ahb-v1.xml
++++ b/native/waylandcomp/protocols/banner-ahb-v1.xml
+@@ -23,7 +23,7 @@
+     DEALINGS IN THE SOFTWARE.
+   </copyright>
+ 
+-  <interface name="banner_ahb_v1" version="2">
++  <interface name="banner_ahb_v1" version="3">
+     <description summary="Android gralloc buffers behind dma-buf wl_buffers">
+       Zero-copy window layers on Android. A Vulkan swapchain image that the
+       client allocated as an Android AHardwareBuffer (gralloc) is still shared
+@@ -101,5 +101,18 @@
+       </description>
+       <arg name="enabled" type="uint" summary="1 = gralloc swapchain images wanted, 0 = not"/>
+     </event>
++    <event name="gpu_capabilities" since="3">
++      <description summary="AHB transport capabilities independent of direct layers">
++        Version 3 separates AHB-to-VkImage GPU-copy from SurfaceControl
++        direct-layer zero-copy. Flags bit 0 = the Android host has an AHB
++        Vulkan importer (GPU-copy candidate); bit 1 = direct display layers
++        are available. Even with bit 0, clients must prove allocation,
++        synchronization and buffer format compatibility at runtime.
++        This is not an assertion that the GPU-copy import has succeeded.
++        The version 2 mode event remains a zero-copy switch only; it must
++        never be interpreted as a prohibition on v3 GPU-copy.
++      </description>
++      <arg name="flags" type="uint" summary="bit0 GPU-copy; bit1 direct-layer support"/>
++    </event>
+   </interface>
+ </protocol>
+diff --git a/native/waylandcomp/src/ahb_swapchain.c b/native/waylandcomp/src/ahb_swapchain.c
+index 9efd84b..6e5afc0 100644
+--- a/native/waylandcomp/src/ahb_swapchain.c
++++ b/native/waylandcomp/src/ahb_swapchain.c
+@@ -52,7 +52,8 @@ static uint64_t g_next_id = 1;
+ static struct wl_event_loop *g_loop;
+ static unsigned g_stat_zero_copy;
+ static int g_export_failed_logged, g_import_failed_logged;
+-static int g_advertised;
++/* An available AHB GPU-copy importer is NOT proof of direct display layers. */
++static int g_gpu_copy_available, g_layer_advertised;
+ static int g_mode_sent = -1;
+ static struct surface *g_announced;
+ static volatile int64_t g_last_zero_copy_ns;
+@@ -252,7 +253,8 @@ unsigned ahb_swapchain_stats_take(void) {
+     return n;
+ }
+ 
+-int ahb_swapchain_advertised(void) { return g_advertised; }
++/* Keep the pre-v3 meaning used by the existing HDR direct-layer gate. */
++int ahb_swapchain_advertised(void) { return g_layer_advertised; }
+ 
+ uint32_t ahb_swapchain_ahb_format(const struct dmabuf_buffer *b) {
+     struct ahb_buf *ab = b ? *alroot_dmabuf_ahb_slot((struct dmabuf_buffer *)b) : NULL;
+@@ -336,12 +338,16 @@ static void on_client_resource_destroyed(struct wl_resource *r) {
+ 
+ static void bind_ahb(struct wl_client *c, void *data, uint32_t ver, uint32_t id) {
+     static struct wl_client *last_named;
+-    if (ver > 2) ver = 2;
++    if (ver > 3) ver = 3;
+     struct wl_resource *r = wl_resource_create(c, &banner_ahb_v1_interface, (int)ver, id);
+     if (!r) { wl_client_post_no_memory(c); return; }
+     wl_resource_set_implementation(r, &ahb_impl, NULL, on_client_resource_destroyed);
+     wl_list_insert(&g_clients, wl_resource_get_link(r));
+-    if (ver >= BANNER_AHB_V1_MODE_SINCE_VERSION) banner_ahb_v1_send_mode(r, g_zero_copy ? 1u : 0u);
++    if (ver >= BANNER_AHB_V1_MODE_SINCE_VERSION)
++        banner_ahb_v1_send_mode(r, g_zero_copy && g_layer_advertised ? 1u : 0u);
++    if (ver >= BANNER_AHB_V1_GPU_CAPABILITIES_SINCE_VERSION)
++        banner_ahb_v1_send_gpu_capabilities(r,
++                (g_gpu_copy_available ? 1u : 0u) | (g_layer_advertised ? 2u : 0u));
+     if (last_named != c) {
+         last_named = c;
+         alroot_log("layer", "zero-copy: %s bound banner_ahb_v1 version %u (%s)", alroot_client_name(c), ver,
+@@ -350,9 +356,10 @@ static void bind_ahb(struct wl_client *c, void *data, uint32_t ver, uint32_t id)
+ }
+ 
+ void ahb_swapchain_set_mode(int on, int live) {
+-    on = on ? 1 : 0;
++    /* The legacy mode event controls ONLY direct layers, not Stage-1 copy. */
++    on = on && g_layer_advertised ? 1 : 0;
+     g_zero_copy = on;
+-    if (!g_advertised) {
++    if (!g_layer_advertised) {
+         if (live) alroot_log("layer", "zero-copy switched %s from the drawer, but no display layer is available on this device: no change",
+                              on ? "on" : "off");
+         return;
+@@ -385,22 +392,32 @@ void ahb_swapchain_set_mode(int on, int live) {
+ void ahb_swapchain_init(struct wl_display *display) {
+     wl_list_init(&g_bufs);
+     wl_list_init(&g_clients);
+-    if (!sc_layer_available()) {
+-        alroot_log("layer", "zero-copy: no display layer on this device (see the line above): banner_ahb_v1 not advertised");
++    g_gpu_copy_available = vkp_ahb_gpu_copy_supported() ? 1 : 0;
++    const int layer_candidate = sc_layer_available() ? 1 : 0;
++    if (!g_gpu_copy_available && !layer_candidate) {
++        alroot_log("layer", "AHB unsupported: no host Vulkan GPU-copy import and no direct layers");
+         return;
+     }
+     g_loop = wl_display_get_event_loop(display);
+-    if (pipe2(g_rel_pipe, O_CLOEXEC | O_NONBLOCK) != 0) {
+-        alroot_log("error", "zero-copy: release pipe creation failed (%s); zero-copy presents disabled", strerror(errno));
+-        g_rel_pipe[0] = g_rel_pipe[1] = -1;
+-        return;
++    if (layer_candidate) {
++        if (pipe2(g_rel_pipe, O_CLOEXEC | O_NONBLOCK) != 0) {
++            alroot_log("error", "zero-copy: release pipe creation failed (%s); direct layers disabled",
++                       strerror(errno));
++            g_rel_pipe[0] = g_rel_pipe[1] = -1;
++        } else {
++            wl_event_loop_add_fd(g_loop, g_rel_pipe[0], WL_EVENT_READABLE, on_release_pipe, NULL);
++            g_layer_advertised = 1;
++        }
+     }
+-    wl_event_loop_add_fd(g_loop, g_rel_pipe[0], WL_EVENT_READABLE, on_release_pipe, NULL);
+-    if (!wl_global_create(display, &banner_ahb_v1_interface, 2, NULL, bind_ahb)) {
+-        alroot_log("error", "zero-copy: banner_ahb_v1 global creation failed");
++    if (!g_gpu_copy_available && !g_layer_advertised) return;
++    if (!wl_global_create(display, &banner_ahb_v1_interface, 3, NULL, bind_ahb)) {
++        alroot_log("error", "AHB: banner_ahb_v1 global creation failed");
++        g_layer_advertised = 0;
+         return;
+     }
+-    g_advertised = 1;
+-    alroot_log("layer", "zero-copy: banner_ahb_v1 version 2 advertised (games built for it present their own gralloc buffers while the switch is on)");
++    alroot_log("layer", "banner_ahb_v1 version 3: AHB GPU-copy importer=%s, direct layer=%s; "
++               "v2 mode semantics retained",
++               g_gpu_copy_available ? "candidate" : "unavailable",
++               g_layer_advertised ? "available" : "unavailable");
+     ahb_swapchain_set_mode(g_zero_copy, 0);
+ }
+diff --git a/native/waylandcomp/src/vk_present.c b/native/waylandcomp/src/vk_present.c
+index 643d4dc..2e830f7 100644
+--- a/native/waylandcomp/src/vk_present.c
++++ b/native/waylandcomp/src/vk_present.c
+@@ -552,6 +552,11 @@ static int dev_init(void) {
+ 
+ int vkp_ready(void) { return dev_init(); }
+ 
++int vkp_ahb_gpu_copy_supported(void) {
++    return dev_init() == 0 && g_ahb_import &&
++           g_vk.GetAndroidHardwareBufferPropertiesANDROID != NULL;
++}
++
+ static int swap_init_locked(void);
+ 
+ static int swap_init(void) {
+diff --git a/native/waylandcomp/src/vk_present.h b/native/waylandcomp/src/vk_present.h
+index 67be6a6..f77533f 100644
+--- a/native/waylandcomp/src/vk_present.h
++++ b/native/waylandcomp/src/vk_present.h
+@@ -53,6 +53,8 @@ struct vkp_draw {
+ const char *vkp_gpu_name(void);
+ 
+ int vkp_ready(void);
++/* Capability probe for optional AHB VkImage import; not a proven frame. */
++int vkp_ahb_gpu_copy_supported(void);
+ int vkp_has_window(void);
+ int vkp_wait_window_request(int timeout_ms);
+ int vkp_device_lost(void);

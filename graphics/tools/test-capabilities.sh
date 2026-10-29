@@ -8,5 +8,9 @@ clang -std=c11 -Wall -Wextra -Werror -Igraphics/include \
     graphics/src/capability_policy.c graphics/tests/test_capability_policy.c \
     -o "$out/policy"
 "$out/policy"
+clang -std=c11 -Wall -Wextra -Werror -Igraphics/include \
+    graphics/src/render_plan.c graphics/tests/test_render_plan.c \
+    -o "$out/render-plan"
+"$out/render-plan"
 git apply --check graphics/patches/host/0001-ahb-to-vkimage-gpu-copy.patch
 echo 'PASS: vendor-neutral capability policy and isolated host patch dry-run'
