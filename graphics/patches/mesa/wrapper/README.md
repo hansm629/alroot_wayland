@@ -21,6 +21,14 @@ defines ALROOT_WSI_AHB only with with_wrapper_vk and with_platform_wayland.
 This is not a generic Turnip/RADV implementation; those use independent
 driver allocations but share the same Alroot Wayland protocol.
 
+When the Alroot AHB protocol is present and the wrapper's Android AHB
+capability callback is available, this adapter also advertises and prefers
+VK_FORMAT_R8G8B8A8_UNORM in Wayland surface formats. The v1 host accepts
+only RGBA8; otherwise applications that pick BGRA8 by default might
+silently fall back to an unusable generic DMA-BUF import. This format
+preference is strictly scoped to the Alroot protocol. Unsupported
+formats and non-Alroot Wayland compositors keep the existing behavior.
+
 ## Synchronization and Stage 1 limitations
 
 The v1 protocol does not transmit explicit acquire/release fences.
@@ -38,5 +46,28 @@ successful vkCreateImage is insufficient evidence of visible output.
 Run bash graphics/tools/test-wrapper-wayland-wsi.sh for clean patch
 application, client protocol scanner consistency, Meson conditions, and
 generated C syntax. This never alters original sources or installed
-drivers. Full Mesa wrapper build, vkcube visible-pixel acceptance,
-FIFO/MAILBOX, resizing and frame synchronization are still pending.
+drivers.
+
+## Private Mesa build and ICD validation
+
+The full Mesa wrapper with this opt-in AHB WSI compiled on S26U
+(Android API 35). The private library must be staged **outside**
+Meson's build directory: its generated RUNPATH otherwise resolves
+Mesa's dummy libnativewindow.so from $ORIGIN/../../android_stub.
+That stub silently makes the system Vulkan loader enumerate ZERO GPUs
+even though vkCreateInstance succeeds. Moving only the private
+library to a sibling runtime folder lets it load the real Android
+libnativewindow.so; it then detects Adreno 840 and Vulkan 1.4.295.
+
+    ALROOT_BUILD_WRAPPER_FULL=1 ALROOT_VERIFY_WRAPPER=1 bash graphics/tools/build-wrapper-wayland-private.sh
+    bash graphics/tools/test-wrapper-private-icd.sh
+
+The builder stages a private ICD JSON, never a global driver. The
+tests pass real GPU enumeration, VK_KHR_wayland_surface, cross-process
+AHB import and a completed VkCmdClearColorImage with no CPU pixel
+copy. Global Termux ICDs and Termux-X11 DRI3 stay unchanged.
+
+Actual visible vkcube, full Wayland WSI Present, resizing,
+FIFO/MAILBOX and explicit acquire/release synchronization remain
+TEST-PENDING until the experimental Alroot host APK is installed and
+the actual frames are observed.

@@ -237,8 +237,11 @@ transfer, the wrapper-side adapter currently waits for the submitted
 Vulkan image fence before Wayland commit: deliberate Stage-1 correctness
 and a future Stage-2 performance optimization target. The patch applies
 to the pinned S26U Mesa wrapper source and the generated client protocol
-matches the host XML. Full Mesa recompilation and actual visible
-vkcube still remain TEST-PENDING.
+matches the host XML. The full private wrapper ICD now builds and
+detects Adreno 840 / Vulkan 1.4.295, once staged outside Meson's dummy
+libnativewindow.so RUNPATH. Private ICD AHB import and GPU clear pass.
+Actual visible vkcube, complete Wayland WSI Present and explicit
+acquire/release synchronization remain TEST-PENDING.
 
 An isolated KGSL GLAMOR/DRI3 Xwayland implementation is retained in
 graphics/patches/xwayland/kgsl and compiles on S26U, but glxinfo timed

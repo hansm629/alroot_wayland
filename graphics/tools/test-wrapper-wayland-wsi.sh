@@ -18,6 +18,8 @@ cp "$SRC/src/vulkan/wsi/wsi_common_wayland.c" "$TMP/src/vulkan/wsi/"
 
 WSI="$TMP/src/vulkan/wsi"
 rg -q 'WSI_WL_BUFFER_ALROOT_AHB' "$WSI/wsi_common_wayland.c"
+rg -q 'VK_FORMAT_R8G8B8A8_UNORM' "$WSI/wsi_common_wayland.c"
+rg -q 'Put the supported AHB format first' "$WSI/wsi_common_wayland.c"
 rg -q 'AHardwareBuffer_sendHandleToUnixSocket' "$WSI/wsi_common_wayland.c"
 rg -q 'ALROOT_WSI_AHB=1' "$WSI/meson.build"
 rg -q 'with_wrapper_vk' "$WSI/meson.build"

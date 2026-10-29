@@ -7,6 +7,14 @@ cd "$ROOT"
 
 echo '=== STAGE 1: policy, host-patch and protocol contracts ==='
 bash graphics/tools/test-stage1-inert.sh
+if [[ -f "$HOME/alroot-vk-lab/vulkan-wrapper-android/src/vulkan/wsi/wsi_common_wayland.c" ]]; then
+    echo '=== WRAPPER WAYLAND WSI PATCH ISOLATION ==='
+    bash graphics/tools/test-wrapper-wayland-wsi.sh
+fi
+if [[ -s .source/gpu-stage1/wrapper-private-runtime/wrapper_icd.private.json ]]; then
+    echo '=== REAL PRIVATE VULKAN WRAPPER ICD / AHB GPU COMMAND ==='
+    bash graphics/tools/test-wrapper-private-icd.sh
+fi
 echo '=== STAGE 2: actual Android EGL/GLES loader ==='
 bash graphics/tools/probe-android-egl.sh
 echo '=== STAGE 3: Android EGL -> renderable AHB ==='

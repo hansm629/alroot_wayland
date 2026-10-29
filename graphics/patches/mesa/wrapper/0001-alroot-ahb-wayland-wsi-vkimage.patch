@@ -90,7 +90,36 @@ diff --git a/src/vulkan/wsi/wsi_common_wayland.c b/src/vulkan/wsi/wsi_common_way
     if (display->wp_presentation_notwrapped)
        wp_presentation_destroy(display->wp_presentation_notwrapped);
     if (display->fifo_manager)
-@@ -3301,6 +3323,21 @@
+@@ -1692,6 +1714,28 @@
+       goto fail;
+    }
+ 
++#if defined(__TERMUX__) && defined(ALROOT_WSI_AHB)
++   if (display->alroot_ahb_manager &&
++       wsi_wl->wsi->GetAndroidHardwareBufferPropertiesANDROID) {
++      /* Protocol v1 has exactly one portable format: RGBA8 UNORM.
++       * Advertise it even if the server's linux-dmabuf feedback is
++       * empty (this AHB transport does not need a DRM render node).
++       * Put the supported AHB format first so applications such as
++       * vkcube don't pick BGRA8 and silently use the failing DRM path.
++       * The choice remains opt-in and does not affect normal Wayland
++       * compositors, X11/DRI3 or devices without AHB capability. */
++      struct wsi_wl_format *ahb_format =
++         wsi_wl_display_add_vk_format(display, &display->formats,
++            VK_FORMAT_R8G8B8A8_UNORM,
++            WSI_WL_FMT_ALPHA | WSI_WL_FMT_OPAQUE);
++      if (ahb_format) {
++         struct wsi_wl_format *first = u_vector_tail(&display->formats);
++         struct wsi_wl_format tmp = *ahb_format;
++         *ahb_format = *first;
++         *first = tmp;
++      }
++   } else
++#endif
+    if (wsi_wl->wsi->force_bgra8_unorm_first) {
+       /* Find BGRA8_UNORM in the list and swap it to the first position if we
+        * can find it.  Some apps get confused if SRGB is first in the list.
+@@ -3301,6 +3345,21 @@
     if (chain->retired)
        return VK_ERROR_OUT_OF_DATE_KHR;
  
@@ -112,7 +141,7 @@ diff --git a/src/vulkan/wsi/wsi_common_wayland.c b/src/vulkan/wsi/wsi_common_way
     struct wsi_wl_surface *wsi_wl_surface = chain->wsi_wl_surface;
     bool mode_fifo = chain->base.present_mode == VK_PRESENT_MODE_FIFO_KHR;
  
-@@ -3561,6 +3598,33 @@
+@@ -3561,6 +3620,33 @@
        return result;
  
     switch (chain->buffer_type) {
@@ -146,7 +175,7 @@ diff --git a/src/vulkan/wsi/wsi_common_wayland.c b/src/vulkan/wsi/wsi_common_way
     case WSI_WL_BUFFER_GPU_SHM:
     case WSI_WL_BUFFER_SHM_MEMCPY: {
        if (chain->buffer_type == WSI_WL_BUFFER_SHM_MEMCPY) {
-@@ -3856,6 +3920,11 @@
+@@ -3856,6 +3942,11 @@
     struct wsi_base_image_params *image_params = NULL;
     struct wsi_cpu_image_params cpu_image_params;
     struct wsi_drm_image_params drm_image_params;
@@ -158,7 +187,7 @@ diff --git a/src/vulkan/wsi/wsi_common_wayland.c b/src/vulkan/wsi/wsi_common_way
     uint32_t num_drm_modifiers = 0;
     const uint64_t *drm_modifiers = NULL;
     if (wsi_device->sw) {
-@@ -3871,6 +3940,19 @@
+@@ -3871,6 +3962,19 @@
        }
        image_params = &cpu_image_params.base;
     } else {
@@ -178,7 +207,7 @@ diff --git a/src/vulkan/wsi/wsi_common_wayland.c b/src/vulkan/wsi/wsi_common_way
        drm_image_params = (struct wsi_drm_image_params) {
           .base.image_type = WSI_IMAGE_TYPE_DRM,
           .same_gpu = wsi_wl_surface->display->same_gpu,
-@@ -3903,6 +3985,7 @@
+@@ -3903,6 +4007,7 @@
        }
        buffer_type = WSI_WL_BUFFER_NATIVE;
        image_params = &drm_image_params.base;
@@ -186,7 +215,7 @@ diff --git a/src/vulkan/wsi/wsi_common_wayland.c b/src/vulkan/wsi/wsi_common_way
     }
  
     result = wsi_swapchain_init(wsi_device, &chain->base, device,
-@@ -3940,7 +4023,11 @@
+@@ -3940,7 +4045,11 @@
     chain->extent = pCreateInfo->imageExtent;
     chain->vk_format = pCreateInfo->imageFormat;
     chain->buffer_type = buffer_type;
@@ -199,7 +228,7 @@ diff --git a/src/vulkan/wsi/wsi_common_wayland.c b/src/vulkan/wsi/wsi_common_way
        chain->drm_format = wl_drm_format_for_vk_format(wsi_device,
                                                        chain->vk_format, alpha);
     } else {
-@@ -4015,7 +4102,7 @@
+@@ -4015,7 +4124,7 @@
           goto fail_free_wl_chain;
     }
  

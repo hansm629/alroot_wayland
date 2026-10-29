@@ -27,9 +27,20 @@ vulkan)
     case "${2:-wrapper}" in
     wrapper) export VK_DRIVER_FILES="$PREFIX/share/vulkan/icd.d/wrapper_icd.aarch64.json" ;;
     turnip) export VK_DRIVER_FILES="$PREFIX/share/vulkan/icd.d/freedreno_icd.aarch64.json" ;;
+    wrapper-private)
+        export VK_DRIVER_FILES="$ROOT/.source/gpu-stage1/wrapper-private-runtime/wrapper_icd.private.json"
+        if [[ ! -s "$VK_DRIVER_FILES" ]]; then
+            echo 'Private wrapper ICD is not built or staged' >&2
+            exit 2
+        fi
+        # The generic AHB protocol v1 supports only RGBA8 UNORM.
+        # Restrict the preference to this one validation process; never
+        # modify installed wrapper settings or X11 DRI3 capabilities.
+        export WRAPPER_SURFACE_FORMAT=rgba8
+        ;;
     *) echo "unknown Vulkan ICD: ${2:-}" >&2; exit 2 ;;
     esac
     ;;
-*) echo 'usage: test-wayland-ahb-window.sh egl|vulkan [wrapper|turnip] [seconds]' >&2; exit 2 ;;
+*) echo 'usage: test-wayland-ahb-window.sh egl|vulkan [wrapper|turnip|wrapper-private] [seconds]' >&2; exit 2 ;;
 esac
 "$TMP/test-window" "$seconds"
