@@ -794,7 +794,10 @@ static void take_dmabuf(struct surface *s, struct dmabuf_buffer *b, struct wl_re
                 alroot_log("vulkan", "AHB -> VkImage GPU-copy: %dx%d (host imported actual gralloc buffer)",
                            b->width, b->height);
         }
-        if (!b->img && b->n_planes > 0)
+        /* S1.6 VkBuffer fallback is reserved for a plain single-plane
+         * linux-dmabuf wl_buffer.  Never reinterpret an actual AHB transport
+         * (or multi-plane buffer) as an unrelated linear byte buffer. */
+        if (!b->img && b->n_planes == 1 && !ahb)
             b->img = vkp_image_from_dmabuf(b->fd[0], b->format, b->modifier, b->width, b->height,
                                            b->stride[0], b->offset[0]);
         if (b->img && g_zero_copy && b->n_planes > 0) sc_layer_probe_dmabuf_fd(b->fd[0]);

@@ -521,3 +521,23 @@ See [Turnip 27 AHB WSI](docs/gpu-s15-turnip-wayland-ahb-wsi.md) for the
 separate opt-in Vulkan ICD build, real cross-driver AHB memory proof,
 GPU-copy architecture and host-confirmed acceptance requirements. This stage
 is not a system Mesa update, not an Xwayland DRI3 patch and not zero-copy.
+
+
+## GPU-S1.6 — isolated Xwayland GLAMOR `VkBuffer` GPU-copy integration
+
+The Adreno/KGSL 24.1.14 private GLAMOR Xwayland can already export LINEAR
+EGL textures to Wayland DMA-BUF. Current Android Vulkan drivers may refuse
+these FDs as external VkImages, but a separate S16 on-device GPU test proves
+DMA-BUF `VkBuffer` import and `vkCmdCopyBufferToImage` GPU-copy with actual
+KGSL-exported GL texture pixels. The new `feature/gpu-s16-xwayland-glamor-vkbuffer`
+branch stages an import fallback in the Alroot Android host; it is **not
+installed** or proven on-screen until the signed APK is rebuilt and tested.
+
+Run the isolated per-device proof with:
+
+`ALROOT_S16_TEST_RESOLUTIONS=full bash graphics/tools/test-s16-xwayland-gpu-copy.sh`
+
+See `graphics/docs/gpu-s16-xwayland-vkbuffer.md` for exact limits, the
+1024x768 unpadded allocation size blocker, private Xwayland GLX timeout
+and pending visible-present/fence requirements. Do not infer that a glxinfo
+GPU renderer string is evidence of a successful on-screen GPU frame.

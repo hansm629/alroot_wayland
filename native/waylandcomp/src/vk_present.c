@@ -18,6 +18,8 @@
 #include <poll.h>
 #include <time.h>
 #include <pthread.h>
+#include <sys/stat.h>
+#include <stdint.h>
 #include <android/log.h>
 #include <android/hardware_buffer.h>
 
@@ -37,10 +39,18 @@ struct vkp_image {
     int in_general;
     VkFormat fmt;
     int sampled;
+    /* S1.6: a LINEAR Wayland DMA-BUF imported as a GPU VkBuffer.  The
+     * compatible private image is only the GPU-copy render target, never
+     * CPU-mapped.  No image aliasing of an external VkBuffer is attempted. */
+    VkBuffer linear_source;
+    VkDeviceMemory linear_source_mem;
+    uint32_t linear_stride;
+    int linear_copy;
 };
 
 static ANativeWindow *g_window;
 static int g_ahb_import;
+static int g_drm_modifier_image_import;
 static char *g_driver_path, *g_library_name, *g_native_lib_dir;
 static int g_dev_state;
 static VkInstance g_inst;
@@ -469,6 +479,9 @@ static int dev_init(void) {
     g_vk.EnumerateDeviceExtensionProperties(g_pd, NULL, &ne, NULL);
     VkExtensionProperties *exts = calloc(ne ? ne : 1, sizeof(*exts));
     g_vk.EnumerateDeviceExtensionProperties(g_pd, NULL, &ne, exts);
+    g_drm_modifier_image_import = has_ext(exts, ne, "VK_EXT_image_drm_format_modifier");
+    /* Keep the reported extension gate independent of Vulkan buffer imports:
+     * some Android ICDs can import DMA-BUF buffers but not DMA-BUF images. */
     /* Only what the driver has: the system driver lacks the dma-buf ones, which the cloud player never needs. */
     for (unsigned i = 0; i < 4; i++) {
         if (has_ext(exts, ne, import_exts[i])) dev_exts[n_dev_exts++] = import_exts[i];
@@ -917,6 +930,225 @@ int vkp_dmabuf_modifiers(uint32_t drm_format, uint64_t *out, int max) {
     return n;
 }
 
+/* Stage S1.6: optional, cross-vendor capability-gated LINEAR DMA-BUF import
+ * through VkBuffer, NOT the Vulkan external VkImage path.  The source FD
+ * remains the producer's GPU allocation and is never CPU-mapped or copied
+ * into another process.  A GPU buffer->image copy supplies the existing
+ * GLAMOR/Wayland Vulkan compositor with a normal VkImage (Stage 1 GPU-copy).
+ *
+ * This fallback can also be used by any other single-plane 32-bit linear
+ * client; it must never be selected for UBWC, multi-plane, 10-bit, or AHB.
+ * Unsupported drivers simply keep the old GPU import failure behavior.
+ * VkImage zero-copy and direct display scanout are NOT claimed here.
+ */
+static struct vkp_image *linear_vkbuffer_import(int fd, uint32_t drm_format,
+                                                 uint64_t modifier, int w, int h,
+                                                 uint32_t stride, uint32_t offset) {
+    if (modifier != VKP_MOD_LINEAR || offset || w <= 0 || h <= 0 ||
+        (drm_format != 0x34324241 && drm_format != 0x34324258 &&
+         drm_format != 0x34325241 && drm_format != 0x34325258) ||
+        !stride || stride % 4u || (uint64_t)stride < (uint64_t)w * 4u ||
+        !g_vk.GetPhysicalDeviceExternalBufferProperties ||
+        !g_vk.GetMemoryFdPropertiesKHR || !g_vk.CreateBuffer ||
+        !g_vk.GetBufferMemoryRequirements || !g_vk.GetBufferMemoryRequirements2 ||
+        !g_vk.AllocateMemory || !g_vk.BindBufferMemory || !g_vk.CmdCopyBufferToImage)
+        return NULL;
+
+    struct stat st;
+    if (fd < 0 || fstat(fd, &st) < 0 || st.st_size <= 0)
+        return NULL;
+    const uint64_t payload = (uint64_t)stride * (uint64_t)(h - 1) + (uint64_t)w * 4u;
+    if (payload > (uint64_t)st.st_size || payload > 0xffffffffu)
+        return NULL;
+
+    VkPhysicalDeviceExternalBufferInfo ebi = {
+        .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_EXTERNAL_BUFFER_INFO,
+        .handleType = VK_EXTERNAL_MEMORY_HANDLE_TYPE_DMA_BUF_BIT_EXT,
+        .usage = VK_BUFFER_USAGE_TRANSFER_SRC_BIT};
+    VkExternalBufferProperties ebp = {
+        .sType = VK_STRUCTURE_TYPE_EXTERNAL_BUFFER_PROPERTIES};
+    g_vk.GetPhysicalDeviceExternalBufferProperties(g_pd, &ebi, &ebp);
+    if (!(ebp.externalMemoryProperties.externalMemoryFeatures &
+          VK_EXTERNAL_MEMORY_FEATURE_IMPORTABLE_BIT))
+        return NULL;
+
+    struct vkp_image *img = calloc(1, sizeof(*img));
+    if (!img) return NULL;
+    img->w = w;
+    img->h = h;
+    img->fmt = drm_to_vk(drm_format);
+    img->sampled = 1;
+    img->linear_stride = stride;
+
+    VkExternalMemoryBufferCreateInfo ext = {
+        .sType = VK_STRUCTURE_TYPE_EXTERNAL_MEMORY_BUFFER_CREATE_INFO,
+        .handleTypes = VK_EXTERNAL_MEMORY_HANDLE_TYPE_DMA_BUF_BIT_EXT};
+    VkBufferCreateInfo bc = {
+        .sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO, .pNext = &ext,
+        .size = payload, .usage = VK_BUFFER_USAGE_TRANSFER_SRC_BIT,
+        .sharingMode = VK_SHARING_MODE_EXCLUSIVE};
+    VkResult r = g_vk.CreateBuffer(g_dev, &bc, NULL, &img->linear_source);
+    if (r != VK_SUCCESS) goto fail;
+
+    VkMemoryRequirements req;
+    g_vk.GetBufferMemoryRequirements(g_dev, img->linear_source, &req);
+    VkMemoryDedicatedRequirements dedicated = {
+        .sType = VK_STRUCTURE_TYPE_MEMORY_DEDICATED_REQUIREMENTS};
+    VkMemoryRequirements2 req2 = {
+        .sType = VK_STRUCTURE_TYPE_MEMORY_REQUIREMENTS_2, .pNext = &dedicated};
+    VkBufferMemoryRequirementsInfo2 info = {
+        .sType = VK_STRUCTURE_TYPE_BUFFER_MEMORY_REQUIREMENTS_INFO_2,
+        .buffer = img->linear_source};
+    g_vk.GetBufferMemoryRequirements2(g_dev, &info, &req2);
+    /* No implicit non-dedicated VkImage workaround: only a buffer whose
+     * VkMemoryDedicatedRequirements explicitly permits ordinary allocation. */
+    if (dedicated.requiresDedicatedAllocation || req.size > (uint64_t)st.st_size)
+        goto fail;
+
+    int dupfd = dup(fd);
+    if (dupfd < 0) goto fail;
+    VkMemoryFdPropertiesKHR fdprops = {
+        .sType = VK_STRUCTURE_TYPE_MEMORY_FD_PROPERTIES_KHR};
+    r = g_vk.GetMemoryFdPropertiesKHR(g_dev,
+            VK_EXTERNAL_MEMORY_HANDLE_TYPE_DMA_BUF_BIT_EXT, dupfd, &fdprops);
+    if (r != VK_SUCCESS) {
+        close(dupfd);
+        goto fail;
+    }
+    int type = memory_type(req.memoryTypeBits & fdprops.memoryTypeBits,
+                           VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
+    if (type < 0) type = memory_type(req.memoryTypeBits & fdprops.memoryTypeBits, 0);
+    if (type < 0) {
+        close(dupfd);
+        goto fail;
+    }
+    VkImportMemoryFdInfoKHR imp = {
+        .sType = VK_STRUCTURE_TYPE_IMPORT_MEMORY_FD_INFO_KHR,
+        .handleType = VK_EXTERNAL_MEMORY_HANDLE_TYPE_DMA_BUF_BIT_EXT,
+        .fd = dupfd};
+    VkMemoryAllocateInfo mai = {
+        .sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO, .pNext = &imp,
+        .allocationSize = req.size, .memoryTypeIndex = (uint32_t)type};
+    r = g_vk.AllocateMemory(g_dev, &mai, NULL, &img->linear_source_mem);
+    if (r != VK_SUCCESS) {
+        close(dupfd); /* only consumed on successful vkAllocateMemory */
+        goto fail;
+    }
+    r = g_vk.BindBufferMemory(g_dev, img->linear_source,
+                              img->linear_source_mem, 0);
+    if (r != VK_SUCCESS) goto fail;
+
+    VkImageCreateInfo ici = {
+        .sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO,
+        .imageType = VK_IMAGE_TYPE_2D, .format = img->fmt,
+        .extent = {(uint32_t)w, (uint32_t)h, 1},
+        .mipLevels = 1, .arrayLayers = 1, .samples = VK_SAMPLE_COUNT_1_BIT,
+        .tiling = VK_IMAGE_TILING_OPTIMAL,
+        .usage = VK_IMAGE_USAGE_TRANSFER_DST_BIT |
+                 VK_IMAGE_USAGE_TRANSFER_SRC_BIT |
+                 VK_IMAGE_USAGE_SAMPLED_BIT,
+        .sharingMode = VK_SHARING_MODE_EXCLUSIVE,
+        .initialLayout = VK_IMAGE_LAYOUT_UNDEFINED};
+    r = g_vk.CreateImage(g_dev, &ici, NULL, &img->image);
+    if (r != VK_SUCCESS) goto fail;
+    g_vk.GetImageMemoryRequirements(g_dev, img->image, &req);
+    type = memory_type(req.memoryTypeBits, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
+    if (type < 0) type = memory_type(req.memoryTypeBits, 0);
+    if (type < 0) goto fail;
+    mai = (VkMemoryAllocateInfo){
+        .sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO,
+        .allocationSize = req.size, .memoryTypeIndex = (uint32_t)type};
+    r = g_vk.AllocateMemory(g_dev, &mai, NULL, &img->mem);
+    if (r != VK_SUCCESS) goto fail;
+    r = g_vk.BindImageMemory(g_dev, img->image, img->mem, 0);
+    if (r != VK_SUCCESS) goto fail;
+
+    img->linear_copy = 1;
+    /* The VkImage is ours; no foreign-image ownership barrier is valid. */
+    img->dmabuf = 0;
+    img->in_general = 0;
+    alroot_log("gpu", "LINEAR DMA-BUF -> Vulkan VkBuffer GPU-copy: %dx%d, pitch %u, fd %lld B; "
+               "no CPU pixels, VkImage import not used", w, h, stride, (long long)st.st_size);
+    return img;
+fail:
+    if (img->image) g_vk.DestroyImage(g_dev, img->image, NULL);
+    if (img->mem) g_vk.FreeMemory(g_dev, img->mem, NULL);
+    if (img->linear_source) g_vk.DestroyBuffer(g_dev, img->linear_source, NULL);
+    if (img->linear_source_mem) g_vk.FreeMemory(g_dev, img->linear_source_mem, NULL);
+    free(img);
+    return NULL;
+}
+
+/* Record a GPU-only copy from the imported linear DMA-BUF into the normal
+ * compositor VkImage.  Called in the SAME command buffer as the scene render,
+ * before any draw/Blit that samples this image; no vkQueueWaitIdle or CPU
+ * mapping is introduced.  Xwayland's GLAMOR producer glFinish() currently
+ * supplies Stage-1 correctness before submitting the Wayland wl_buffer. */
+static void record_linear_buffer_copy(VkCommandBuffer cmd, struct vkp_image *img) {
+    if (!img || !img->linear_copy) return;
+    VkBufferMemoryBarrier src = {
+        .sType = VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER,
+        .srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+        .dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+        .srcAccessMask = 0, .dstAccessMask = VK_ACCESS_TRANSFER_READ_BIT,
+        .buffer = img->linear_source, .offset = 0, .size = VK_WHOLE_SIZE};
+    VkImageSubresourceRange range = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1};
+    VkImageMemoryBarrier dst = {
+        .sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER,
+        .oldLayout = img->in_general ? VK_IMAGE_LAYOUT_GENERAL : VK_IMAGE_LAYOUT_UNDEFINED,
+        .newLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+        .srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+        .dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+        .srcAccessMask = img->in_general ?
+                         (VK_ACCESS_TRANSFER_READ_BIT | VK_ACCESS_SHADER_READ_BIT) : 0,
+        .dstAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT,
+        .image = img->image, .subresourceRange = range};
+    g_vk.CmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_ALL_COMMANDS_BIT,
+                            VK_PIPELINE_STAGE_TRANSFER_BIT, 0, 0, NULL,
+                            1, &src, 1, &dst);
+    VkBufferImageCopy region = {
+        .bufferOffset = 0, .bufferRowLength = img->linear_stride / 4u,
+        .bufferImageHeight = (uint32_t)img->h,
+        .imageSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1},
+        .imageExtent = {(uint32_t)img->w, (uint32_t)img->h, 1}};
+    g_vk.CmdCopyBufferToImage(cmd, img->linear_source, img->image,
+                              VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &region);
+    VkImageMemoryBarrier done = {
+        .sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER,
+        .oldLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+        .newLayout = VK_IMAGE_LAYOUT_GENERAL,
+        .srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+        .dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+        .srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT,
+        .dstAccessMask = VK_ACCESS_TRANSFER_READ_BIT | VK_ACCESS_SHADER_READ_BIT,
+        .image = img->image, .subresourceRange = range};
+    /* The KGSL EGL producer does not submit Vulkan queue-family release.
+     * In the standalone proof, acquiring VK_QUEUE_FAMILY_EXTERNAL here
+     * returned zeros.  EGL glFinish() ensures producer GPU writes finish;
+     * keep buffer queue-family indices IGNORED on this GL-owned path.
+     * Future explicit synchronization must negotiate a real release. */
+    src.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+    src.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+    src.srcAccessMask = VK_ACCESS_TRANSFER_READ_BIT;
+    src.dstAccessMask = 0;
+    g_vk.CmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_TRANSFER_BIT,
+                            VK_PIPELINE_STAGE_ALL_COMMANDS_BIT, 0, 0, NULL,
+                            1, &src, 1, &done);
+    img->in_general = 1;
+}
+
+static void record_linear_sources(VkCommandBuffer cmd,
+                                   const struct vkp_draw *draws, int n) {
+    for (int i = 0; i < n; ++i) {
+        struct vkp_image *img = draws[i].img;
+        if (!img || !img->linear_copy) continue;
+        int repeated = 0;
+        for (int j = 0; j < i; ++j)
+            if (draws[j].img == img) { repeated = 1; break; }
+        if (!repeated) record_linear_buffer_copy(cmd, img);
+    }
+}
+
 struct vkp_image *vkp_image_from_dmabuf(int fd, uint32_t drm_format, uint64_t modifier, int w, int h,
                                         uint32_t stride, uint32_t offset) {
     return vkp_image_import_dmabuf(fd, drm_format, modifier, w, h, stride, offset, 0);
@@ -928,6 +1160,9 @@ struct vkp_image *vkp_image_import_dmabuf(int fd, uint32_t drm_format, uint64_t 
                                           uint32_t stride, uint32_t offset, int as_blit_dst) {
     if (modifier == MOD_INVALID || w <= 0 || h <= 0) return NULL;
     if (dev_init() != 0) return NULL;
+    if (!as_blit_dst && modifier == VKP_MOD_LINEAR &&
+        !g_drm_modifier_image_import)
+        return linear_vkbuffer_import(fd, drm_format, modifier, w, h, stride, offset);
 
     struct vkp_image *img = calloc(1, sizeof(*img));
     if (!img) return NULL;
@@ -1129,6 +1364,8 @@ void vkp_image_destroy(struct vkp_image *img) {
         if (img->map) g_vk.UnmapMemory(g_dev, img->mem);
         if (img->image) g_vk.DestroyImage(g_dev, img->image, NULL);
         if (img->mem) g_vk.FreeMemory(g_dev, img->mem, NULL);
+        if (img->linear_source) g_vk.DestroyBuffer(g_dev, img->linear_source, NULL);
+        if (img->linear_source_mem) g_vk.FreeMemory(g_dev, img->linear_source_mem, NULL);
     }
     free(img);
 }
@@ -1602,6 +1839,7 @@ static int render_impl(int scene_w, int scene_h, const struct vkp_draw *draws, i
                                    .flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT};
     g_vk.BeginCommandBuffer(cmd, &bi);
     blendp_begin_frame();
+    record_linear_sources(cmd, draws, n);
     VkImageSubresourceRange range = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1};
 
     VkImageMemoryBarrier *bars = calloc((size_t)n + 1, sizeof(*bars));
@@ -1895,6 +2133,7 @@ int vkp_blit_image(struct vkp_image *src, struct vkp_image *dst, int wait_fd) {
     VkCommandBufferBeginInfo bi = {.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO,
                                    .flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT};
     g_vk.BeginCommandBuffer(g_cmd, &bi);
+    record_linear_buffer_copy(g_cmd, src);
     VkImageMemoryBarrier acq[2] = {
         {.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER, .oldLayout = VK_IMAGE_LAYOUT_UNDEFINED,
          .newLayout = VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
@@ -1996,6 +2235,7 @@ int vkp_image_readback(struct vkp_image *src, uint32_t *out, int max_px) {
     VkCommandBufferBeginInfo bi = {.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO,
                                    .flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT};
     g_vk.BeginCommandBuffer(cmd, &bi);
+    record_linear_buffer_copy(cmd, src);
     VkImageMemoryBarrier acq[2] = {
         {.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER, .oldLayout = VK_IMAGE_LAYOUT_UNDEFINED,
          .newLayout = VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
@@ -2082,6 +2322,7 @@ static int pass_begin_impl(int scene_w, int scene_h, const struct vkp_draw *draw
                                    .flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT};
     g_vk.BeginCommandBuffer(cmd, &bi);
     blendp_begin_frame();
+    record_linear_sources(cmd, draws, n);
     VkImageSubresourceRange range = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1};
 
     VkImageMemoryBarrier *bars = calloc((size_t)n + 1, sizeof(*bars));
