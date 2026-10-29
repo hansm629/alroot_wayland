@@ -23,6 +23,7 @@
 #include <unistd.h>
 #include <wayland-client.h>
 #include "alroot-gpu-buffer-v1-client-protocol.h"
+#include "alroot_vulkan_ahb_producer.h"
 #include "xdg-shell-client-protocol.h"
 
 #define API(lib, name) ((typeof(&name))dlsym((lib), #name))
@@ -89,6 +90,74 @@ static void *resolve(void *lib, const char *name) {
     void *p=dlsym(lib,name);
     if (!p) fprintf(stderr,"ANDROID_EGL_SYMBOL_MISSING=%s\n",name);
     return p;
+}
+
+static int render_vulkan_and_transfer(struct demo *d,
+                                      uint32_t width, uint32_t height) {
+    void *native = dlopen("/system/lib64/libnativewindow.so",
+                          RTLD_NOW | RTLD_LOCAL);
+    if (!native) {
+        puts("AHB_VULKAN_WINDOW=NO_NATIVEWINDOW");
+        return -1;
+    }
+    int (*allocate)(const AHardwareBuffer_Desc *, AHardwareBuffer **) =
+        (int (*)(const AHardwareBuffer_Desc *, AHardwareBuffer **))
+        dlsym(native,"AHardwareBuffer_allocate");
+    int (*send)(const AHardwareBuffer *, int) =
+        (int (*)(const AHardwareBuffer *, int))
+        dlsym(native,"AHardwareBuffer_sendHandleToUnixSocket");
+    void (*release)(AHardwareBuffer *) =
+        (void (*)(AHardwareBuffer *))dlsym(native,"AHardwareBuffer_release");
+    if (!allocate || !send || !release) {
+        dlclose(native);
+        return -1;
+    }
+    AHardwareBuffer_Desc desc={0};
+    desc.width=width; desc.height=height; desc.layers=1;
+    desc.format=AHARDWAREBUFFER_FORMAT_R8G8B8A8_UNORM;
+    desc.usage=AHARDWAREBUFFER_USAGE_GPU_COLOR_OUTPUT |
+               AHARDWAREBUFFER_USAGE_GPU_SAMPLED_IMAGE;
+    AHardwareBuffer *ahb=NULL;
+    if (allocate(&desc,&ahb)!=0 || !ahb) {
+        puts("AHB_VULKAN_WINDOW=ALLOCATION_FAILED");
+        dlclose(native);
+        return -1;
+    }
+    /* Vulkan wrapper / future Vulkan ICD writes the GPU buffer directly.
+     * The AHB goes to the Android compositor by public NDK handle IPC;
+     * there is no intermediate GLES or CPU pixel copy. */
+    int result=alroot_ahb_vulkan_import_and_clear(ahb,1);
+    if (result!=0) {
+        puts("AHB_VULKAN_WINDOW=DRIVER_CANNOT_RENDER_AHB");
+        release(ahb);
+        dlclose(native);
+        return -1;
+    }
+    int sockets[2];
+    if (socketpair(AF_UNIX,SOCK_STREAM,0,sockets)!=0) {
+        release(ahb);
+        dlclose(native);
+        return -1;
+    }
+    int sent=send(ahb,sockets[0]);
+    close(sockets[0]);
+    if (sent!=0) {
+        close(sockets[1]);
+        release(ahb);
+        dlclose(native);
+        return -1;
+    }
+    d->buffer=alroot_gpu_buffer_v1_create_buffer(d->manager,sockets[1],
+                                                  width,height);
+    close(sockets[1]);
+    release(ahb);
+    dlclose(native);
+    if (!d->buffer) return -1;
+    wl_buffer_add_listener(d->buffer,&buffer_listener,d);
+    puts("AHB_VULKAN_WINDOW=FRAME_SENT_TO_WAYLAND");
+    puts("AHB_VULKAN_WINDOW_CPU_PIXEL_COPY=0");
+    puts("AHB_VULKAN_WINDOW_HOST_VKIMAGE_PRESENT=CHECK_ANDROID_HOST_LOG");
+    return 0;
 }
 
 static int render_and_transfer(struct demo *d, uint32_t width, uint32_t height) {
@@ -276,7 +345,11 @@ int main(int argc,char **argv) {
     wl_surface_commit(d.surface);
     for (int i=0;i<12 && !d.configured;i++)
         if (wl_display_roundtrip(d.display)<0) break;
-    if (!d.configured || render_and_transfer(&d,640,360)!=0) {
+    const int use_vk=getenv("ALROOT_AHB_RENDERER") &&
+                     !strcmp(getenv("ALROOT_AHB_RENDERER"),"vulkan");
+    if (!d.configured ||
+        (use_vk ? render_vulkan_and_transfer(&d,640,360)
+                : render_and_transfer(&d,640,360))!=0) {
         puts("AHB_EGL_WINDOW=INIT_FAILED");
         return 3;
     }

@@ -21,6 +21,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <unistd.h>
+#include "alroot_vulkan_ahb_producer.h"
 
 typedef int (*ahb_allocate_fn)(const AHardwareBuffer_Desc *, AHardwareBuffer **);
 typedef int (*ahb_send_fn)(const AHardwareBuffer *, int);
@@ -49,11 +50,112 @@ static int native_load(struct native_api *api) {
            api->release && api->describe ? 0 : -1;
 }
 
-static int import_vulkan_image(AHardwareBuffer *buf) {
+static int submit_gpu_clear(PFN_vkGetDeviceProcAddr gdpa, VkDevice device,
+                            uint32_t family, VkImage img) {
+#define DEVFN(name) PFN_##name name##_fn=(PFN_##name)gdpa(device,#name)
+    DEVFN(vkGetDeviceQueue);
+    DEVFN(vkCreateCommandPool);
+    DEVFN(vkAllocateCommandBuffers);
+    DEVFN(vkBeginCommandBuffer);
+    DEVFN(vkCmdPipelineBarrier);
+    DEVFN(vkCmdClearColorImage);
+    DEVFN(vkEndCommandBuffer);
+    DEVFN(vkQueueSubmit);
+    DEVFN(vkCreateFence);
+    DEVFN(vkWaitForFences);
+    DEVFN(vkDestroyFence);
+    DEVFN(vkDestroyCommandPool);
+#undef DEVFN
+    if (!vkGetDeviceQueue_fn || !vkCreateCommandPool_fn ||
+        !vkAllocateCommandBuffers_fn || !vkBeginCommandBuffer_fn ||
+        !vkCmdPipelineBarrier_fn || !vkCmdClearColorImage_fn ||
+        !vkEndCommandBuffer_fn || !vkQueueSubmit_fn || !vkCreateFence_fn ||
+        !vkWaitForFences_fn || !vkDestroyFence_fn || !vkDestroyCommandPool_fn) {
+        puts("VK_AHB_CLEAR=DEVICE_SYMBOL_MISSING");
+        return -1;
+    }
+    VkCommandPool pool=VK_NULL_HANDLE;
+    VkCommandPoolCreateInfo pci={
+        .sType=VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO,
+        .queueFamilyIndex=family
+    };
+    if (vkCreateCommandPool_fn(device,&pci,NULL,&pool)!=VK_SUCCESS)
+        return -1;
+    VkCommandBuffer cb=VK_NULL_HANDLE;
+    VkCommandBufferAllocateInfo a={
+        .sType=VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO,
+        .commandPool=pool, .level=VK_COMMAND_BUFFER_LEVEL_PRIMARY,
+        .commandBufferCount=1
+    };
+    int ok=0;
+    VkFence fence=VK_NULL_HANDLE;
+    if (vkAllocateCommandBuffers_fn(device,&a,&cb)!=VK_SUCCESS) goto cleanup;
+    VkCommandBufferBeginInfo begin={
+        .sType=VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO,
+        .flags=VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT
+    };
+    if (vkBeginCommandBuffer_fn(cb,&begin)!=VK_SUCCESS) goto cleanup;
+    VkImageSubresourceRange sub={ .aspectMask=VK_IMAGE_ASPECT_COLOR_BIT,
+                                  .levelCount=1, .layerCount=1 };
+    VkImageMemoryBarrier before={
+        .sType=VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER,
+        .oldLayout=VK_IMAGE_LAYOUT_UNDEFINED,
+        .newLayout=VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+        .dstAccessMask=VK_ACCESS_TRANSFER_WRITE_BIT,
+        .srcQueueFamilyIndex=VK_QUEUE_FAMILY_IGNORED,
+        .dstQueueFamilyIndex=VK_QUEUE_FAMILY_IGNORED,
+        .image=img, .subresourceRange=sub
+    };
+    vkCmdPipelineBarrier_fn(cb,VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT,
+                           VK_PIPELINE_STAGE_TRANSFER_BIT,0,0,NULL,
+                           0,NULL,1,&before);
+    VkClearColorValue color={ .float32={0.11f,0.72f,0.91f,1.0f} };
+    vkCmdClearColorImage_fn(cb,img,VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+                            &color,1,&sub);
+    VkImageMemoryBarrier after={
+        .sType=VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER,
+        .srcAccessMask=VK_ACCESS_TRANSFER_WRITE_BIT,
+        .dstAccessMask=VK_ACCESS_SHADER_READ_BIT,
+        .oldLayout=VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+        .newLayout=VK_IMAGE_LAYOUT_GENERAL,
+        .srcQueueFamilyIndex=VK_QUEUE_FAMILY_IGNORED,
+        .dstQueueFamilyIndex=VK_QUEUE_FAMILY_IGNORED,
+        .image=img, .subresourceRange=sub
+    };
+    vkCmdPipelineBarrier_fn(cb,VK_PIPELINE_STAGE_TRANSFER_BIT,
+                           VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT,0,0,NULL,
+                           0,NULL,1,&after);
+    if (vkEndCommandBuffer_fn(cb)!=VK_SUCCESS) goto cleanup;
+    VkFenceCreateInfo fi={.sType=VK_STRUCTURE_TYPE_FENCE_CREATE_INFO};
+    if (vkCreateFence_fn(device,&fi,NULL,&fence)!=VK_SUCCESS) goto cleanup;
+    VkQueue queue=VK_NULL_HANDLE;
+    vkGetDeviceQueue_fn(device,family,0,&queue);
+    VkSubmitInfo submit={
+        .sType=VK_STRUCTURE_TYPE_SUBMIT_INFO,
+        .commandBufferCount=1, .pCommandBuffers=&cb
+    };
+    if (vkQueueSubmit_fn(queue,1,&submit,fence)!=VK_SUCCESS) goto cleanup;
+    if (vkWaitForFences_fn(device,1,&fence,VK_TRUE,3000000000ULL)!=VK_SUCCESS)
+        goto cleanup;
+    ok=1;
+    puts("VK_AHB_CLEAR=GPU_SUBMITTED_AND_COMPLETED");
+    puts("VK_AHB_CLEAR_CPU_PIXEL_COPY=0");
+cleanup:
+    if (fence) vkDestroyFence_fn(device,fence,NULL);
+    vkDestroyCommandPool_fn(device,pool,NULL);
+    return ok ? 0 : -1;
+}
+
+int alroot_ahb_vulkan_import_and_clear(AHardwareBuffer *buf, int clear) {
     int ok = 0;
-    void *vk = dlopen("/system/lib64/libvulkan.so", RTLD_NOW | RTLD_LOCAL);
+    /* Select system Android Vulkan (host) by default, or explicitly select
+     * Termux Vulkan loader plus a caller-scoped VK_DRIVER_FILES ICD (client).
+     * Never change global ICD files or Termux-X11 DRI3 configuration. */
+    const char *loader = getenv("ALROOT_TEST_VULKAN_LOADER");
+    if (!loader || !*loader) loader = "/system/lib64/libvulkan.so";
+    void *vk = dlopen(loader, RTLD_NOW | RTLD_LOCAL);
     if (!vk) {
-        puts("VK_AHB_IMPORT=NO_SYSTEM_VULKAN");
+        puts("VK_AHB_IMPORT=NO_VULKAN_LOADER");
         return -1;
     }
     PFN_vkGetInstanceProcAddr gpa =
@@ -109,12 +211,25 @@ static int import_vulkan_image(AHardwareBuffer *buf) {
         if (extensions(physical[dev],NULL,&ne,NULL)!=VK_SUCCESS || !ne) continue;
         VkExtensionProperties *ext=calloc(ne,sizeof(*ext));
         if (!ext) continue;
-        int ahb=0;
-        if (extensions(physical[dev],NULL,&ne,ext)==VK_SUCCESS)
-            for (uint32_t i=0;i<ne;i++)
+        int ahb=0, external_fd=0, dma_buf=0, drm_modifiers=0;
+        if (extensions(physical[dev],NULL,&ne,ext)==VK_SUCCESS) {
+            for (uint32_t i=0;i<ne;i++) {
                 if (!strcmp(ext[i].extensionName,
                             VK_ANDROID_EXTERNAL_MEMORY_ANDROID_HARDWARE_BUFFER_EXTENSION_NAME))
                     ahb=1;
+                else if (!strcmp(ext[i].extensionName,
+                                 VK_KHR_EXTERNAL_MEMORY_FD_EXTENSION_NAME))
+                    external_fd=1;
+                else if (!strcmp(ext[i].extensionName,
+                                 VK_EXT_EXTERNAL_MEMORY_DMA_BUF_EXTENSION_NAME))
+                    dma_buf=1;
+                else if (!strcmp(ext[i].extensionName,
+                                 VK_EXT_IMAGE_DRM_FORMAT_MODIFIER_EXTENSION_NAME))
+                    drm_modifiers=1;
+            }
+        }
+        printf("VK_AHB_CAPS device=%u ahb=%d external_fd=%d dma_buf=%d drm_modifier=%d\n",
+               dev,ahb,external_fd,dma_buf,drm_modifiers);
         free(ext);
         if (!ahb) continue;
         uint32_t nf=0;
@@ -197,7 +312,8 @@ static int import_vulkan_image(AHardwareBuffer *buf) {
             .extent={64,64,1},
             .mipLevels=1, .arrayLayers=1, .samples=VK_SAMPLE_COUNT_1_BIT,
             .tiling=VK_IMAGE_TILING_OPTIMAL,
-            .usage=VK_IMAGE_USAGE_TRANSFER_SRC_BIT|VK_IMAGE_USAGE_SAMPLED_BIT,
+            .usage=VK_IMAGE_USAGE_TRANSFER_SRC_BIT|VK_IMAGE_USAGE_TRANSFER_DST_BIT|
+                   VK_IMAGE_USAGE_SAMPLED_BIT,
             .sharingMode=VK_SHARING_MODE_EXCLUSIVE,
             .initialLayout=VK_IMAGE_LAYOUT_UNDEFINED
         };
@@ -235,7 +351,7 @@ static int import_vulkan_image(AHardwareBuffer *buf) {
                         puts("VK_AHB_IMPORT=PASS");
                         puts("VK_AHB_IMPORT_PIXEL_TRANSFER=NOT_TESTED");
                         puts("VK_AHB_IMPORT_WAYLAND_PRESENT=NOT_TESTED");
-                        ok=1;
+                        ok=(!clear || submit_gpu_clear(gdpa,device,family,img)==0);
                     } else printf("VK_AHB_IMPORT=BIND_FAILED code=%d\n",(int)res);
                     vkFreeMemory_fn(device,mem,NULL);
                 } else printf("VK_AHB_IMPORT=ALLOCATE_FAILED code=%d\n",(int)res);
@@ -250,6 +366,7 @@ done:
     return ok ? 0 : -1;
 }
 
+#ifndef ALROOT_VK_PRODUCER_ONLY
 int main(void) {
     struct native_api api={0};
     if (native_load(&api)) {
@@ -289,7 +406,8 @@ int main(void) {
             if (desc.width==request.width && desc.height==request.height &&
                 desc.format==request.format) {
                 puts("AHB_IPC_RECEIVE=PASS");
-                status=import_vulkan_image(received)==0 ? 0 : 1;
+                status=alroot_ahb_vulkan_import_and_clear(received,
+                           getenv("ALROOT_TEST_GPU_CLEAR") != NULL)==0 ? 0 : 1;
             } else { puts("AHB_IPC_RECEIVE=BAD_METADATA"); status=1; }
             api.release(received);
         } else { puts("AHB_IPC_RECEIVE=FAILED"); status=1; }
@@ -309,3 +427,4 @@ int main(void) {
     dlclose(api.lib);
     return sent || !WIFEXITED(result) || WEXITSTATUS(result) ? 4 : 0;
 }
+#endif

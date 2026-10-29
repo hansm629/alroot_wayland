@@ -42,3 +42,22 @@ modes. The headless server cannot offer linux-dmabuf-v4 or wl_drm,
 so GLAMOR falls back to pixman and DRI3 is not yet presentable.
 Use graphics/tools/test-xwayland-private.py to reproduce safely; it
 does not create clients on the user's actual :0 or :90 display.
+
+## S26U opt-in KGSL port (never the universal backend)
+
+The retained patch
+kgsl/0001-optional-kgsl-surfaceless-dri3-24.1.14.patch ports the
+lfdevs/xwayland PR #1 surfaceless GLAMOR/DRI3 commits to pinned
+Xwayland 24.1.14. It is an **Adreno-only optional adapter** and is
+never enabled by the generic Xwayland launcher on other GPUs.
+Its isolated build is reproducible:
+
+    ALROOT_XWAYLAND_VARIANT=kgsl bash graphics/tools/build-xwayland-private.sh
+
+On S26U, an explicitly activated copy initialized GLAMOR through Mesa
+Zink/Vulkan-wrapper and advertised DRI3, GLX and Present on disposable
+DISPLAY :232. But glxinfo timed out and Xwayland reported "Error getting
+buffer", so this is **not** a passed visible-screen GPU test.
+For Xclipse/RADV-Xclipse, Mali and PowerVR the common DRM/GBM or
+AHB-backed Vulkan route remains separate. Never make /dev/kgsl-3d0 a
+default device or bypass DRI3 regressions for those GPUs.

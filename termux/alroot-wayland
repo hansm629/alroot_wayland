@@ -259,7 +259,29 @@ start_xwayland() {
         fi
     fi
     printf '%s %s\n' "$guest_w" "$guest_h" > "$STATE/x11-geometry"
-    Xwayland ":$n" -geometry "${guest_w}x${guest_h}" -dpi 96 \
+    # GPU backend selection is session-wide, never XFCE-only. The default
+    # global Termux Xwayland stays untouched until a private GPU build has
+    # passed framebuffer import and presentation tests. This opt-in path can
+    # support any Xwayland desktop, irrespective of its window-manager.
+    local xwayland_binary="$PREFIX/bin/Xwayland" candidate="" glamor=""
+    local -a xwayland_gpu_args=()
+    if [[ -n "${ALROOT_XWAYLAND_BINARY:-}" ]]; then
+        candidate="$(realpath -- "${ALROOT_XWAYLAND_BINARY}")"
+        if [[ ! -x "$candidate" ||
+              ( "$candidate" != "$HOME/alroot_wayland/.source/gpu-stage1/"* &&
+                "$candidate" != "$HOME/alroot_wayland/graphics/bin/"* ) ]]; then
+            echo "Refusing unvalidated Xwayland binary outside Alroot graphics project: $candidate" >&2
+            return 1
+        fi
+        xwayland_binary="$candidate"
+        glamor="${ALROOT_XWAYLAND_GLAMOR:-off}"
+        case "$glamor" in
+        off|es|gl) xwayland_gpu_args=(-glamor "$glamor") ;;
+        *) echo "Invalid ALROOT_XWAYLAND_GLAMOR=$glamor (expected off/es/gl)" >&2; return 1 ;;
+        esac
+        echo "[Alroot GPU] PRIVATE Xwayland: $xwayland_binary (GLAMOR=$glamor; not the Termux default)"
+    fi
+    "$xwayland_binary" ":$n" "${xwayland_gpu_args[@]}" -geometry "${guest_w}x${guest_h}" -dpi 96 \
         -auth "$XAUTHORITY" -nolisten tcp \
         > "$LOGS/xwayland.log" 2>&1 &
     record_pid xwayland "$!"

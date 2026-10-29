@@ -7,5 +7,5 @@ tmp="$(mktemp -d "${TMPDIR:-$PREFIX/tmp}/alroot-ahb-vulkan.XXXXXXXX")"
 trap 'rm -rf "$tmp"' EXIT
 cd "$ROOT"
 clang --target=aarch64-linux-android35 -std=gnu11 -Wall -Wextra -Werror \
-    graphics/tests/ahb-vulkan-cross-process.c -ldl -o "$tmp/test"
+    -Igraphics/include graphics/tests/ahb-vulkan-cross-process.c -ldl -o "$tmp/test"
 "$tmp/test"

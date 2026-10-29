@@ -7,7 +7,11 @@ ROOT="$(cd "$(dirname "$0")/../.." && pwd -P)"
 PREFIX="${PREFIX:-/data/data/com.termux/files/usr}"
 VERSION=24.1.14
 SHA=4eb6b98d678299a4b96138d886345b294130695760345ef84596225a8224078a
-WORK="$ROOT/.source/gpu-stage1/xwayland"
+case "${ALROOT_XWAYLAND_VARIANT:-generic}" in
+generic) WORK="$ROOT/.source/gpu-stage1/xwayland" ;;
+kgsl) WORK="$ROOT/.source/gpu-stage1/xwayland-kgsl" ;;
+*) echo "ALROOT_XWAYLAND_VARIANT must be generic or kgsl" >&2; exit 2 ;;
+esac
 mkdir -p "$WORK"
 tarball="$WORK/xwayland-$VERSION.tar.xz"
 if [[ ! -s "$tarball" ]]; then
@@ -31,6 +35,19 @@ for fix in "$ROOT/graphics/patches/xwayland/termux"/000*.patch; do
         exit 2
     fi
 done
+if [[ "${ALROOT_XWAYLAND_VARIANT:-generic}" == kgsl ]]; then
+    # Optional Adreno adaptation. Never the default for Mali/PowerVR/Xclipse.
+    private="$ROOT/graphics/patches/xwayland/kgsl/0001-optional-kgsl-surfaceless-dri3-24.1.14.patch"
+    if (cd "$WORK/source" && patch -s --dry-run -p1 -i "$private" >/dev/null 2>&1); then
+        (cd "$WORK/source" && patch -s -p1 -i "$private")
+        echo 'Applied optional KGSL surfaceless DRI3 adapter'
+    elif (cd "$WORK/source" && patch -s --dry-run -R -p1 -i "$private" >/dev/null 2>&1); then
+        echo 'Optional KGSL adapter already present in private source'
+    else
+        echo 'KGSL adapter no longer applies to pinned Xwayland 24.1.14' >&2
+        exit 2
+    fi
+fi
 export CFLAGS='-fcommon -fPIC -DFNDELAY=O_NDELAY -Wno-int-to-pointer-cast -Wno-implicit-function-declaration'
 export CPPFLAGS="-I$PREFIX/include/libdrm"
 export LDFLAGS='-landroid-shmem'
@@ -49,4 +66,7 @@ binary="$WORK/build/hw/xwayland/Xwayland"
 [[ -x "$binary" ]] || exit 2
 echo "PASS: private GLAMOR+DRI3 Xwayland built at $binary"
 echo 'WARNING: no private GPU runtime/DRI3/Wayland buffer export acceptance yet'
+if [[ "${ALROOT_XWAYLAND_VARIANT:-generic}" == kgsl ]]; then
+    echo 'KGSL remains opt-in; XWAYLAND_FORCE_KGSL_SURFACELESS=1 required'
+fi
 echo 'Global Termux Xwayland, Mesa and Vulkan drivers not installed or replaced'

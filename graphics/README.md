@@ -209,3 +209,40 @@ headless compositor offers no GPU DMA-BUF, so GLAMOR rightly falls
 back to software there. Test using
 graphics/tools/test-xwayland-private.py; do not confuse this
 rootful startup smoke test with GPU DRI3 acceptance.
+
+## S26U graphics continuation: real GPU buffer export and wrapper WSI
+
+Mesa Freedreno KGSL can export a real GLES texture as a DMA-BUF FD,
+but the native GPU exported a QCOM UBWC modifier
+0x0500000000000001, and direct Android Vulkan import of that FD
+failed. OPAQUE_FD import had no compatible memory type, while generic
+DMA_BUF import returned VK_ERROR_INVALID_EXTERNAL_HANDLE. The local
+FD_MESA_DEBUG=noubwc experiment changed the layout but did not prove
+interoperability. Do not globally alter KGSL, Turnip or EGL settings.
+
+Zink running on Vulkan wrapper advertised EGL_MESA_image_dma_buf_export
+and returned valid layout metadata, but the actual exported FD was -1.
+This is not a working buffer export, even though GLAMOR and DRI3 can
+initialize.
+
+The optional wrapper patch at
+graphics/patches/mesa/wrapper/0001-alroot-ahb-wayland-wsi-vkimage.patch
+uses the wrapper's existing WSI_IMAGE_TYPE_ANDROID Vulkan swapchain AHB
+allocation to create vendor-independent alroot_gpu_buffer_v1 Wayland
+buffers. It is opt-in for a supported RGBA8 format and negotiated host
+protocol, preserving all X11/DRI3 and ordinary Wayland DMA-BUF paths.
+
+Because this first protocol version lacks explicit acquire/release fence
+transfer, the wrapper-side adapter currently waits for the submitted
+Vulkan image fence before Wayland commit: deliberate Stage-1 correctness
+and a future Stage-2 performance optimization target. The patch applies
+to the pinned S26U Mesa wrapper source and the generated client protocol
+matches the host XML. Full Mesa recompilation and actual visible
+vkcube still remain TEST-PENDING.
+
+An isolated KGSL GLAMOR/DRI3 Xwayland implementation is retained in
+graphics/patches/xwayland/kgsl and compiles on S26U, but glxinfo timed
+out with "Error getting buffer" in its real Alroot-connected test.
+That optional Adreno backend is not the universal GPU path and must not
+be enabled on Mali, PowerVR or Xclipse. RADV-Xclipse will use the common
+Vulkan Wayland transport when later tested on S24+.
