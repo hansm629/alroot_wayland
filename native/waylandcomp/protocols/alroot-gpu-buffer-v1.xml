@@ -1,0 +1,53 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<protocol name="alroot_gpu_buffer_v1">
+  <copyright>
+    Copyright (c) 2026 Alroot contributors.
+    Permission is hereby granted, free of charge, to any person obtaining
+    a copy of this software and associated documentation files (the
+    "Software"), to deal in the Software without restriction, including
+    without limitation the rights to use, copy, modify, merge, publish,
+    distribute, sublicense, and/or sell copies of the Software, and to
+    permit persons to whom the Software is furnished to do so, subject to
+    the following conditions:
+    The above copyright notice and this permission notice shall be included
+    in all copies or substantial portions of the Software.
+    THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND,
+    EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF
+    MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT.
+  </copyright>
+  <interface name="alroot_gpu_buffer_v1" version="1">
+    <description summary="GPU AHardwareBuffer-backed Wayland buffers">
+      A vendor-independent alternative to Linux DRM DMA-BUF for Android GPUs
+      that can create AHardwareBuffers but cannot export them through GBM
+      or linux-dmabuf. The producer transfers an existing, fully allocated
+      AHardwareBuffer over an AF_UNIX socket using the public Android NDK
+      AHardwareBuffer_sendHandleToUnixSocket method. The compositor obtains
+      it using AHardwareBuffer_recvHandleFromUnixSocket, creates a wl_buffer,
+      imports the buffer directly into Vulkan as a VkImage and GPU-composites
+      the image into its Android swapchain. No direct scanout is implied.
+      The producer retains and synchronizes its own reference. Once the
+      compositor is done sampling, wl_buffer.release permits reuse.
+      Unlike banner_ahb_v1 this path never requires a DRM buffer, DRM node,
+      modifier, Qualcomm layout, or a private native_handle structure.
+      Only Android AHardwareBuffer RGBA8 is initially supported. Extensions
+      for other formats or explicit synchronization require a new version.
+    </description>
+    <request name="destroy" type="destructor"/>
+    <request name="create_buffer">
+      <description summary="transfer an AHB and create a usable wl_buffer">
+        The socket is prefilled with the AHardwareBuffer handle. The passed
+        width and height must match the actual AHardwareBuffer description.
+        A successful creation generates a wl_buffer whose release events
+        follow ordinary Wayland compositor lifetime rules.
+      </description>
+      <arg name="id" type="new_id" interface="wl_buffer"/>
+      <arg name="socket" type="fd"/>
+      <arg name="width" type="uint"/>
+      <arg name="height" type="uint"/>
+    </request>
+    <enum name="error">
+      <entry name="invalid_buffer" value="0" summary="invalid AHB or dimensions"/>
+      <entry name="unsupported_format" value="1" summary="AHB lacks GPU sampling or RGBA8"/>
+    </enum>
+  </interface>
+</protocol>

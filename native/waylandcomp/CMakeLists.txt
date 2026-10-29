@@ -7,6 +7,7 @@ add_library(alrootwayland SHARED
         src/vk_loader.c
         src/sc_layer.c
         src/ahb_swapchain.c
+        src/alroot_gpu_buffer.c
         src/waylandcomp_jni.c
         src/gpu_clock_pin.c
         src/alroot_ext.c
@@ -31,6 +32,7 @@ add_library(alrootwayland SHARED
         generated/xdg-toplevel-icon-v1-protocol.c
         generated/single-pixel-buffer-v1-protocol.c
         generated/banner-ahb-v1-protocol.c
+        generated/alroot-gpu-buffer-v1-protocol.c
         src/framegen_bridge.c
         src/framegen_jni.c
 )

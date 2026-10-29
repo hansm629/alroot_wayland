@@ -501,6 +501,7 @@ static void constraints_focus_entered(struct wl_resource *target, struct wl_clie
 void dmabuf_buffer_unref(struct dmabuf_buffer *b) {
     if (!b || --b->refs > 0) return;
     vkp_image_destroy(b->img);
+    if (b->gpu_ahb) AHardwareBuffer_release(b->gpu_ahb);
     for (int i = 0; i < b->n_planes; i++)
         if (b->fd[i] >= 0) close(b->fd[i]);
     free(b);
@@ -514,7 +515,8 @@ const struct wl_buffer_interface dbuf_buffer_impl = {
 };
 
 static struct dmabuf_buffer *get_dmabuf(struct wl_resource *buffer) {
-    if (buffer && wl_resource_instance_of(buffer, &wl_buffer_interface, &dbuf_buffer_impl))
+    if (buffer && (wl_resource_instance_of(buffer, &wl_buffer_interface, &dbuf_buffer_impl) ||
+                   wl_resource_instance_of(buffer, &wl_buffer_interface, &alroot_gpu_buffer_impl)))
         return wl_resource_get_user_data(buffer);
     return NULL;
 }
@@ -769,7 +771,7 @@ static void take_dmabuf(struct surface *s, struct dmabuf_buffer *b, struct wl_re
         s->dmabuf_destroy.notify = on_dmabuf_destroyed;
         wl_resource_add_destroy_listener(buffer, &s->dmabuf_destroy);
     }
-    if (!b->img && !b->import_failed && b->n_planes >= 1) {
+    if (!b->img && !b->import_failed && (b->n_planes >= 1 || b->gpu_ahb)) {
         /* Stage 1 vendor-neutral GPU-copy. If the client *actually* sent
          * a gralloc AHardwareBuffer for this wl_buffer, use the host's
          * native Vulkan AHB importer FIRST, avoiding a known-bad generic
@@ -777,17 +779,17 @@ static void take_dmabuf(struct surface *s, struct dmabuf_buffer *b, struct wl_re
          * DMA-BUF path unchanged. Without AHB: original path only.
          * The resulting VkImage still goes through GPU composition/copy;
          * there is no direct scanout/zero-copy at this stage. */
-        AHardwareBuffer *ahb = ahb_swapchain_borrow_ahb(b);
+        AHardwareBuffer *ahb = b->gpu_ahb ? b->gpu_ahb : ahb_swapchain_borrow_ahb(b);
         if (ahb) {
             b->img = vkp_image_from_ahb(ahb);
             if (b->img)
                 alroot_log("vulkan", "AHB -> VkImage GPU-copy: %dx%d (host imported actual gralloc buffer)",
                            b->width, b->height);
         }
-        if (!b->img)
+        if (!b->img && b->n_planes > 0)
             b->img = vkp_image_from_dmabuf(b->fd[0], b->format, b->modifier, b->width, b->height,
                                            b->stride[0], b->offset[0]);
-        if (b->img && g_zero_copy) sc_layer_probe_dmabuf_fd(b->fd[0]);
+        if (b->img && g_zero_copy && b->n_planes > 0) sc_layer_probe_dmabuf_fd(b->fd[0]);
         if (!b->img) {
             b->import_failed = 1;
             WLOGE("dmabuf import failed (%dx%d fmt=0x%08x mod=0x%llx)", b->width, b->height,
@@ -3633,6 +3635,9 @@ int alroot_wayland_run(void) {
     wl_global_create(display, &wl_output_interface, 4, NULL, bind_output);
     wl_global_create(display, &xdg_wm_base_interface, 1, NULL, bind_xdg_wm_base);
     wl_global_create(display, &zwp_linux_dmabuf_v1_interface, 4, NULL, bind_dmabuf);
+    /* Vendor-neutral AHB-only wl_buffer path; no GBM/DRM node needed.
+     * Compositor is role-agnostic (labwc/KWin/Weston/Mutter are clients). */
+    alroot_gpu_buffer_init(display);
     wl_global_create(display, &wl_seat_interface, 9, NULL, bind_seat);
     wl_global_create(display, &banner_desktop_v1_interface, 1, NULL, bind_desktop);
     wl_global_create(display, &wp_presentation_interface, 2, NULL, bind_presentation);

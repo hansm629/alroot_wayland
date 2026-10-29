@@ -39,6 +39,9 @@ struct dmabuf_buffer {
     int import_failed;
     int refs;
     void *ahb_state;
+    /* Optional Android-NDK-native wl_buffer (no private native_handle
+     * layout, no fake DMA-BUF FD). Managed like existing wl_buffer refs. */
+    struct AHardwareBuffer *gpu_ahb;
 };
 
 struct client_info {
@@ -55,6 +58,8 @@ struct client_info {
 COMPOSITOR_INTERNAL struct client_info *client_info_of(struct wl_client *client);
 COMPOSITOR_INTERNAL void dmabuf_buffer_unref(struct dmabuf_buffer *b);
 COMPOSITOR_INTERNAL extern const struct wl_buffer_interface dbuf_buffer_impl;
+COMPOSITOR_INTERNAL extern const struct wl_buffer_interface alroot_gpu_buffer_impl;
+COMPOSITOR_INTERNAL void alroot_gpu_buffer_init(struct wl_display *display);
 extern volatile int g_ubwc;
 extern volatile int g_no_render_node;
 
