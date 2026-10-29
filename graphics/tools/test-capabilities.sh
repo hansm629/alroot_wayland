@@ -12,5 +12,9 @@ clang -std=c11 -Wall -Wextra -Werror -Igraphics/include \
     graphics/src/render_plan.c graphics/tests/test_render_plan.c \
     -o "$out/render-plan"
 "$out/render-plan"
-git apply --check graphics/patches/host/0001-ahb-to-vkimage-gpu-copy.patch
-echo 'PASS: vendor-neutral capability policy and isolated host patch dry-run'
+# A host-build branch already contains the optional Vulkan patch. Never
+# attempt to re-apply it to the active worktree here. The following
+# test-host-overlay.sh explicitly applies both patches to a clean P20
+# archive and compiles the result in isolation, regardless of branch.
+echo 'PASS: vendor-neutral API and buffer-route capability policies'
+echo 'NOTE: run test-host-overlay.sh for host patch application/compile'

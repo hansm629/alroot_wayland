@@ -26,3 +26,19 @@ global packages. On S26U the GLAMOR+DRI3 Xwayland 24.1.14 binary
 compiled successfully after this patch. Headless runtime DRI3 and
 GPU frame import remain NOT ACCEPTED, so the executable must not be
 automatically selected by Alroot yet.
+
+The second Bionic-specific patch,
+termux/0002-android-unprivileged-popen.patch, handles Android seccomp:
+setgid(getgid()) is denied even for non-root Termux children, which
+crashed the XKB helper and aborted Xwayland. Android only, we first
+require matching real/effective UID and GID, then execute the child
+under the already-restricted app identity without these syscalls.
+Ordinary Linux builds retain the original Xorg privilege-drop code.
+
+With both Android patches, private rootful Xwayland starts and accepts
+X clients through an explicitly supplied listen FD against a private
+headless Labwc. GLX and Present initialize in -glamor off and es
+modes. The headless server cannot offer linux-dmabuf-v4 or wl_drm,
+so GLAMOR falls back to pixman and DRI3 is not yet presentable.
+Use graphics/tools/test-xwayland-private.py to reproduce safely; it
+does not create clients on the user's actual :0 or :90 display.

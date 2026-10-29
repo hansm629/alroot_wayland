@@ -1,0 +1,24 @@
+diff --git a/os/utils.c b/os/utils.c
+--- a/os/utils.c
++++ b/os/utils.c
+@@ -1344,7 +1344,20 @@
+         return NULL;
+     case 0:                    /* child */
++#if defined(__ANDROID__)
++        /*
++         * On unprivileged Android/Termux even setgid(getgid()) can raise
++         * SIGSYS under the app's seccomp policy, so xkbcomp never runs.
++         * Refuse to execute when real/effective IDs differ. This private
++         * non-setuid Xwayland has no privilege to drop; the helper runs
++         * with the same restricted Android app UID/GID it already owns.
++         * All non-Android builds retain the original drop-privilege code.
++         */
++        if (geteuid() != getuid() || getegid() != getgid())
++            _exit(127);
++#else
+         if (setgid(getgid()) == -1)
+             _exit(127);
+         if (setuid(getuid()) == -1)
+             _exit(127);
++#endif
+         if (*type == 'r') {

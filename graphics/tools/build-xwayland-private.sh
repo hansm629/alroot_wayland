@@ -20,15 +20,17 @@ if [[ ! -f "$WORK/source/meson.build" ]]; then
     mkdir -p "$WORK/source"
     tar -xf "$tarball" -C "$WORK/source" --strip-components=1
 fi
-fix="$ROOT/graphics/patches/xwayland/termux/0001-android-bigfont-pagesize-fallback.patch"
-if (cd "$WORK/source" && patch -s --dry-run -p1 -i "$fix" >/dev/null 2>&1); then
-    (cd "$WORK/source" && patch -s -p1 -i "$fix")
-elif (cd "$WORK/source" && patch -s --dry-run -R -p1 -i "$fix" >/dev/null 2>&1); then
-    echo 'Private Android SHMLBA compatibility patch already applied'
-else
-    echo 'BLOCKED: Xwayland patch context changed; do not change global packages' >&2
-    exit 2
-fi
+for fix in "$ROOT/graphics/patches/xwayland/termux"/000*.patch; do
+    if (cd "$WORK/source" && patch -s --dry-run -p1 -i "$fix" >/dev/null 2>&1); then
+        (cd "$WORK/source" && patch -s -p1 -i "$fix")
+        echo "Applied private Android compatibility patch $(basename "$fix")"
+    elif (cd "$WORK/source" && patch -s --dry-run -R -p1 -i "$fix" >/dev/null 2>&1); then
+        echo "Private Android patch already applied: $(basename "$fix")"
+    else
+        echo "BLOCKED: $(basename "$fix") no longer matches the pinned Xwayland source" >&2
+        exit 2
+    fi
+done
 export CFLAGS='-fcommon -fPIC -DFNDELAY=O_NDELAY -Wno-int-to-pointer-cast -Wno-implicit-function-declaration'
 export CPPFLAGS="-I$PREFIX/include/libdrm"
 export LDFLAGS='-landroid-shmem'

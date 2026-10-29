@@ -171,3 +171,41 @@ current Alroot Xwayland or global Termux Xwayland without runtime tests.
 
 Run graphics/tools/test-stage1-inert.sh for non-invasive policy,
 host-overlay, protocol v2/v3 and Termux-X11 DRI3 protection checks.
+
+## Additional Android IPC/Vulkan proof (2026-10-29)
+
+On S26U, graphics/tools/test-ahb-vulkan-ipc.sh allocates a GPU-only
+RGBA8 AHardwareBuffer, sends its public NDK handle over AF_UNIX to a
+second process, receives it there and imports it using the **real
+Android system Vulkan loader**, creating VkImage, allocating imported
+dedicated memory and binding it successfully. All these checks passed
+without calling Android EGL, Termux Mesa, a vendor-specific KGSL ioctl,
+any CPU pixel copy or the live Wayland compositor.
+
+This proves a useful cross-process memory-sharing building block,
+but NOT that Vulkan and EGL see the same finished pixels, that release
+fences are correct, or that Wayland ever presented this image. Those
+still need to be tested before GPU-copy is declared functional.
+
+**Cross-vendor transport concern:** legacy banner_ahb_v1 v3 attaches
+AHB *to an existing DMA-BUF wl_buffer*. Some Vulkan/ANGLE implementations
+cannot portably expose their AHB's raw DMA-BUF FD/layout; private
+AHardwareBuffer_getNativeHandle is not an NDK API and must not become
+a requirement for Mali/PowerVR/Xclipse support. The cleaner future
+solution is a separate optional AHB-created wl_buffer request that
+transfers the AHB using the public AHardwareBuffer_sendHandleToUnixSocket
+API, receives it using AHardwareBuffer_recvHandleFromUnixSocket, and
+imports it directly as VkImage for GPU-copy without inventing a DRM
+modifier. Version 3 and normal linux-dmabuf must remain fully
+compatible. AHB lifetime/release-fence handling is a REQUIRED gate.
+
+The private Xwayland startup issue was also isolated: Android blocks
+setgid(getgid()) in the Xorg Popen child with SIGSYS. An optional
+Android-only patch now verifies the non-root real/effective IDs match
+instead of making the forbidden privilege-changing syscall. With this
+change, the private -glamor off and es servers both start, accept
+X11 clients, and expose GLX+Present against headless Labwc. That
+headless compositor offers no GPU DMA-BUF, so GLAMOR rightly falls
+back to software there. Test using
+graphics/tools/test-xwayland-private.py; do not confuse this
+rootful startup smoke test with GPU DRI3 acceptance.
