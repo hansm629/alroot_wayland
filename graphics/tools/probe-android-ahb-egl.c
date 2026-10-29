@@ -112,6 +112,10 @@ int main(void) {
     AHardwareBuffer_Desc desc = {0};
     desc.width = 64; desc.height = 64; desc.layers = 1;
     desc.format = AHARDWAREBUFFER_FORMAT_R8G8B8A8_UNORM;
+    const char *requested_format=getenv("ALROOT_TEST_AHB_FORMAT");
+    if (requested_format && strcmp(requested_format,"bgra8")==0)
+        desc.format=5; /* Optional Android gralloc BGRA8, probe before use */
+    printf("ANDROID_AHB_EGL_FORMAT=%s\n",desc.format==5?"BGRA8":"RGBA8");
     desc.usage = AHARDWAREBUFFER_USAGE_GPU_COLOR_OUTPUT |
                  AHARDWAREBUFFER_USAGE_GPU_SAMPLED_IMAGE;
     if (allocate(&desc, &ahb) || !ahb) {

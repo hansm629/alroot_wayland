@@ -10,6 +10,30 @@
 #include "compositor_internal.h"
 #include "vk_present.h"
 
+/* Android gralloc's BGRA8 allocation value. It is intentionally used only
+ * after a real AHardwareBuffer + host Vulkan VkImage import probe succeeds.
+ * Do not assume support on Mali, PowerVR, Xclipse, or every Adreno model. */
+#define ALROOT_AHB_BGRA8_FORMAT ALROOT_GPU_BUFFER_V1_FORMAT_BGRA8888
+static int g_bgra8_import_supported;
+
+static int probe_bgra8_import(void) {
+    AHardwareBuffer_Desc desc = {
+        .width=32, .height=32, .layers=1,
+        .format=ALROOT_AHB_BGRA8_FORMAT,
+        .usage=AHARDWAREBUFFER_USAGE_GPU_COLOR_OUTPUT |
+               AHARDWAREBUFFER_USAGE_GPU_SAMPLED_IMAGE,
+    };
+    if (!AHardwareBuffer_isSupported(&desc))
+        return 0;
+    AHardwareBuffer *buffer=NULL;
+    if (AHardwareBuffer_allocate(&desc,&buffer)!=0 || !buffer)
+        return 0;
+    struct vkp_image *image=vkp_image_from_ahb(buffer);
+    if (image) vkp_image_destroy(image);
+    AHardwareBuffer_release(buffer);
+    return image!=NULL;
+}
+
 /* Small, always-available stability counters, not a memory allocator.
  * Estimated RGBA8 bytes exclude gralloc padding, alignment and metadata. */
 static struct {
@@ -89,10 +113,12 @@ static void gpu_manager_destroy(struct wl_client *client,
     wl_resource_destroy(resource);
 }
 
-static void gpu_manager_create(struct wl_client *client,
-                               struct wl_resource *manager,
-                               uint32_t id, int socket,
-                               uint32_t width, uint32_t height) {
+static void gpu_manager_create_common(struct wl_client *client,
+                                      struct wl_resource *manager,
+                                      uint32_t id, int socket,
+                                      uint32_t width, uint32_t height,
+                                      uint32_t expected_format,
+                                      int format_request_v2) {
     AHardwareBuffer *ahb = NULL;
     if (width == 0 || height == 0 || width > 8192 || height > 8192) {
         close(socket);
@@ -124,11 +150,16 @@ static void gpu_manager_create(struct wl_client *client,
                                "AHB description does not match Wayland dimensions");
         return;
     }
-    if (desc.format != AHARDWAREBUFFER_FORMAT_R8G8B8A8_UNORM ||
+    if (desc.format != expected_format ||
+        (format_request_v2 &&
+         expected_format != AHARDWAREBUFFER_FORMAT_R8G8B8A8_UNORM &&
+         expected_format != ALROOT_AHB_BGRA8_FORMAT) ||
+        (expected_format == ALROOT_AHB_BGRA8_FORMAT &&
+         !g_bgra8_import_supported) ||
         !(desc.usage & AHARDWAREBUFFER_USAGE_GPU_SAMPLED_IMAGE)) {
         AHardwareBuffer_release(ahb);
         wl_resource_post_error(manager, ALROOT_GPU_BUFFER_V1_ERROR_UNSUPPORTED_FORMAT,
-                               "GPU-copy v1 requires sampled RGBA8 AHardwareBuffer");
+                               "AHB format not negotiated, mismatched or not GPU-sampleable");
         return;
     }
 
@@ -149,9 +180,10 @@ static void gpu_manager_create(struct wl_client *client,
     buffer->refs = 1;
     buffer->width = (int32_t)desc.width;
     buffer->height = (int32_t)desc.height;
-    /* ABGR8888 describes RGBA bytes in little-endian DRM fourcc notation.
-     * Real AHB import uses Android description; no DRM layout is assumed. */
-    buffer->format = DRM_ABGR8888;
+    /* FourCC for diagnostics; actual VkImage import always uses the
+     * gralloc description. AB24 is RGBA8; AR24 is BGRA8. */
+    buffer->format = desc.format == ALROOT_AHB_BGRA8_FORMAT ?
+                     DRM_ARGB8888 : DRM_ABGR8888;
     buffer->modifier = MOD_INVALID;
     buffer->gpu_ahb = ahb;
     buffer->n_planes = 0;
@@ -161,19 +193,41 @@ static void gpu_manager_create(struct wl_client *client,
                                    gpu_buffer_resource_destroy);
     struct client_info *info = client_info_of(client);
     if (info) info->dmabuf_buffers++;
-    alroot_log("gpu-copy", "new AHB wl_buffer %ux%u RGBA8, Vulkan GPU-copy transport (no DRM fd)",
-               width, height);
+    alroot_log("gpu-copy",
+               "new AHB wl_buffer %ux%u %s, Vulkan GPU-copy transport (no DRM fd)",
+               width, height,
+               desc.format == ALROOT_AHB_BGRA8_FORMAT ? "BGRA8" : "RGBA8");
+}
+
+static void gpu_manager_create(struct wl_client *client,
+                               struct wl_resource *manager,
+                               uint32_t id, int socket,
+                               uint32_t width, uint32_t height) {
+    /* Strict v1 semantics, including for version-2 clients that still
+     * call the legacy request. No behavior change for the S1.1 baseline. */
+    gpu_manager_create_common(client,manager,id,socket,width,height,
+                              AHARDWAREBUFFER_FORMAT_R8G8B8A8_UNORM,0);
+}
+
+static void gpu_manager_create_with_format(struct wl_client *client,
+                                           struct wl_resource *manager,
+                                           uint32_t id, int socket,
+                                           uint32_t width, uint32_t height,
+                                           uint32_t format) {
+    gpu_manager_create_common(client,manager,id,socket,width,height,format,1);
 }
 
 static const struct alroot_gpu_buffer_v1_interface gpu_manager_impl = {
     .destroy = gpu_manager_destroy,
     .create_buffer = gpu_manager_create,
+    .create_buffer_with_format = gpu_manager_create_with_format,
 };
 
 static void gpu_manager_bind(struct wl_client *client, void *data,
                              uint32_t version, uint32_t id) {
     (void)data;
-    if (version > 1) version = 1;
+    const uint32_t highest=g_bgra8_import_supported?2u:1u;
+    if (version > highest) version = highest;
     struct wl_resource *resource = wl_resource_create(
         client, &alroot_gpu_buffer_v1_interface, (int)version, id);
     if (!resource) {
@@ -188,10 +242,15 @@ void alroot_gpu_buffer_init(struct wl_display *display) {
         alroot_log("gpu-copy", "AHB-only wl_buffer not advertised (host Vulkan AHB import unavailable)");
         return;
     }
-    if (!wl_global_create(display, &alroot_gpu_buffer_v1_interface, 1,
+    g_bgra8_import_supported=probe_bgra8_import();
+    const uint32_t protocol_version=g_bgra8_import_supported?2u:1u;
+    if (!wl_global_create(display, &alroot_gpu_buffer_v1_interface,
+                          (int)protocol_version,
                           NULL, gpu_manager_bind)) {
         alroot_log("error", "AHB-only GPU-copy protocol global creation failed");
         return;
     }
-    alroot_log("gpu-copy", "alroot_gpu_buffer_v1: vendor-neutral AHB-only VkImage transport available");
+    alroot_log("gpu-copy",
+               "alroot_gpu_buffer_v1 version %u: AHB RGBA8 GPU-copy, BGRA8 VkImage import=%s",
+               protocol_version,g_bgra8_import_supported?"verified":"not supported");
 }

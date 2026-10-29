@@ -54,8 +54,12 @@ struct wl_buffer;
  * compositor is done sampling, wl_buffer.release permits reuse.
  * Unlike banner_ahb_v1 this path never requires a DRM buffer, DRM node,
  * modifier, Qualcomm layout, or a private native_handle structure.
- * Only Android AHardwareBuffer RGBA8 is initially supported. Extensions
- * for other formats or explicit synchronization require a new version.
+ * Version 1 accepts only Android AHardwareBuffer RGBA8. Version 2
+ * supports an optional BGRA8 allocation when the compositor has
+ * tested that its Android gralloc and Vulkan driver can import it.
+ * A version-2 global is never advertised without that runtime test.
+ * This does not change the legacy version-1 create_buffer contract.
+ * Explicit synchronization requires a future version.
  * @section page_iface_alroot_gpu_buffer_v1_api API
  * See @ref iface_alroot_gpu_buffer_v1.
  */
@@ -74,11 +78,29 @@ struct wl_buffer;
  * compositor is done sampling, wl_buffer.release permits reuse.
  * Unlike banner_ahb_v1 this path never requires a DRM buffer, DRM node,
  * modifier, Qualcomm layout, or a private native_handle structure.
- * Only Android AHardwareBuffer RGBA8 is initially supported. Extensions
- * for other formats or explicit synchronization require a new version.
+ * Version 1 accepts only Android AHardwareBuffer RGBA8. Version 2
+ * supports an optional BGRA8 allocation when the compositor has
+ * tested that its Android gralloc and Vulkan driver can import it.
+ * A version-2 global is never advertised without that runtime test.
+ * This does not change the legacy version-1 create_buffer contract.
+ * Explicit synchronization requires a future version.
  */
 extern const struct wl_interface alroot_gpu_buffer_v1_interface;
 #endif
+
+#ifndef ALROOT_GPU_BUFFER_V1_FORMAT_ENUM
+#define ALROOT_GPU_BUFFER_V1_FORMAT_ENUM
+enum alroot_gpu_buffer_v1_format {
+	/**
+	 * AHB RGBA8 UNORM, v1 standard
+	 */
+	ALROOT_GPU_BUFFER_V1_FORMAT_RGBA8888 = 1,
+	/**
+	 * AHB BGRA8 UNORM, v2 optional
+	 */
+	ALROOT_GPU_BUFFER_V1_FORMAT_BGRA8888 = 5,
+};
+#endif /* ALROOT_GPU_BUFFER_V1_FORMAT_ENUM */
 
 #ifndef ALROOT_GPU_BUFFER_V1_ERROR_ENUM
 #define ALROOT_GPU_BUFFER_V1_ERROR_ENUM
@@ -96,6 +118,7 @@ enum alroot_gpu_buffer_v1_error {
 
 #define ALROOT_GPU_BUFFER_V1_DESTROY 0
 #define ALROOT_GPU_BUFFER_V1_CREATE_BUFFER 1
+#define ALROOT_GPU_BUFFER_V1_CREATE_BUFFER_WITH_FORMAT 2
 
 
 /**
@@ -106,6 +129,10 @@ enum alroot_gpu_buffer_v1_error {
  * @ingroup iface_alroot_gpu_buffer_v1
  */
 #define ALROOT_GPU_BUFFER_V1_CREATE_BUFFER_SINCE_VERSION 1
+/**
+ * @ingroup iface_alroot_gpu_buffer_v1
+ */
+#define ALROOT_GPU_BUFFER_V1_CREATE_BUFFER_WITH_FORMAT_SINCE_VERSION 2
 
 /** @ingroup iface_alroot_gpu_buffer_v1 */
 static inline void
@@ -152,6 +179,26 @@ alroot_gpu_buffer_v1_create_buffer(struct alroot_gpu_buffer_v1 *alroot_gpu_buffe
 
 	id = wl_proxy_marshal_flags((struct wl_proxy *) alroot_gpu_buffer_v1,
 			 ALROOT_GPU_BUFFER_V1_CREATE_BUFFER, &wl_buffer_interface, wl_proxy_get_version((struct wl_proxy *) alroot_gpu_buffer_v1), 0, NULL, socket, width, height);
+
+	return (struct wl_buffer *) id;
+}
+
+/**
+ * @ingroup iface_alroot_gpu_buffer_v1
+ *
+ * The format is the Android AHardwareBuffer format from the
+ * advertised format enum. The compositor validates that it matches
+ * the imported buffer's real description, GPU-sampling usage and
+ * VkImage import capability. Version-1 clients must continue to use
+ * create_buffer, which accepts RGBA8 only.
+ */
+static inline struct wl_buffer *
+alroot_gpu_buffer_v1_create_buffer_with_format(struct alroot_gpu_buffer_v1 *alroot_gpu_buffer_v1, int32_t socket, uint32_t width, uint32_t height, uint32_t format)
+{
+	struct wl_proxy *id;
+
+	id = wl_proxy_marshal_flags((struct wl_proxy *) alroot_gpu_buffer_v1,
+			 ALROOT_GPU_BUFFER_V1_CREATE_BUFFER_WITH_FORMAT, &wl_buffer_interface, wl_proxy_get_version((struct wl_proxy *) alroot_gpu_buffer_v1), 0, NULL, socket, width, height, format);
 
 	return (struct wl_buffer *) id;
 }

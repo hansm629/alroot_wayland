@@ -1,27 +1,29 @@
 diff --git a/src/egl/drivers/dri2/platform_wayland.c b/src/egl/drivers/dri2/platform_wayland.c
 --- a/src/egl/drivers/dri2/platform_wayland.c
 +++ b/src/egl/drivers/dri2/platform_wayland.c
-@@ -3297,6 +3297,23 @@
+@@ -3262,7 +3262,8 @@
+    if (!dri2_create_screen(disp))
+       goto cleanup;
+ 
+-   if (!dri2_setup_device(disp, disp->Options.ForceSoftware)) {
++   if (!dri2_setup_device(disp, disp->Options.ForceSoftware ||
++                         (dri2_dpy->kopper && dri2_dpy->fd_render_gpu < 0))) {
+       _eglError(EGL_NOT_INITIALIZED, "DRI2: failed to setup EGLDevice");
+       goto cleanup;
+    }
+@@ -3297,6 +3298,15 @@
  EGLBoolean
  dri2_initialize_wayland(_EGLDisplay *disp)
  {
-+   /* Alroot GPU-S1.2: Mesa Zink may have a perfectly working Vulkan
-+    * Wayland AHB WSI, but Android apps cannot access /dev/dri/renderD*
-+    * and the DRM-based EGL Wayland bootstrap cannot open a render node.
-+    * The existing Wayland "swrast" bootstrap uses wl_shm only for format
-+    * discovery. When Options.Zink is true it selects Kopper's Vulkan WSI
-+    * renderer and does NOT use swrast pixel uploads.
-+    *
-+    * Do NOT set LIBGL_ALWAYS_SOFTWARE: that asks Zink for a CPU Vulkan GPU
-+    * and fails on real mobile hardware. Leave the Vulkan device choice to
-+    * the active ICD. This opt-in adapter is not tied to Adreno/KGSL and
-+    * does not alter X11/DRI3 or other Wayland compositors. The Alroot
-+    * runner must first verify alroot_gpu_buffer_v1 on the server.
-+    * Backward compatibility is the upstream logic below. */
++   /* On Android a render node may be inaccessible even while a Zink
++    * Vulkan ICD has working Wayland AHB WSI. The swrast-style bootstrap
++    * only discovers Wayland formats; it selects Kopper and the actual
++    * Vulkan GPU below when Zink is enabled and ForceSoftware is false.
++    * This is an opt-in, cross-vendor path, with all standard Wayland/X11
++    * behavior preserved when the switch is absent. */
 +   if (disp->Options.Zink && !disp->Options.ForceSoftware &&
 +       debug_get_bool_option("ALROOT_EGL_WAYLAND_KOPPER", false))
 +      return dri2_initialize_wayland_swrast(disp);
-+
     if (disp->Options.ForceSoftware)
        return dri2_initialize_wayland_swrast(disp);
     else

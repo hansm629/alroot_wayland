@@ -39,6 +39,22 @@ returns wl_buffer.release, that image may be reused. Separate
 cross-process timeline/fence compatibility is required for Stage 2.
 Removing the CPU wait before that risks stale/missing frames.
 
+## GPU-S1.2 optional BGRA8 AHB protocol v2
+
+The existing RGBA8 v1 Wayland path is unchanged. Host
+alroot_gpu_buffer_v1 version 2 optionally accepts a real BGRA8
+AHardwareBuffer (format value 5), but only when Android gralloc and
+the host Vulkan VkImage importer pass a physical BGRA8 test. GPUs
+without successful BGRA8 import continue advertising version 1.
+
+The private wrapper binds up to version 2, chooses AHB-backed
+VK_FORMAT_B8G8R8A8_UNORM only with v2, and sends
+create_buffer_with_format. It continues using the original v1
+create_buffer for RGBA8 even on a v2 host. Standard Wayland
+DMA-BUF WSI and Termux-X11 DRI3 remain untouched. Do not assume
+BGRA8 works because a GPU is Adreno/Mali/PowerVR/Xclipse: probe
+real import support on that device.
+
 The Vulkan image must actually use a supported RGBA8 memory layout and
 be sampleable by the host's Vulkan driver. An extension string or a
 successful vkCreateImage is insufficient evidence of visible output.

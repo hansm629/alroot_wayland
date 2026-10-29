@@ -12,6 +12,19 @@ zink)
     export MESA_LOADER_DRIVER_OVERRIDE=zink GALLIUM_DRIVER=zink
     export VK_DRIVER_FILES="$ROOT/.source/gpu-stage1/wrapper-private-runtime/wrapper_icd.private.json"
     [[ -s "$VK_DRIVER_FILES" ]] || { echo 'Missing private Vulkan wrapper ICD' >&2; exit 2; }
+    if [[ "${ALROOT_S12_PRIVATE_EGL:-0}" == 1 ]]; then
+        runtime="$ROOT/.source/gpu-stage2/mesa-egl/private-runtime"
+        [[ -s "$runtime/egl_vendor.private.json" &&
+           -s "$runtime/lib/libEGL_mesa.so" &&
+           -s "$runtime/lib/libgallium-26.3.0-devel.so" ]] || {
+            echo 'Private Mesa EGL/Gallium missing; build with graphics/tools/build-s12-zink-egl-private.sh' >&2
+            exit 2
+        }
+        export __EGL_VENDOR_LIBRARY_FILENAMES="$runtime/egl_vendor.private.json"
+        export LIBGL_DRIVERS_PATH="$runtime/lib/dri"
+        export LD_LIBRARY_PATH="$runtime/lib${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
+        export ALROOT_EGL_WAYLAND_KOPPER=1
+    fi
     ;;
 kgsl)
     export MESA_LOADER_DRIVER_OVERRIDE=kgsl GALLIUM_DRIVER=freedreno
@@ -23,6 +36,18 @@ kgsl)
     ;;
 esac
 [[ "$frames" =~ ^[0-9]+$ ]] && ((frames>0&&frames<=600)) || exit 2
+if [[ "${ALROOT_S12_PRIVATE_EGL:-0}" == 1 &&
+      "${ALROOT_S12_ALLOW_PROTOCOL_V1_DIAG:-0}" != 1 ]]; then
+    # Native Kopper often chooses BGRA8. An old v1 Alroot host can
+    # render RGBA8 but cannot receive that BGRA8 AHB as an wl_buffer.
+    # Avoid triggering a known-bad DMA-BUF fallback on a live S1.1 host.
+    capabilities="$(bash graphics/tools/check-stage1-accel.sh)"
+    if ! grep -qx 'ALROOT_GPU_AHB_ONLY_VERSION=2' <<< "$capabilities"; then
+        echo 'S12_ZINK_KOPPER=HOST_PROTOCOL_V2_REQUIRED'
+        echo 'Install a verified Alroot S1.2 GPU host first; existing APK/session is unchanged.' >&2
+        exit 2
+    fi
+fi
 TMP="$(mktemp -d "${TMPDIR:-$PREFIX/tmp}/alroot-s12-egl.XXXXXXXX")"
 trap 'rm -rf "$TMP"' EXIT
 clang --target=aarch64-linux-android35 -std=c11 -Wall -Wextra -Werror \
@@ -61,5 +86,9 @@ else
     echo 'S12_EGL_WAYLAND_GPU_COPY=NOT_CONFIRMED'
     echo 'eglSwapBuffers may succeed while the host cannot import GPU pixels.'
     grep -Ei 'could not import GPU|dmabuf import failed|S1\.2 Wayland EGL|AHB -> VkImage' "$HOST_LOG" | tail -8 || :
+    if [[ "${ALROOT_S12_REQUIRE_GPU_COPY:-1}" == 1 ]]; then
+        echo 'S12_GPU_COPY_ACCEPTANCE=FAIL' >&2
+        exit 5
+    fi
 fi
 echo "S12_HOST_LOG=$HOST_LOG"

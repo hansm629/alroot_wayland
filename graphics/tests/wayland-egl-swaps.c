@@ -36,6 +36,20 @@ struct client {
     int width, height;
 };
 
+static int private_egl_library_mapped(void) {
+    FILE *f=fopen("/proc/self/maps","r");
+    if(!f)return 0;
+    int found=0;
+    char line[1024];
+    while(fgets(line,sizeof(line),f))
+        if(strstr(line,"/mesa-egl/private-runtime/lib/libEGL_mesa.so")) {
+            found=1;
+            break;
+        }
+    fclose(f);
+    return found;
+}
+
 static void on_global(void *data,struct wl_registry *reg,uint32_t name,
                       const char *iface,uint32_t ver) {
     struct client *c=data;
@@ -126,6 +140,14 @@ int main(int argc,char **argv) {
         printf("S12_EGL_INITIALIZE=FAIL 0x%x\n",eglGetError());
         return 4;
     }
+    if(getenv("ALROOT_S12_PRIVATE_EGL")) {
+        int priv=private_egl_library_mapped();
+        printf("S12_PRIVATE_EGL_MAPPED=%d\n",priv);
+        if(!priv) {
+            puts("S12_PRIVATE_EGL_MISMATCH=installed_EGL_was_used");
+            return 6;
+        }
+    }
     printf("S12_EGL_VENDOR=%s\n",eglQueryString(egl,EGL_VENDOR));
     EGLint attrs[]={EGL_SURFACE_TYPE,EGL_WINDOW_BIT,
                     EGL_RENDERABLE_TYPE,EGL_OPENGL_ES2_BIT,
@@ -137,6 +159,9 @@ int main(int argc,char **argv) {
         printf("S12_EGL_WINDOW_CONFIG=FAIL 0x%x\n",eglGetError());
         return 4;
     }
+    EGLint selected_visual=0;
+    eglGetConfigAttrib(egl,cfg,EGL_NATIVE_VISUAL_ID,&selected_visual);
+    printf("S12_EGL_NATIVE_VISUAL_ID=0x%08x\n",(unsigned)selected_visual);
     if(!eglBindAPI(EGL_OPENGL_ES_API)) return 4;
     EGLSurface s=eglCreateWindowSurface(egl,cfg,(EGLNativeWindowType)win,NULL);
     if(s==EGL_NO_SURFACE) {

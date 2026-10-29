@@ -334,3 +334,45 @@ native AHB EGL producer can use the same host protocol without any
 KGSL-specific assumptions. Turnip/RADV ICD support requires
 independent Vulkan WSI memory allocation tests, and the installed
 Termux-X11 DRI3 must stay unchanged.
+
+### S1.2 implementation continuation: Android AHB protocol v2
+
+S26U proved the generic Android GLES -> AHB -> host Vulkan VkImage
+GPU-copy path with 90 sequential frames, 3 AHB slots, 90 wl_buffer
+releases and zero premature buffer reuse. This direct GLES producer
+uses the public NDK AHB transport, not any Qualcomm-specific KGSL
+allocation. On future Xclipse devices, validate ANGLE's actual AHB
+render target rather than inferring export from EGL extension names.
+
+Mesa Zink/Kopper now builds privately without a DRM render node using
+graphics/patches/mesa/egl/0001. Its ABI uses a Bionic TLS export-map
+fix (0002) and conditional optional driconf lookup (0003).
+The Kopper EGLConfig normally chooses BGRA8, NOT RGBA8; synthesizing
+an unsupported RGBA8 config caused a software wl_shm fallback.
+
+To preserve v1 RGBA8 while allowing Kopper's normal BGRA8 swapchain,
+alroot_gpu_buffer_v1 protocol v2 adds a separate format-aware request
+for BGRA8 AHardwareBuffer images. The host advertises v2 ONLY after
+its Android gralloc and Vulkan VkImage importer physically accept a
+BGRA8 buffer. S26U passed allocation, cross-process import, Vulkan
+GPU clear and native GLES framebuffer binding with BGRA8. GPUs
+without these capabilities retain protocol v1 and cannot be forced.
+The private wrapper WSI negotiates v2 and uses normal B8G8R8A8_UNORM
+AHB images, leaving normal Wayland DMA-BUF and Termux-X11 DRI3 intact.
+
+Reusable probes:
+
+    bash graphics/tools/test-s12-ahb-formats.sh
+    bash graphics/tools/test-s12-android-gles-ahb.sh 90 rgba8
+
+After explicitly installing a new host APK that advertises v2:
+
+    bash graphics/tools/test-s12-acceptance.sh
+
+The full acceptance verifies direct EGL RGBA8, optional Android EGL
+BGRA8, native Mesa Zink/Kopper EGL, Vulkan vkcube and Termux-X11 DRI3.
+The current S1.1 host only advertises version 1 and MUST NOT be
+replaced automatically. Until the new host is actually installed and
+its frames are visible, Zink/Kopper GPU-copy is not accepted.
+The KGSL direct DRM/DMA-BUF import and MobileGL/virgl Wayland
+presenters remain separate targets; neither is counted as completed.

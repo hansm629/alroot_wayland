@@ -23,6 +23,11 @@
 #include <unistd.h>
 #include "alroot_vulkan_ahb_producer.h"
 
+/* BGRA8 is an optional Android gralloc format (value 5), not guaranteed
+ * by every public NDK revision or every GPU. Test allocation and Vulkan
+ * import before advertising it in a compositor's protocol capabilities. */
+#define ALROOT_AHB_BGRA8_FORMAT 5u
+
 typedef int (*ahb_allocate_fn)(const AHardwareBuffer_Desc *, AHardwareBuffer **);
 typedef int (*ahb_send_fn)(const AHardwareBuffer *, int);
 typedef int (*ahb_recv_fn)(int, AHardwareBuffer **);
@@ -376,6 +381,11 @@ int main(void) {
     AHardwareBuffer_Desc request={0};
     request.width=64; request.height=64; request.layers=1;
     request.format=AHARDWAREBUFFER_FORMAT_R8G8B8A8_UNORM;
+    const char *requested_format=getenv("ALROOT_TEST_AHB_FORMAT");
+    if (requested_format && !strcmp(requested_format,"bgra8"))
+        request.format=ALROOT_AHB_BGRA8_FORMAT;
+    printf("AHB_TEST_FORMAT=%s\n",
+           request.format==ALROOT_AHB_BGRA8_FORMAT?"BGRA8":"RGBA8");
     request.usage=AHARDWAREBUFFER_USAGE_GPU_COLOR_OUTPUT |
                   AHARDWAREBUFFER_USAGE_GPU_SAMPLED_IMAGE;
     AHardwareBuffer *parent_buf=NULL;

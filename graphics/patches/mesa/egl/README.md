@@ -33,6 +33,23 @@ than uploading pixels through wl_shm. The existing wrapper WSI
 uses Alroot's public-NDK AHB-backed wl_buffer protocol on supporting
 servers and lets the host composite VkImages.
 
+Two additional Bionic compatibility patches are kept separate:
+0002-bionic-glapi-emutls-symbols.patch uses the actual Android
+__emutls_v symbols in the private Gallium DRI export map; and
+0003-zink-optional-driconf-kopper.patch guards optional Zink
+configuration queries with driCheckOption to avoid assertions when
+the DRM-less Kopper loader does not register those option names.
+
+Normal Zink/Kopper EGLConfig enumeration on S26U chooses ARGB8888
+(Vulkan B8G8R8A8_UNORM). Trying to synthesize an RGBA8 EGLConfig
+caused Mesa to fall back to CPU wl_shm with no matching Zink
+EGL_WINDOW_BIT config. Never advertise fake RGBA8 support.
+
+Instead, Alroot's AHB Wayland protocol v2 permits BGRA8 buffers,
+but only on devices where the host's real gralloc and Vulkan importer
+pass a BGRA8 test. The private wrapper WSI negotiates v2 for Vulkan
+B8G8R8A8_UNORM while leaving RGBA8 v1 and X11/DRI3 unchanged.
+
 This switch is opt-in, specific to the Zink GPU backend and not to any
 GPU brand. Other Wayland servers and X11/DRI3 remain upstream. A
 production runner must verify Alroot's protocol before selecting this.
@@ -46,5 +63,18 @@ successful eglSwapBuffers is NOT a GPU-copy PASS.
 
 graphics/tools/build-s12-zink-egl-private.sh builds a candidate Mesa
 EGL in an independent source overlay, never replacing Termux libraries.
-Both Zink/Kopper and KGSL paths remain TEST-PENDING until the Android
-host actually imports and displays their frames.
+The private runtime contains an isolated EGL vendor JSON and matching
+Gallium Zink library. A production test sets ALROOT_S12_PRIVATE_EGL=1
+and refuses to run unless the host advertises AHB protocol v2,
+preventing accidental fallback into broken DMA-BUF import.
+
+The generic graphics/src/ahb_wayland_presenter.c provides direct AHB
+wl_buffer submission for Android EGL/GLES (including future Xclipse
+ANGLE Vulkan-backed GLES), with version 1 RGBA8 and optional v2 BGRA8.
+Stage-1 keeps GPU-completion waits before presenting each AHB.
+
+S26U native Android GLES completed 90/90 GPU frames with three AHB
+slots, 90 releases and zero premature buffer reuse. Physical BGRA8
+AHB allocation, cross-process Vulkan import, GPU clear and Android
+GLES framebuffer binding passed. **Private Zink/Kopper visible output
+still awaits the new v2 host APK and user visual confirmation.**

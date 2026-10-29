@@ -15,7 +15,7 @@
     EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF
     MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT.
   </copyright>
-  <interface name="alroot_gpu_buffer_v1" version="1">
+  <interface name="alroot_gpu_buffer_v1" version="2">
     <description summary="GPU AHardwareBuffer-backed Wayland buffers">
       A vendor-independent alternative to Linux DRM DMA-BUF for Android GPUs
       that can create AHardwareBuffers but cannot export them through GBM
@@ -29,8 +29,12 @@
       compositor is done sampling, wl_buffer.release permits reuse.
       Unlike banner_ahb_v1 this path never requires a DRM buffer, DRM node,
       modifier, Qualcomm layout, or a private native_handle structure.
-      Only Android AHardwareBuffer RGBA8 is initially supported. Extensions
-      for other formats or explicit synchronization require a new version.
+      Version 1 accepts only Android AHardwareBuffer RGBA8. Version 2
+      supports an optional BGRA8 allocation when the compositor has
+      tested that its Android gralloc and Vulkan driver can import it.
+      A version-2 global is never advertised without that runtime test.
+      This does not change the legacy version-1 create_buffer contract.
+      Explicit synchronization requires a future version.
     </description>
     <request name="destroy" type="destructor"/>
     <request name="create_buffer">
@@ -45,6 +49,24 @@
       <arg name="width" type="uint"/>
       <arg name="height" type="uint"/>
     </request>
+    <request name="create_buffer_with_format" since="2">
+      <description summary="submit RGBA8 or optional BGRA8 AHardwareBuffer">
+        The format is the Android AHardwareBuffer format from the
+        advertised format enum. The compositor validates that it matches
+        the imported buffer's real description, GPU-sampling usage and
+        VkImage import capability. Version-1 clients must continue to use
+        create_buffer, which accepts RGBA8 only.
+      </description>
+      <arg name="id" type="new_id" interface="wl_buffer"/>
+      <arg name="socket" type="fd"/>
+      <arg name="width" type="uint"/>
+      <arg name="height" type="uint"/>
+      <arg name="format" type="uint" enum="format"/>
+    </request>
+    <enum name="format">
+      <entry name="rgba8888" value="1" summary="AHB RGBA8 UNORM, v1 standard"/>
+      <entry name="bgra8888" value="5" summary="AHB BGRA8 UNORM, v2 optional"/>
+    </enum>
     <enum name="error">
       <entry name="invalid_buffer" value="0" summary="invalid AHB or dimensions"/>
       <entry name="unsupported_format" value="1" summary="AHB lacks GPU sampling or RGBA8"/>
