@@ -404,3 +404,65 @@ live=0. This is host transport acceptance, not proof of real display
 pixel correctness, zero-copy, async fence removal, Xwayland GLAMOR,
 non-Adreno drivers or other desktop compositors. User visual inspection
 is still required. The installed S1.2 APK need not be updated again.
+
+## GPU-S1.3-A: experimental Freedreno KGSL native AHB producer
+
+On S26U (Adreno 840), regular Mesa KGSL Wayland EGL renders through the
+freedreno driver but submits DMA-BUF buffers that the Android host Vulkan
+renderer cannot import. Neither the vendor Android EGL nor Mesa KGSL EGL
+advertises EGL_EXT_image_dma_buf_import, and KGSL EGL does not advertise
+EGL_ANDROID_image_native_buffer. Do **not** treat a successful EGL swap or
+GL renderer string as proof of AHB-backed Wayland presentation.
+
+The experimental S1.3-A path instead imports a real Android-allocated AHB
+GPU image FD into a KGSL GL_EXT_memory_object_fd resource. It renders
+with freedreno directly into that external memory, calls glFinish for
+Stage-1 correctness, and queues the **same AHB** through the existing
+alroot_gpu_buffer_v1 Wayland protocol. The host imports it as VkImage
+and GPU-composites the image to the Android output swapchain. The
+producer contains no glReadPixels, CPU pixel upload or vendor GLES
+rendering. It does not use Vulkan for the KGSL application renderer.
+
+The Android VNDK AHardwareBuffer_getNativeHandle entrypoint is **not** a
+public NDK API. It is resolved only when available; the KGSL-specific
+adapter inspects the stable native_handle structure, selects a uniquely
+plausible pixel FD by size rather than assuming fd[0], and fails closed
+on absent/ambiguous layouts. Android vendor EGL readback of **five tiny
+pixel samples in a standalone diagnostic only** proves the KGSL writes
+were actually visible in the same AHB on this device. This extra
+readback is not part of the per-frame producer. Other KGSL devices,
+other Adreno models and different gralloc layouts require their own
+physical acceptance; the adapter is not a universal NDK API.
+
+**Important stride and height correction:** the S26U gralloc allocates
+480x270 RGBA8 with stride=768, whereas importing that allocation into
+KGSL GL with a 480x270 texture produced incorrect pixels despite
+successful GL imports and 360 successful Wayland commits. This is **not
+accepted**. The validated variant allocates an AHB of **480x320**
+(stride=768), imports it into a KGSL GL texture of **768x270**, and uses
+wp_viewporter to crop the displayed image to the intended 480x270. All
+five hardware cross-driver samples agree, including the bottom corners.
+Buffers whose external-memory layout cannot be validated must not be
+submitted as if they were correct.
+
+Run a standalone pixel probe and the guarded on-screen test:
+
+    cd ~/alroot_wayland
+    ALROOT_S13_RESOLUTION=480x320 \
+      ALROOT_S13_TEXTURE_STRIDE_WIDTH=1 \
+      ALROOT_S13_TEXTURE_HEIGHT=270 \
+      ALROOT_S13_SAMPLE_HEIGHT=270 \
+      bash graphics/tools/test-s13-kgsl-ahb-capabilities.sh
+    bash graphics/tools/test-s13-kgsl-ahb-window.sh 360
+    bash graphics/tools/test-s13-acceptance.sh
+
+The original direct producer and native Zink path stay private and
+separate. No global Termux Mesa, driver, Termux-X11 DRI3 or helper APK
+was replaced. Stage S1.3-A is **only** a proof and reusable producer for
+KGSL -> AHB transport. It does *not* implement ordinary KGSL
+`eglSwapBuffers()` -> AHB for unmodified EGL Wayland applications, nor
+Xwayland DRI3/GLAMOR or desktop GPU acceleration. An optional private
+Mesa EGL/Wayland integration is a separate next step. The explicit
+acquire/release fence replacement and final output zero-copy are later
+stages. Color/crop correctness still requires a physical user visual
+inspection before declaring an end-to-end on-screen PASS.
