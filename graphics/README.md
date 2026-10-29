@@ -314,3 +314,23 @@ present, host AHB reference telemetry and protected Termux-X11 DRI3.
 It does not install an APK or restart XFCE. Preserve P20 Korean IME,
 caret, pointer, DPI, battery and PiP. Fences and zero-copy are separate
 future stages and MUST NOT be removed as a supposed S1.1 fix.
+
+## GPU-S1.2: real Wayland EGL/OpenGL ES and Mesa Kopper
+
+The first new client at graphics/tests/wayland-egl-swaps.c creates a
+real EGL Wayland window, renders time-varying GLES pixels and calls
+eglSwapBuffers. With S26U's current Termux Mesa Zink and Vulkan wrapper,
+it reports GPU-backed Zink GLES but sends Wayland wl_shm buffers:
+the host does NOT receive GPU-copy-capable buffers. With Freedreno KGSL,
+it exports DMA-BUF buffers but the Android Vulkan host rejects them
+with INVALID_EXTERNAL_HANDLE. Neither result is a GPU-copy PASS.
+
+The isolated candidate at graphics/patches/mesa/egl allows a Vulkan-
+backed Zink Kopper Wayland path without requiring inaccessible DRM
+render nodes, and without forcing a CPU Vulkan device. The actual
+Mesa EGL/Gallium private compile and running GPU display validation
+are separate gates. For ANGLE-backed Xclipse, PowerVR and Mali, a
+native AHB EGL producer can use the same host protocol without any
+KGSL-specific assumptions. Turnip/RADV ICD support requires
+independent Vulkan WSI memory allocation tests, and the installed
+Termux-X11 DRI3 must stay unchanged.
