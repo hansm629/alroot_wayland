@@ -52,7 +52,8 @@ static uint64_t g_next_id = 1;
 static struct wl_event_loop *g_loop;
 static unsigned g_stat_zero_copy;
 static int g_export_failed_logged, g_import_failed_logged;
-static int g_advertised;
+/* An available AHB GPU-copy importer is NOT proof of direct display layers. */
+static int g_gpu_copy_available, g_layer_advertised;
 static int g_mode_sent = -1;
 static struct surface *g_announced;
 static volatile int64_t g_last_zero_copy_ns;
@@ -183,6 +184,11 @@ int ahb_swapchain_has_ahb(const struct dmabuf_buffer *b) {
     return b && *alroot_dmabuf_ahb_slot((struct dmabuf_buffer *)b) != NULL;
 }
 
+AHardwareBuffer *ahb_swapchain_borrow_ahb(const struct dmabuf_buffer *b) {
+    struct ahb_buf *ab = b ? *alroot_dmabuf_ahb_slot((struct dmabuf_buffer *)b) : NULL;
+    return ab ? ab->ahb : NULL;
+}
+
 int ahb_swapchain_present(struct dmabuf_buffer *b, struct surface *s, int scene_w, int scene_h) {
     struct ahb_buf *ab = b ? *alroot_dmabuf_ahb_slot(b) : NULL;
     if (!ab) return -1;
@@ -247,7 +253,8 @@ unsigned ahb_swapchain_stats_take(void) {
     return n;
 }
 
-int ahb_swapchain_advertised(void) { return g_advertised; }
+/* Keep the pre-v3 meaning used by the existing HDR direct-layer gate. */
+int ahb_swapchain_advertised(void) { return g_layer_advertised; }
 
 uint32_t ahb_swapchain_ahb_format(const struct dmabuf_buffer *b) {
     struct ahb_buf *ab = b ? *alroot_dmabuf_ahb_slot((struct dmabuf_buffer *)b) : NULL;
@@ -331,12 +338,16 @@ static void on_client_resource_destroyed(struct wl_resource *r) {
 
 static void bind_ahb(struct wl_client *c, void *data, uint32_t ver, uint32_t id) {
     static struct wl_client *last_named;
-    if (ver > 2) ver = 2;
+    if (ver > 3) ver = 3;
     struct wl_resource *r = wl_resource_create(c, &banner_ahb_v1_interface, (int)ver, id);
     if (!r) { wl_client_post_no_memory(c); return; }
     wl_resource_set_implementation(r, &ahb_impl, NULL, on_client_resource_destroyed);
     wl_list_insert(&g_clients, wl_resource_get_link(r));
-    if (ver >= BANNER_AHB_V1_MODE_SINCE_VERSION) banner_ahb_v1_send_mode(r, g_zero_copy ? 1u : 0u);
+    if (ver >= BANNER_AHB_V1_MODE_SINCE_VERSION)
+        banner_ahb_v1_send_mode(r, g_zero_copy && g_layer_advertised ? 1u : 0u);
+    if (ver >= BANNER_AHB_V1_GPU_CAPABILITIES_SINCE_VERSION)
+        banner_ahb_v1_send_gpu_capabilities(r,
+                (g_gpu_copy_available ? 1u : 0u) | (g_layer_advertised ? 2u : 0u));
     if (last_named != c) {
         last_named = c;
         alroot_log("layer", "zero-copy: %s bound banner_ahb_v1 version %u (%s)", alroot_client_name(c), ver,
@@ -345,9 +356,10 @@ static void bind_ahb(struct wl_client *c, void *data, uint32_t ver, uint32_t id)
 }
 
 void ahb_swapchain_set_mode(int on, int live) {
-    on = on ? 1 : 0;
+    /* The legacy mode event controls ONLY direct layers, not Stage-1 copy. */
+    on = on && g_layer_advertised ? 1 : 0;
     g_zero_copy = on;
-    if (!g_advertised) {
+    if (!g_layer_advertised) {
         if (live) alroot_log("layer", "zero-copy switched %s from the drawer, but no display layer is available on this device: no change",
                              on ? "on" : "off");
         return;
@@ -380,22 +392,32 @@ void ahb_swapchain_set_mode(int on, int live) {
 void ahb_swapchain_init(struct wl_display *display) {
     wl_list_init(&g_bufs);
     wl_list_init(&g_clients);
-    if (!sc_layer_available()) {
-        alroot_log("layer", "zero-copy: no display layer on this device (see the line above): banner_ahb_v1 not advertised");
+    g_gpu_copy_available = vkp_ahb_gpu_copy_supported() ? 1 : 0;
+    const int layer_candidate = sc_layer_available() ? 1 : 0;
+    if (!g_gpu_copy_available && !layer_candidate) {
+        alroot_log("layer", "AHB unsupported: no host Vulkan GPU-copy import and no direct layers");
         return;
     }
     g_loop = wl_display_get_event_loop(display);
-    if (pipe2(g_rel_pipe, O_CLOEXEC | O_NONBLOCK) != 0) {
-        alroot_log("error", "zero-copy: release pipe creation failed (%s); zero-copy presents disabled", strerror(errno));
-        g_rel_pipe[0] = g_rel_pipe[1] = -1;
+    if (layer_candidate) {
+        if (pipe2(g_rel_pipe, O_CLOEXEC | O_NONBLOCK) != 0) {
+            alroot_log("error", "zero-copy: release pipe creation failed (%s); direct layers disabled",
+                       strerror(errno));
+            g_rel_pipe[0] = g_rel_pipe[1] = -1;
+        } else {
+            wl_event_loop_add_fd(g_loop, g_rel_pipe[0], WL_EVENT_READABLE, on_release_pipe, NULL);
+            g_layer_advertised = 1;
+        }
+    }
+    if (!g_gpu_copy_available && !g_layer_advertised) return;
+    if (!wl_global_create(display, &banner_ahb_v1_interface, 3, NULL, bind_ahb)) {
+        alroot_log("error", "AHB: banner_ahb_v1 global creation failed");
+        g_layer_advertised = 0;
         return;
     }
-    wl_event_loop_add_fd(g_loop, g_rel_pipe[0], WL_EVENT_READABLE, on_release_pipe, NULL);
-    if (!wl_global_create(display, &banner_ahb_v1_interface, 2, NULL, bind_ahb)) {
-        alroot_log("error", "zero-copy: banner_ahb_v1 global creation failed");
-        return;
-    }
-    g_advertised = 1;
-    alroot_log("layer", "zero-copy: banner_ahb_v1 version 2 advertised (games built for it present their own gralloc buffers while the switch is on)");
+    alroot_log("layer", "banner_ahb_v1 version 3: AHB GPU-copy importer=%s, direct layer=%s; "
+               "v2 mode semantics retained",
+               g_gpu_copy_available ? "candidate" : "unavailable",
+               g_layer_advertised ? "available" : "unavailable");
     ahb_swapchain_set_mode(g_zero_copy, 0);
 }

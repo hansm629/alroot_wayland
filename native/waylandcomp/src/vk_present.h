@@ -53,6 +53,8 @@ struct vkp_draw {
 const char *vkp_gpu_name(void);
 
 int vkp_ready(void);
+/* Capability probe for optional AHB VkImage import; not a proven frame. */
+int vkp_ahb_gpu_copy_supported(void);
 int vkp_has_window(void);
 int vkp_wait_window_request(int timeout_ms);
 int vkp_device_lost(void);

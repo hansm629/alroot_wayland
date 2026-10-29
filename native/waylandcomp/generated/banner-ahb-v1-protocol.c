@@ -57,11 +57,12 @@ static const struct wl_message banner_ahb_v1_requests[] = {
 
 static const struct wl_message banner_ahb_v1_events[] = {
 	{ "mode", "2u", banner_ahb_v1_types + 0 },
+	{ "gpu_capabilities", "3u", banner_ahb_v1_types + 0 },
 };
 
 WL_PRIVATE const struct wl_interface banner_ahb_v1_interface = {
-	"banner_ahb_v1", 2,
+	"banner_ahb_v1", 3,
 	2, banner_ahb_v1_requests,
-	1, banner_ahb_v1_events,
+	2, banner_ahb_v1_events,
 };
 

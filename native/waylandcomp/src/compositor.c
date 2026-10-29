@@ -770,8 +770,23 @@ static void take_dmabuf(struct surface *s, struct dmabuf_buffer *b, struct wl_re
         wl_resource_add_destroy_listener(buffer, &s->dmabuf_destroy);
     }
     if (!b->img && !b->import_failed && b->n_planes >= 1) {
-        b->img = vkp_image_from_dmabuf(b->fd[0], b->format, b->modifier, b->width, b->height,
-                                       b->stride[0], b->offset[0]);
+        /* Stage 1 vendor-neutral GPU-copy. If the client *actually* sent
+         * a gralloc AHardwareBuffer for this wl_buffer, use the host's
+         * native Vulkan AHB importer FIRST, avoiding a known-bad generic
+         * DMA-BUF import attempt. If AHB import fails, try the original
+         * DMA-BUF path unchanged. Without AHB: original path only.
+         * The resulting VkImage still goes through GPU composition/copy;
+         * there is no direct scanout/zero-copy at this stage. */
+        AHardwareBuffer *ahb = ahb_swapchain_borrow_ahb(b);
+        if (ahb) {
+            b->img = vkp_image_from_ahb(ahb);
+            if (b->img)
+                alroot_log("vulkan", "AHB -> VkImage GPU-copy: %dx%d (host imported actual gralloc buffer)",
+                           b->width, b->height);
+        }
+        if (!b->img)
+            b->img = vkp_image_from_dmabuf(b->fd[0], b->format, b->modifier, b->width, b->height,
+                                           b->stride[0], b->offset[0]);
         if (b->img && g_zero_copy) sc_layer_probe_dmabuf_fd(b->fd[0]);
         if (!b->img) {
             b->import_failed = 1;

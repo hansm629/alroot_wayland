@@ -66,8 +66,10 @@ struct banner_ahb_v1_interface {
 };
 
 #define BANNER_AHB_V1_MODE 0
+#define BANNER_AHB_V1_GPU_CAPABILITIES 1
 
 #define BANNER_AHB_V1_MODE_SINCE_VERSION 2
+#define BANNER_AHB_V1_GPU_CAPABILITIES_SINCE_VERSION 3
 
 #define BANNER_AHB_V1_DESTROY_SINCE_VERSION 1
 #define BANNER_AHB_V1_ATTACH_SINCE_VERSION 1
@@ -76,6 +78,12 @@ static inline void
 banner_ahb_v1_send_mode(struct wl_resource *resource_, uint32_t enabled)
 {
 	wl_resource_post_event(resource_, BANNER_AHB_V1_MODE, enabled);
+}
+
+static inline void
+banner_ahb_v1_send_gpu_capabilities(struct wl_resource *resource_, uint32_t flags)
+{
+	wl_resource_post_event(resource_, BANNER_AHB_V1_GPU_CAPABILITIES, flags);
 }
 
 #ifdef  __cplusplus

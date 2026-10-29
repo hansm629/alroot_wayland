@@ -552,6 +552,11 @@ static int dev_init(void) {
 
 int vkp_ready(void) { return dev_init(); }
 
+int vkp_ahb_gpu_copy_supported(void) {
+    return dev_init() == 0 && g_ahb_import &&
+           g_vk.GetAndroidHardwareBufferPropertiesANDROID != NULL;
+}
+
 static int swap_init_locked(void);
 
 static int swap_init(void) {

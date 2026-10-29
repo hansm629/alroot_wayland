@@ -23,7 +23,7 @@
     DEALINGS IN THE SOFTWARE.
   </copyright>
 
-  <interface name="banner_ahb_v1" version="2">
+  <interface name="banner_ahb_v1" version="3">
     <description summary="Android gralloc buffers behind dma-buf wl_buffers">
       Zero-copy window layers on Android. A Vulkan swapchain image that the
       client allocated as an Android AHardwareBuffer (gralloc) is still shared
@@ -100,6 +100,19 @@
         it; until it is, its buffers are shown as before.
       </description>
       <arg name="enabled" type="uint" summary="1 = gralloc swapchain images wanted, 0 = not"/>
+    </event>
+    <event name="gpu_capabilities" since="3">
+      <description summary="AHB transport capabilities independent of direct layers">
+        Version 3 separates AHB-to-VkImage GPU-copy from SurfaceControl
+        direct-layer zero-copy. Flags bit 0 = the Android host has an AHB
+        Vulkan importer (GPU-copy candidate); bit 1 = direct display layers
+        are available. Even with bit 0, clients must prove allocation,
+        synchronization and buffer format compatibility at runtime.
+        This is not an assertion that the GPU-copy import has succeeded.
+        The version 2 mode event remains a zero-copy switch only; it must
+        never be interpreted as a prohibition on v3 GPU-copy.
+      </description>
+      <arg name="flags" type="uint" summary="bit0 GPU-copy; bit1 direct-layer support"/>
     </event>
   </interface>
 </protocol>
