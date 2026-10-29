@@ -466,3 +466,44 @@ Mesa EGL/Wayland integration is a separate next step. The explicit
 acquire/release fence replacement and final output zero-copy are later
 stages. Color/crop correctness still requires a physical user visual
 inspection before declaring an end-to-end on-screen PASS.
+
+### S1.3-B experimental EGL Wayland `eglSwapBuffers` AHB adapter
+
+The S1.3-A demo proves KGSL can directly write an Android AHB, but a
+normal Mesa KGSL Wayland EGL app still uses linux-dmabuf, which the
+host Android Vulkan driver cannot import. For an **opt-in, test-only**
+EGL integration, S1.3-B uses a private `LD_PRELOAD` library to intercept
+Wayland `wl_egl_window_create`, `eglCreateWindowSurface`, and
+`eglSwapBuffers` for the single client process. It retains the normal
+Freedreno KGSL renderer and copies the *GPU* default framebuffer to a
+KGSL GL external-memory AHB image via `glBlitFramebuffer`, then commits
+that AHB to the Alroot Wayland host. This explicitly adds a **GPU blit**;
+it does not claim zero-copy. It performs NO CPU pixel readback/upload on
+the frame path and never invokes a failing Linux DMA-BUF Wayland commit.
+
+S26U 480x270 EGL client -> AHB 480x320 (stride 768) -> viewport 480x270
+passes 360/360 EGL swaps and 360/360 buffer releases. A separate Wayland
+wire trace shows three AHB buffers, zero wl_shm and zero linux-dmabuf
+buffers, plus actual host AHB -> VkImage import. Without the per-process
+opt-in `ALROOT_S13_KGSL_EGL_AHB=1`, the same preloaded library leaves
+normal EGL calls alone, and the old KGSL DMA-BUF path remains unchanged.
+
+    cd ~/alroot_wayland
+    bash graphics/tools/test-s13-kgsl-egl-shim.sh 90
+    bash graphics/tools/test-s13-kgsl-egl-shim.sh 360
+
+The script first checks all five cross-driver KGSL↔Android EGL pixels,
+then builds and preloads the private adapter only in one isolated test
+process, and confirms release and AHB-only Wayland wire traffic. No
+helper APK update or system library installation is required.
+
+**Not a general-purpose KGSL EGL implementation yet:** this experiment
+intentionally only accepts the physically tested S26U 480x270 buffer
+layout, includes conservative Stage-1 CPU completion waits, and does
+not cover arbitrary resolutions, resize, multiple independent contexts,
+OpenGL buffer-age/preservation/swap interval, full EGL context lifetime,
+other Android gralloc layouts, EGL X11/GLX, desktop sessions or
+Xwayland GLAMOR. It is NOT installed for general applications. Standard
+Mesa EGL/Gallium integration and correctness under these transitions
+must be developed and tested separately. Visual confirmation of the
+animated frame colors/cropping by a person remains necessary.
