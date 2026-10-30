@@ -1,0 +1,60 @@
+diff --git a/hw/xwayland/xwayland-window-buffers.c b/hw/xwayland/xwayland-window-buffers.c
+--- a/hw/xwayland/xwayland-window-buffers.c
++++ b/hw/xwayland/xwayland-window-buffers.c
+@@ -410,8 +410,33 @@
+         BoxPtr pBox = RegionRects(full_damage);
+         int nBox = RegionNumRects(full_damage);
+ #ifdef XWL_HAS_GLAMOR
+         xwl_glamor_gbm_wait_syncpts(xwl_window_buffer->pixmap);
++        if (xwl_glamor_is_kgsl_surfaceless(xwl_screen)) {
++            static Bool full_refresh_logged;
++            if (!full_refresh_logged) {
++                full_refresh_logged = TRUE;
++                ErrorF("Xwayland KGSL: full output-pixmap GPU preservation enabled (no partial damage reuse)\n");
++            }
++            /* The KGSL surfaceless export is a different linear GPU
++             * allocation for every Xwayland window buffer. Reconstructing
++             * a recycled output pixmap from only the tracked X11 damage
++             * can leave stale glyph tiles when other clients (XFCE, GTK,
++             * Blender) reuse a previously displayed pixmap. Stage-1
++             * correctness contract: copy the entire current pixmap into
++             * the available GPU buffer, even when Damage says less.
++             * Ordinary GBM/Mesa/Xclipse paths remain unchanged. */
++            int copy_w = window_pixmap->drawable.width;
++            int copy_h = window_pixmap->drawable.height;
++            if (copy_w > xwl_window_buffer->pixmap->drawable.width)
++                copy_w = xwl_window_buffer->pixmap->drawable.width;
++            if (copy_h > xwl_window_buffer->pixmap->drawable.height)
++                copy_h = xwl_window_buffer->pixmap->drawable.height;
++            if (copy_w > 0 && copy_h > 0)
++                copy_pixmap_area(window_pixmap, xwl_window_buffer->pixmap,
++                                 0, 0, copy_w, copy_h);
++            nBox = 0;
++        }
+ #endif /* XWL_HAS_GLAMOR */
+         while (nBox--) {
+             copy_pixmap_area(window_pixmap,
+                              xwl_window_buffer->pixmap,
+diff --git a/hw/xwayland/xwayland-window.c b/hw/xwayland/xwayland-window.c
+--- a/hw/xwayland/xwayland-window.c
++++ b/hw/xwayland/xwayland-window.c
+@@ -2067,8 +2067,19 @@
+      * connection. If we flood it too much anyway, this could
+      * abort in libwayland-client.
+      */
+     region = xwl_window_get_damage_region(xwl_window);
++#ifdef XWL_HAS_GLAMOR
++    if (xwl_screen->glamor &&
++        xwl_glamor_is_kgsl_surfaceless(xwl_screen)) {
++        /* Stage-1 KGSL GPU-copy uses full GPU pixmap preservation when
++         * recycling Xwayland output buffers. Announce full damage as well:
++         * no stale region/pixmap fragments may survive in the compositor. */
++        xwl_surface_damage(xwl_screen, xwl_window->surface,
++                           0, 0, surface_window->drawable.width,
++                           surface_window->drawable.height);
++    } else
++#endif
+     if (RegionNumRects(region) > 256) {
+         box = RegionExtents(region);
+         xwl_surface_damage(xwl_screen, xwl_window->surface,
+                            box->x1 + surface_window->borderWidth,

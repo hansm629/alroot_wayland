@@ -573,3 +573,15 @@ sync_file to the Vulkan buffer-copy submission and the Android input view
 handles hardware mouse positions before sending buttons. Neither real
 on-screen shimmer reduction nor hardware click positioning is a PASS until
 the new Android APK is explicitly installed and visually tested.
+
+
+The follow-up KGSL-only correctness update for the fragmented 2D UI and
+mouse drift is `graphics/tools/test-s16-kgsl-full-frame.sh`: full GPU
+pixmap preservation on every reused GLAMOR surface, complete Wayland
+damage, a deterministic repeat-build/Xorg-lock check, and a direct live
+host GPU-copy probe. Java physical/touchpad cursor now sends absolute
+Xwayland scene coordinates (input type 12), bypassing a possibly stale
+Vulkan output transform. Requires the updated Android host APK for the
+pointer change; KGSL Xwayland alone is rebuilt locally. Real visual UX
+regression pass still requires the user to inspect XFCE title buttons,
+text and moving/scrolling windows.

@@ -166,3 +166,74 @@ moving windows, GLX renderer and `glmark2` under the correct private X11
 display, XCB `vkcube` window's **Android visual pixels**, plus GPU source
 fence log and absence of new Vk/GL errors. Compare with the previous
 stable SHM/pixman path to isolate what is an S1.6 regression.
+
+
+## S1.6.2 actual corrections: rootful KGSL full pixmap and pointer drift
+
+The user's next screenshot showed severe **partial-glyph/shadowed UI tiles**
+in static XFCE/Blender/terminal windows and cursor hit tests that became
+misaligned *after continued use*, despite the original VkBuffer GPU copy and
+producer fence improvements. The static one-shot full-frame color proof
+was never an acceptance of live partially damaged Xwayland output.
+
+### KGSL only: preserve full GPU pixmap when recycled
+
+The pinned 24.1.14 private KGSL Xwayland's
+`hw/xwayland/xwayland-window-buffers.c` copies only the tracked X11
+`damage_region` when reusing a previously displayed GPU pixmap. Damage
+coverage can be incomplete for complex composed UI and stale glyph fragments
+survive inside recycled output buffers. The private KGSL patch
+`graphics/patches/xwayland/kgsl/0002-kgsl-full-pixmap-damage-24.1.14.patch`
+now copies the **entire** current window pixmap into each available recycled
+GPU pixmap, clamps to both allocations' dimensions, and makes the matching
+`xwayland-window.c` send complete Wayland surface damage instead of partial
+regions. This trades bandwidth for correctness at the S1.6 integration
+stage; optimize/tile-damage later only after actual image-quality PASS.
+Ordinary/GBM Xwayland branches and the native Termux Xwayland binary do
+not change. The source logs the first exercised full-pixmap path.
+
+The private Xorg build script now discovers the ordered KGSL patch stack
+and checks stable semantic markers before applying the context-free old
+Termux TMPDIR and hard-link-lock patches. This prevents the regression seen
+when they were accidentally reapplied on a second build (duplicate
+`android_tmpdir` declaration and duplicate fallback). A clean tarball plus
+all private patches applies, first and second builds succeed, and the
+second build is a Ninja no-op.
+
+```
+bash graphics/tools/test-s16-kgsl-full-frame.sh
+```
+
+The isolated rootful test on the active host logged
+`Xwayland KGSL: full output-pixmap GPU preservation enabled` and fresh
+Android Vulkan `VkBuffer GPU-copy` events, while the current XFCE session
+was untouched. **Human visual A/B is still required to assert actual text
+and title-button corruption is fixed.**
+
+### Mouse: one source-of-truth for visible pointer and X11 click coordinates
+
+`InputSurfaceView.absolute()` previously sent Android view coordinates in
+an artificial 1920×1080 **output** coordinate system (type 2) and the
+native compositor inverted its cached Vulkan `g_map`. This could drift
+from `InputSurfaceView.picture` after output resize/PiP, since g_map was
+updated on rendered frames, not every input. Touchpad finger motion also
+maintained Java display position and Wayland guest relative position as
+two independent accumulators.
+
+New JNI event type **12** sends integer **logical Xwayland scene**
+coordinates computed directly from the same `picture` rectangle used for
+the visible cursor. The native input thread clamps those positions to the
+*live* scene size and forwards absolute Wayland pointer motion without
+any second Vulkan transform. For ordinary touchpad drags (uncaptured),
+reconcile on every movement instead of accumulating native relative
+movement; **pointer-captured games continue to receive true type-6
+relative deltas**, and the old type-2 event remains available for
+existing callers. Hardware mouse button events continue to synchronize
+cursor position before the click and deduplicate button transitions.
+
+`python3 graphics/tools/test-s16-mouse-coordinate-policy.py` exercises
+50,000 synthetic touchpad updates for 3120×1440, 1920×1080 and PiP
+752×423, plus three separate FIT inverse scenarios. Its maximal logical
+round-trip quantization error was **0.5 scene pixel** for all three
+50,000-step cases. This is a math/source test, not a substitute for
+physical pointer+click validation on the updated APK.

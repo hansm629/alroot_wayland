@@ -25,6 +25,20 @@ if [[ ! -f "$WORK/source/meson.build" ]]; then
     tar -xf "$tarball" -C "$WORK/source" --strip-components=1
 fi
 for fix in "$ROOT/graphics/patches/xwayland/termux"/000*.patch; do
+    # Old no-context Xorg insertion hunks (0003/0004) could silently apply
+    # AGAIN during a second build. Probe a stable semantic marker before
+    # patch, not only patch(1)'s positional dry run, to keep repeated builds
+    # byte-for-byte idempotent. All other patches keep strict dry-run checks.
+    if [[ "$fix" == *"0003-android-termux-tmpdir-server-lock.patch" ]] &&
+       grep -q 'Android Xwayland needs an absolute TMPDIR' "$WORK/source/os/utils.c"; then
+        echo 'Private Termux TMPDIR lock patch already applied (marker verified)'
+        continue
+    fi
+    if [[ "$fix" == *"0004-android-atomic-no-replace-lock.patch" ]] &&
+       grep -q 'Android app data can forbid hard links' "$WORK/source/os/utils.c"; then
+        echo 'Private Android atomic lock patch already applied (marker verified)'
+        continue
+    fi
     if (cd "$WORK/source" && patch -s --dry-run -p1 -i "$fix" >/dev/null 2>&1); then
         (cd "$WORK/source" && patch -s -p1 -i "$fix")
         echo "Applied private Android compatibility patch $(basename "$fix")"
@@ -37,16 +51,17 @@ for fix in "$ROOT/graphics/patches/xwayland/termux"/000*.patch; do
 done
 if [[ "${ALROOT_XWAYLAND_VARIANT:-generic}" == kgsl ]]; then
     # Optional Adreno adaptation. Never the default for Mali/PowerVR/Xclipse.
-    private="$ROOT/graphics/patches/xwayland/kgsl/0001-optional-kgsl-surfaceless-dri3-24.1.14.patch"
-    if (cd "$WORK/source" && patch -s --dry-run -p1 -i "$private" >/dev/null 2>&1); then
-        (cd "$WORK/source" && patch -s -p1 -i "$private")
-        echo 'Applied optional KGSL surfaceless DRI3 adapter'
-    elif (cd "$WORK/source" && patch -s --dry-run -R -p1 -i "$private" >/dev/null 2>&1); then
-        echo 'Optional KGSL adapter already present in private source'
-    else
-        echo 'KGSL adapter no longer applies to pinned Xwayland 24.1.14' >&2
-        exit 2
-    fi
+    for private in "$ROOT/graphics/patches/xwayland/kgsl"/000*.patch; do
+        if (cd "$WORK/source" && patch -s --dry-run -p1 -i "$private" >/dev/null 2>&1); then
+            (cd "$WORK/source" && patch -s -p1 -i "$private")
+            echo "Applied optional private KGSL patch $(basename "$private")"
+        elif (cd "$WORK/source" && patch -s --dry-run -R -p1 -i "$private" >/dev/null 2>&1); then
+            echo "Optional private KGSL patch already applied $(basename "$private")"
+        else
+            echo "Private KGSL patch no longer applies to pinned Xwayland 24.1.14: $private" >&2
+            exit 2
+        fi
+    done
 fi
 export CFLAGS='-fcommon -fPIC -DFNDELAY=O_NDELAY -Wno-int-to-pointer-cast -Wno-implicit-function-declaration'
 export CPPFLAGS="-I$PREFIX/include/libdrm"

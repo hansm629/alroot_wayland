@@ -395,12 +395,21 @@ public final class InputSurfaceView extends SurfaceView {
         int w = prefs.getInt("width", 1920), h = prefs.getInt("height", 1080);
         updateTransform(w, h, prefs.getBoolean("fullscreen", true)
                 ? 1 : prefs.getInt("mode", 1));
-        // Compositor JNI expects 1920x1080 *physical output* coordinates and
-        // itself inverts the aspect-fit map to logical X11 scene coordinates.
-        // Feeding a logical 1280/1920 guest pixel here would double-transform.
-        int px = Math.min(1920, Math.max(0, Math.round(x / Math.max(1, getWidth()) * 1920f)));
-        int py = Math.min(1080, Math.max(0, Math.round(y / Math.max(1, getHeight()) * 1080f)));
-        WaylandCompositor.nativeSendSceneInput(2, px, py);
+        // P19 rootful Xwayland: the visual cursor and X11 hit test must use
+        // ONE authoritative transform.  The old event type 2 normalised
+        // Android view coordinates to 1920x1080 and then inverted a *cached*
+        // Vulkan scene/output map.  That map can lag behind PiP/fullscreen
+        // transitions or an Xwayland resize and makes clicking drift away
+        // from the rendered cursor while the desktop keeps running.
+        // Type 12 is explicitly guest-scene coordinates, not output-space:
+        // do the same inverse picture FIT map that already positions the
+        // Android cursor/overlay and let the compositor clamp to its live
+        // Xwayland scene without applying a second transform.
+        int gx = Math.max(0, Math.min(w - 1,
+                Math.round((x - picture.left) * pointerScaleX)));
+        int gy = Math.max(0, Math.min(h - 1,
+                Math.round((y - picture.top) * pointerScaleY)));
+        WaylandCompositor.nativeSendSceneInput(12, gx, gy);
         lastX = Math.max(picture.left, Math.min(picture.right - 1, x));
         lastY = Math.max(picture.top, Math.min(picture.bottom - 1, y));
         pointerInitialized = true;
@@ -415,9 +424,21 @@ public final class InputSurfaceView extends SurfaceView {
         }
         lastX = Math.max(picture.left, Math.min(picture.right - 1, lastX + dx));
         lastY = Math.max(picture.top, Math.min(picture.bottom - 1, lastY + dy));
-        WaylandCompositor.nativeSendSceneInput(6,
-                Math.round(dx * pointerScaleX * 256f),
-                Math.round(dy * pointerScaleY * 256f));
+        if (inputMode == MODE_TOUCHPAD && !captured) {
+            // P19: Android's touchpad overlay and the Wayland pointer used to
+            // maintain INDEPENDENT relative position accumulators. Rounding,
+            // scene resizing, X11 warp/focus and clamping could gradually
+            // diverge, making taps hit something other than the visible cursor.
+            // The software pointer position is now authoritative in ordinary
+            // desktop/touchpad mode: send an absolute output-space position
+            // on each gesture delta. Pointer-captured games still receive
+            // true relative deltas below and are not changed.
+            absolute(lastX, lastY);
+        } else {
+            WaylandCompositor.nativeSendSceneInput(6,
+                    Math.round(dx * pointerScaleX * 256f),
+                    Math.round(dy * pointerScaleY * 256f));
+        }
         if (onCursorMove != null) onCursorMove.run();
     }
     private void acceleratedRelative(float dx, float dy) {

@@ -3376,6 +3376,21 @@ static int on_input_readable(int fd, uint32_t mask, void *data) {
         case 5: vsync = 1; vsync_ns = ((int64_t)m.p1 << 32) | (uint32_t)m.p2; break;
         case 6: pointer_delta(m.p1 / 256.0, m.p2 / 256.0); break;
         case 7: deliver_touch(&m); break;
+        case 12: {
+            /* Absolute Android pointer in LIVE Xwayland scene pixels.
+             * Unlike event 2, this never uses a cached Vulkan output map;
+             * Java already inverted the FIT/letterbox transform used for
+             * the visual pointer. Keep event 2 for older callers. */
+            int sw, sh;
+            scene_size(&sw, &sh);
+            double x = m.p1, y = m.p2;
+            if (x < 0) x = 0;
+            if (y < 0) y = 0;
+            if (x >= sw) x = sw - 1;
+            if (y >= sh) y = sh - 1;
+            pointer_event(x, y, 0, 0);
+            break;
+        }
         case 8: output_resized(); break;
         case 9:
             vk_present_set_scale_mode(m.p1, m.p2);
