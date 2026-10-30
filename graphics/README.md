@@ -651,3 +651,18 @@ test scripts `graphics/tools/test-s23-mesa27-zink-matrix.sh` and
 their own temporary demo windows. Mesa27 and Alroot runtime trial builds
 remain private; global drivers, Termux-X11 :0, and the existing APK were
 not replaced.
+
+**GPU-S24 Wrapper XCB resizing:** S26U Adreno 840 KGSL EGL requires a
+BGRA8 AHB with physical height divisible by 4; previously, a failed
+900×650 DRI3 import cascaded into stale VkImage/vkCreateImageView SIGSEGV
+and GLXBadCurrentWindow. The S24 *private* wrapper now uses a real 900×650
+render VkImage and a **separately bound 900×652 AHB VkImage**, copying only
+logical pixels with `vkCmdCopyImage`. Vulkan memory binding dimensions thus
+match the AHB. Live XFCE Vulkan and Zink odd-height resize stress,
+12/12 last-logical-row samples per resize, driver integrity and process
+liveness passed. Keep opt-in `S24_WRAPPER_XCB_AHB_PAD_HEIGHT=1` scoped to
+the private ICD and the XCB WSI. See
+`graphics/docs/gpu-s24-wrapper-xcb-resize.md` and run
+`S24_RESIZE_STRESS=1 bash graphics/tools/test-s24-wrapper-xcb-resize.sh`.
+**Do not promote awstart yet** without the user's physical display visual
+acceptance and device-vendor capability gates.

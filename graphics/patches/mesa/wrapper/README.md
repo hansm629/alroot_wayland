@@ -127,3 +127,42 @@ To reproduce against an active experimental host, run:
 These run the PRIVATE ICD; they never replace Termux drivers. Full visual
 acceptance (correct cube colors/rotation, stutter, resize and later
 explicit fences) still requires inspection on the actual Android display.
+
+## 2026-10-30 GPU-S24 — opt-in XCB resize, Adreno/KGSL only
+
+`0003-s24-xcb-ahb-aligned-gpu-copy.patch` is a **separate four-file patch**
+on the S16 *private* Mesa wrapper/XCB AHB socket overlay. On S26U the
+Qualcomm BGRA8 linear DMA-BUF EGL importer rejects AHB heights not divisible
+by four (`eglCreateImageKHR` returns 0x3003). Failed XCB swapchain creation
+then allowed a stale VkImage to reach vendor `vkCreateImageView`, causing a
+SIGSEGV; Wrapper + Zink GLX also failed at `GLXBadCurrentWindow` on resize.
+
+When the scoped, explicit `S24_WRAPPER_XCB_AHB_PAD_HEIGHT=1` is used,
+XCB uses an ordinary logical VkImage (e.g. 900×650) and a separate Vulkan
+AHB-import image with the physically aligned height (900×652).
+`vkCmdCopyImage` copies only the logical extent into the matching-sized
+AHB-bound destination; the physical AHB/DMA-BUF size is supplied to the
+private X11 DRI3 importer. **Never bind a 900×650 Vulkan image directly
+to a 900×652 Android hardware buffer:** it violates Vulkan's dedicated AHB
+image dimension rules even if Qualcomm happens to accept it.
+
+The patch also restores the real Android `image_type` after WSI metadata
+initialization, prevents stale-image `vkCreateImageView` forwarding, and
+returns actual AHB import failures. No CPU pixel copy is introduced, but
+odd-height windows now have a *GPU-to-GPU transfer* which must be accounted
+for in later performance comparisons. Aligned-height XCB paths, Wayland
+WSI, other GPUs and system Termux graphics files remain unchanged.
+
+Build and test the **private ICD only**:
+
+```sh
+cd ~/alroot_wayland
+bash graphics/tools/build-s24-wrapper-xcb-resize.sh
+S24_RESIZE_STRESS=1 bash graphics/tools/test-s24-wrapper-xcb-resize.sh
+```
+
+Real S26U live XFCE `vkcube` / Mesa27 Zink `glxgears`, odd-height repeat
+resizes, and 12/12 logical-last-row pixel samples PASS. This does **not**
+replace the system Wrapper, prove physical Android screenshot correctness,
+or authorize default `awstart` promotion. See
+`graphics/docs/gpu-s24-wrapper-xcb-resize.md`.

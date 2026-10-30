@@ -100,6 +100,8 @@ def client_command(route, scene, display, auth):
     env['GALLIUM_DRIVER'] = 'zink'
     env['MESA_LOADER_DRIVER_OVERRIDE'] = 'zink'
     env['VK_DRIVER_FILES'] = (
+        str(ROOT / '.source/gpu-stage1/s24-wrapper-xcb-resize/runtime/wrapper_icd.private.json')
+        if route == 'wrapper-s24' else
         str(ROOT / '.source/gpu-stage1/wrapper-private-runtime/wrapper_icd.private.json')
         if route == 'wrapper-private' else
         str(PREFIX / 'share/vulkan/icd.d/wrapper_icd.aarch64.json')
@@ -118,7 +120,8 @@ def check_renderer(route, text, scene):
     return 'Selected GPU 0: Adreno (TM) 840' in text
 
 
-def test_one(route, scene, pid, display, sampler, resize_own_window=False):
+def test_one(route, scene, pid, display, sampler, resize_own_window=False,
+             resize_sizes=None, edge_sampler=None):
     env, command = client_command(route, scene, display, STATE / 'Xauthority')
     label = route + '-' + scene
     logfile = OUTPUT / (label + '.log')
@@ -180,9 +183,10 @@ def test_one(route, scene, pid, display, sampler, resize_own_window=False):
         if resize_own_window and window:
             # Move and resize ONLY the demo XID, never the user's terminal,
             # desktop, pointer, output configuration or XFCE settings.
-            for index, (px, py, width, height) in enumerate((
-                    (120, 100, 900, 650), (230, 155, 1200, 700),
-                    (145, 130, 500, 500)), 1):
+            geometry_list = resize_sizes or ((900, 650), (1200, 700), (500, 500))
+            for index, (width, height) in enumerate(geometry_list, 1):
+                px = 120 + (index % 4) * 26
+                py = 100 + (index % 4) * 18
                 move = run_quick(['xdotool', 'windowmove', window,
                                   str(px), str(py)], env, timeout=4)
                 size = run_quick(['xdotool', 'windowsize', window,
@@ -196,9 +200,21 @@ def test_one(route, scene, pid, display, sampler, resize_own_window=False):
                 content_ok = (len(colors) == 5 and len(set(colors)) >= 2 and
                               any(int(value, 16) != 0 for value in colors) and
                               'S16_X11_GETIMAGE_READBACK=5/5' in snap.stdout)
+                edges_ok = True
+                if edge_sampler is not None:
+                    edges_ok = False
+                    for attempt in range(4):
+                        edge = run_quick([str(edge_sampler), window], env, timeout=5)
+                        (OUTPUT / (label + '-resize-' + str(index) + '-edges.log')).write_text(
+                            edge.stdout + edge.stderr)
+                        if edge.returncode == 0:
+                            edges_ok = True
+                            break
+                        time.sleep(.22)
                 alive = run_quick(['xdpyinfo'], env, timeout=3).returncode == 0
                 step_ok = (move.returncode == 0 and size.returncode == 0 and
-                           geometry_ok and content_ok and alive and process.poll() is None)
+                           geometry_ok and content_ok and edges_ok and alive and
+                           process.poll() is None)
                 (OUTPUT / (label + '-resize-' + str(index) + '.log')).write_text(
                     snap.stdout + snap.stderr)
                 resized = resized and step_ok
@@ -206,6 +222,9 @@ def test_one(route, scene, pid, display, sampler, resize_own_window=False):
                       ('PASS' if step_ok else 'FAIL') +
                       ' geometry=' + (str(dimension.group(1)) + 'x' + dimension.group(2)
                                       if dimension else 'unknown'), flush=True)
+                if edge_sampler is not None:
+                    print('S24_LIVE[' + label + ']_PADDED_ROW_' + str(index) + '=' +
+                          ('PASS' if edges_ok else 'FAIL'), flush=True)
                 if not step_ok:
                     print('S23_LIVE[' + label + ']_RESIZE_DIAG=' +
                           'move_rc=' + str(move.returncode) +
@@ -260,16 +279,33 @@ def test_one(route, scene, pid, display, sampler, resize_own_window=False):
 
 def main():
     parser = argparse.ArgumentParser()
-    parser.add_argument('--route', choices=('wrapper', 'wrapper-private', 'wrapper-system26',
+    parser.add_argument('--route', choices=('wrapper', 'wrapper-private', 'wrapper-s24', 'wrapper-system26',
                                             'turnip', 'debian', 'all'), default='all')
     parser.add_argument('--vulkan', action='store_true')
     parser.add_argument('--only-vulkan', action='store_true')
     parser.add_argument('--only-gears', action='store_true')
     parser.add_argument('--resize-own-window', action='store_true',
                         help='Move/resize only the newly created demo window')
+    parser.add_argument('--resize-sizes', default='',
+                        help='Comma-separated demo-only sizes e.g. 900x650,1200x700,500x500')
+    parser.add_argument('--edge-check', action='store_true',
+                        help='Check vkcube background through the last logical X11 row')
     opts = parser.parse_args()
     if opts.resize_own_window and not (opts.only_vulkan or opts.only_gears):
         parser.error('--resize-own-window applies only to resizable vkcube or glxgears')
+    if opts.edge_check and not opts.only_vulkan:
+        parser.error('--edge-check requires --only-vulkan')
+    sizes = None
+    if opts.resize_sizes:
+        try:
+            sizes = tuple(tuple(int(value) for value in pair.split('x'))
+                          for pair in opts.resize_sizes.split(','))
+        except ValueError:
+            parser.error('--resize-sizes requires WIDTHxHEIGHT comma-separated pairs')
+        if (not 1 <= len(sizes) <= 16 or
+                any(len(pair) != 2 or pair[0] < 96 or pair[1] < 96 or
+                    pair[0] > 1800 or pair[1] > 960 for pair in sizes)):
+            parser.error('--resize-sizes must contain 1-16 bounded sizes')
     OUTPUT.mkdir(parents=True, exist_ok=True)
     if subprocess.check_output(['git', '-C', str(BASE / 'source'), 'rev-parse', 'HEAD'],
                                text=True).strip() != SOURCE_HASH:
@@ -284,6 +320,13 @@ def main():
                     '-Wall', '-Wextra', '-Werror',
                     str(ROOT / 'graphics/tests/s16-x11-pixmap-sample.c'),
                     '-lX11', '-o', str(sampler)], check=True, timeout=25)
+    edge_sampler = None
+    if opts.edge_check:
+        edge_sampler = OUTPUT / 's24-xcb-resize-pixel-edges'
+        subprocess.run(['clang', '--target=aarch64-linux-android35', '-O2', '-std=gnu11',
+                        '-Wall', '-Wextra', '-Werror',
+                        str(ROOT / 'graphics/tests/s24-xcb-resize-pixel-edges.c'),
+                        '-lX11', '-o', str(edge_sampler)], check=True, timeout=25)
     routes = ('wrapper', 'turnip', 'debian') if opts.route == 'all' else (opts.route,)
     scenes = ('glxgears',) if opts.only_gears else ('vkcube',) if opts.only_vulkan else (
         ('glmark2', 'vkcube') if opts.vulkan else ('glmark2',))
@@ -293,7 +336,8 @@ def main():
             if require_private_session() != (pid, display):
                 raise RuntimeError('live Xwayland session changed unexpectedly')
             outcomes.append(test_one(route, scene, pid, display, sampler,
-                                     resize_own_window=opts.resize_own_window))
+                                     resize_own_window=opts.resize_own_window,
+                                     resize_sizes=sizes, edge_sampler=edge_sampler))
             if run_quick(['xdpyinfo'], env).returncode:
                 raise RuntimeError('X11 server became unresponsive after ' + route + '-' + scene)
             if not outcomes[-1]:

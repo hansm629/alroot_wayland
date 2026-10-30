@@ -1,0 +1,175 @@
+--- a/src/vulkan/wsi/wsi_common.c
++++ b/src/vulkan/wsi/wsi_common.c
+@@ -541,0 +542,16 @@
++#ifdef __TERMUX__
++   /* S24 opt-in: Qualcomm KGSL EGL requires an AHB physical buffer height
++    * divisible by 4. Do NOT bind a logical WxH VkImage to a taller AHB.
++    * Select Mesa's standard GPU image-blit path: applications render at
++    * the unmodified logical H; a second physical H-aligned image receives
++    * a GPU-only copy of precisely the logical rectangle. */
++   const char *s24_xcb_pad = getenv("S24_WRAPPER_XCB_AHB_PAD_HEIGHT");
++   if (image_params->image_type == WSI_IMAGE_TYPE_ANDROID &&
++       s24_xcb_pad && s24_xcb_pad[0] == '1' && s24_xcb_pad[1] == '\0' &&
++       (pCreateInfo->imageExtent.height & 3u) &&
++       pCreateInfo->imageExtent.height < 65532u) {
++      ICD_FROM_HANDLE(VkIcdSurfaceBase, s24_surface, pCreateInfo->surface);
++      if (s24_surface->platform == VK_ICD_WSI_PLATFORM_XCB)
++         chain->blit.type = WSI_SWAPCHAIN_IMAGE_BLIT;
++   }
++#endif
+@@ -3396 +3412,5 @@
+-   assert(info->image_type == WSI_IMAGE_TYPE_DXGI);
++   /* S24: Android XCB padded-AHB transfer uses the same image-to-image
++    * GPU copy as DXGI. Exactly the logical image extent is copied into
++    * the larger AHB-bound destination image, leaving padded rows unused. */
++   assert(info->image_type == WSI_IMAGE_TYPE_DXGI ||
++          info->image_type == WSI_IMAGE_TYPE_ANDROID);
+@@ -3422 +3442,5 @@
+-         .oldLayout = VK_IMAGE_LAYOUT_PRESENT_SRC_KHR,
++         /* The internal destination is overwritten every present; its
++          * layout may initially be UNDEFINED or PRESENT_SRC after a copy.
++          * UNDEFINED is valid here and discards only destination contents. */
++         .oldLayout = info->image_type == WSI_IMAGE_TYPE_ANDROID ?
++            VK_IMAGE_LAYOUT_UNDEFINED : VK_IMAGE_LAYOUT_PRESENT_SRC_KHR,
+@@ -3521 +3545,15 @@
+-      wsi_label_cmd_buffer(wsi, chain->device, cmd_buffer, "wsi blit");
++#ifdef __TERMUX__
++      if (getenv("S24_TRACE_WRAPPER_RESIZE")) {
++         fprintf(stderr, "S24_BLIT_CB type=%d alloc_cmd=%p begin=%p label=%p copy=%p end=%p cmd=%p\n",
++                 info->image_type, (void *)wsi->AllocateCommandBuffers,
++                 (void *)wsi->BeginCommandBuffer, (void *)wsi->SetDebugUtilsObjectNameEXT,
++                 (void *)wsi->CmdCopyImage, (void *)wsi->EndCommandBuffer,
++                 (void *)cmd_buffer);
++         fflush(stderr);
++      }
++#endif
++      /* S24 Qualcomm wrapper: debug-utils name callback is only partially
++       * implemented for internal Android WSI command buffers. Labelling is
++       * optional; do not call through a null vendor function pointer. */
++      if (info->image_type != WSI_IMAGE_TYPE_ANDROID)
++         wsi_label_cmd_buffer(wsi, chain->device, cmd_buffer, "wsi blit");
+@@ -3586,0 +3625 @@
++   info->usage2.usage |= VK_IMAGE_USAGE_TRANSFER_SRC_BIT;
+--- a/src/vulkan/wsi/wsi_common_android.c
++++ b/src/vulkan/wsi/wsi_common_android.c
+@@ -168,0 +169 @@
++      return result; /* Never report success with an unbound imported AHB. */
+@@ -218 +219,8 @@
+-      .extent = info->create.extent,
++      /* Dedicated AHB import MUST use the actual AHB extent (not the
++       * application's logical VkSwapchain image extent). The existing
++       * wsi_cmd_blit_image_to_image copies only info->create.extent. */
++      .extent = {
++         .width = info->ahardware_buffer_desc->width,
++         .height = info->ahardware_buffer_desc->height,
++         .depth = info->create.extent.depth,
++      },
+@@ -335,0 +344,6 @@
++   /* wsi_configure_image() zeroes the entire info structure. Restore
++    * the actual Android image type before the GPU blit command recorder
++    * and avoid issuing optional debug callbacks for the wrong backend. */
++   info->image_type = WSI_IMAGE_TYPE_ANDROID;
++   info->color_space = pCreateInfo->imageColorSpace;
++
+@@ -342,0 +357,13 @@
++   /* S24 isolated XCB A/B: KGSL's EGL DMA-BUF import refuses heights
++    * not divisible by 4. Allocate enough physical rows for that importer,
++    * but keep VkSwapchainCreateInfoKHR.imageExtent EXACTLY as requested.
++    * The logical VkImage and padded AHB-bound VkImage are now SEPARATE. */
++   uint32_t ahb_height = pCreateInfo->imageExtent.height;
++   ICD_FROM_HANDLE(VkIcdSurfaceBase, s24_surface, pCreateInfo->surface);
++   const char *s24_xcb_pad = getenv("S24_WRAPPER_XCB_AHB_PAD_HEIGHT");
++   if (chain->blit.type == WSI_SWAPCHAIN_IMAGE_BLIT &&
++       s24_surface->platform == VK_ICD_WSI_PLATFORM_XCB &&
++       s24_xcb_pad && s24_xcb_pad[0] == '1' && s24_xcb_pad[1] == '\0' &&
++       ahb_height &&
++       ahb_height < 65532)
++      ahb_height = (ahb_height + 3u) & ~3u;
+@@ -345 +372 @@
+-      .height = pCreateInfo->imageExtent.height,
++      .height = ahb_height,
+@@ -347 +374,4 @@
+-      .format = blit
++      /* Xwayland's validated DRI3 AHB socket importer requires BGRA8 for
++       * the application's B8G8R8A8 swapchain. Do not silently switch to
++       * RGBA8 merely because the transfer uses a separate blit image. */
++      .format = blit && ahb_height == pCreateInfo->imageExtent.height
+--- a/src/vulkan/wsi/wsi_common_x11.c
++++ b/src/vulkan/wsi/wsi_common_x11.c
+@@ -2740,0 +2741,14 @@
++      /* S24 private trial only: the AHB allocation may have extra physical
++       * rows needed for KGSL EGL LINEAR import. Advertise its *real* buffer
++       * extent to DRI3; the X11 Window/WSI logical extent stays unchanged. */
++      uint16_t dri3_height = pCreateInfo->imageExtent.height;
++#ifdef __TERMUX__
++      const char *s24_xcb_pad = getenv("S24_WRAPPER_XCB_AHB_PAD_HEIGHT");
++      if (image->base.ahardware_buffer &&
++          s24_xcb_pad && s24_xcb_pad[0] == '1' && s24_xcb_pad[1] == '\0') {
++         AHardwareBuffer_Desc physical = {0};
++         AHardwareBuffer_describe(image->base.ahardware_buffer, &physical);
++         if (physical.height >= dri3_height && physical.height <= 65535)
++            dri3_height = (uint16_t)physical.height;
++      }
++#endif
+@@ -2747 +2761 @@
+-                                              pCreateInfo->imageExtent.height,
++                                              dri3_height,
+--- a/src/vulkan/wrapper/wrapper_device.c
++++ b/src/vulkan/wrapper/wrapper_device.c
+@@ -1,0 +2,7 @@
++#include <stdio.h>
++#include <stdlib.h>
++
++static int s24_resize_trace(void) {
++   const char *p = getenv("S24_TRACE_WRAPPER_RESIZE");
++   return p && p[0] == '1' && p[1] == '\0';
++}
+@@ -499,0 +507,6 @@
++   if (s24_resize_trace()) {
++      fprintf(stderr, "S24_DESTROY_IMAGE image=%p %ux%u fmt=%d\n",
++              (void *)(uintptr_t)wi->dispatch_handle, wi->info.extent.width,
++              wi->info.extent.height, (int)wi->info.format);
++      fflush(stderr);
++   }
+@@ -531,0 +545,7 @@
++   if (s24_resize_trace()) {
++      fprintf(stderr, "S24_CREATE_IMAGE vendor=%p image=%p rc=%d %ux%u fmt=%d flags=0x%x usage=0x%x\n",
++              (void *)device->dispatch_handle, res == VK_SUCCESS ? (void *)(uintptr_t)*pImage : NULL,
++              res, create_info.extent.width, create_info.extent.height, (int)create_info.format,
++              (unsigned)create_info.flags, (unsigned)create_info.usage);
++      fflush(stderr);
++   }
+@@ -570,0 +591,26 @@
++   /* An XCB swapchain recreation can fail after destroying the old images.
++    * Never forward a stale VkImage handle into vendor vkCreateImageView: on
++    * Qualcomm the invalid image can otherwise crash at address 0x70. */
++   if (!pCreateInfo->image || !get_wrapper_image_from_handle(device, pCreateInfo->image)) {
++      WRAPPER_LOG(error, "Rejecting VkImageView creation for untracked or destroyed image");
++      if (s24_resize_trace()) {
++         fprintf(stderr, "S24_CREATE_VIEW_REJECT_STALE image=%p\n",
++                 (void *)(uintptr_t)pCreateInfo->image);
++         fflush(stderr);
++      }
++      return VK_ERROR_INITIALIZATION_FAILED;
++   }
++
++   if (s24_resize_trace()) {
++      struct wrapper_image *wi = get_wrapper_image_from_handle(device, pCreateInfo->image);
++      fprintf(stderr, "S24_CREATE_VIEW_BEGIN image=%p tracked=%d fmt=%d viewtype=%d vendor_device=%p",
++              (void *)(uintptr_t)pCreateInfo->image, wi != NULL, (int)pCreateInfo->format,
++              (int)pCreateInfo->viewType, (void *)device->dispatch_handle);
++      if (wi)
++         fprintf(stderr, " source=%ux%u image_fmt=%d usage=0x%x",
++                 wi->info.extent.width, wi->info.extent.height, (int)wi->info.format,
++                 (unsigned)wi->info.usage);
++      fputc('\n', stderr);
++      fflush(stderr);
++   }
++
+@@ -577,0 +624,6 @@
++   if (s24_resize_trace()) {
++      fprintf(stderr, "S24_CREATE_VIEW_END image=%p rc=%d view=%p\n",
++              (void *)(uintptr_t)create_info.image, result,
++              result == VK_SUCCESS ? (void *)(uintptr_t)*pView : NULL);
++      fflush(stderr);
++   }
