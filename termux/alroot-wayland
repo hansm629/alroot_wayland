@@ -369,6 +369,22 @@ start_session() {
         find "$STATE/ipc/ime-requests" -maxdepth 1 -type f -name '*.delete' -delete
     fi
     echo "$profile" > "$STATE/profile"
+    # Match the actual XFCE cursor from the moment the private Xwayland (and
+    # nested Labwc, if used) first acquires the seat. Without this, an early
+    # generic Wayland/X11 pointer appears before xfsettingsd applies its
+    # configured theme. Scope the variables to this Alroot session only.
+    local cursor_settings="" cursor_theme="" cursor_size=""
+    if cursor_settings="$("$PREFIX/bin/python3" \
+            "$HOME/alroot_wayland/termux/xfce-cursor-env.py" 2>/dev/null)" &&
+            [[ -n "$cursor_settings" ]]; then
+        IFS=$'\t' read -r cursor_theme cursor_size <<< "$cursor_settings"
+        if [[ "$cursor_theme" =~ ^[a-zA-Z0-9_+.-]{1,128}$ &&
+              "$cursor_size" =~ ^[0-9]{1,3}$ ]] &&
+              ((cursor_size >= 8 && cursor_size <= 256)); then
+            export XCURSOR_THEME="$cursor_theme" XCURSOR_SIZE="$cursor_size"
+            echo "Alroot XFCE startup cursor: $XCURSOR_THEME size=$XCURSOR_SIZE"
+        fi
+    fi
     local parent=wayland-0
     if [[ "$profile" == xfce-labwc ]]; then
         command -v labwc >/dev/null || { echo 'BLOCKED: no Termux labwc' >&2; return 1; }

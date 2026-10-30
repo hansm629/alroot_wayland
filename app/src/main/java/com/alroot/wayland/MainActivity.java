@@ -275,6 +275,13 @@ public final class MainActivity extends Activity implements SurfaceHolder.Callba
         }, 200);
     }
 
+    @Override protected void onResume() {
+        super.onResume();
+        // Pick up a changed XFCE cursor theme when the helper is reopened,
+        // without changing pointer position, capture, input or session state.
+        if (cursorOverlay != null) cursorOverlay.refreshXfceStartupCursor();
+    }
+
     private void updateStatus() {
         if (status == null) return;
         boolean socket = new File(HelperService.runtimeDir(), "wayland-0").exists();

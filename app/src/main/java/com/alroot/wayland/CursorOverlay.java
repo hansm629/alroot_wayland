@@ -15,6 +15,8 @@ public final class CursorOverlay extends View {
     private final Path startupArrow = new Path();
     private final Paint startupFill = new Paint(Paint.ANTI_ALIAS_FLAG);
     private final Paint startupOutline = new Paint(Paint.ANTI_ALIAS_FLAG);
+    private Bitmap xfceStartupCursor;
+    private int xfceHotspotX, xfceHotspotY;
     private Bitmap cursor;
     private int hotspotX, hotspotY;
     private boolean hidden;
@@ -41,6 +43,28 @@ public final class CursorOverlay extends View {
         startupOutline.setStyle(Paint.Style.STROKE);
         startupOutline.setStrokeWidth(1.5f);
         startupOutline.setStrokeJoin(Paint.Join.ROUND);
+        refreshXfceStartupCursor();
+    }
+
+    /** The real XFCE cursor, not a hard-coded lookalike, before wl_pointer.set_cursor. */
+    public void refreshXfceStartupCursor() {
+        XcursorThemeLoader.Frame frame = XcursorThemeLoader.fromXfceSettings(
+                new java.io.File("/data/data/com.termux/files/home"),
+                new java.io.File("/data/data/com.termux/files/usr"));
+        if (frame == null) {
+            xfceStartupCursor = null;
+            return;
+        }
+        Bitmap bitmap = Bitmap.createBitmap(frame.width, frame.height, Bitmap.Config.ARGB_8888);
+        bitmap.setPixels(frame.pixels, 0, frame.width, 0, 0, frame.width, frame.height);
+        bitmap.setDensity(Bitmap.DENSITY_NONE);
+        xfceStartupCursor = bitmap;
+        xfceHotspotX = frame.hotspotX;
+        xfceHotspotY = frame.hotspotY;
+        android.util.Log.i("AlrootWayland", "S22 startup Xcursor theme=" + frame.theme +
+                " frame=" + frame.width + "x" + frame.height +
+                " hotspot=" + frame.hotspotX + "," + frame.hotspotY);
+        invalidate();
     }
 
     public void setGuestCursor(Bitmap bitmap, int hx, int hy, boolean isHidden) {
@@ -65,6 +89,11 @@ public final class CursorOverlay extends View {
         if (cursor != null) {
             canvas.scale(surface.cursorScaleX(), surface.cursorScaleY());
             canvas.drawBitmap(cursor, -hotspotX, -hotspotY, bitmapPaint);
+        } else if (xfceStartupCursor != null) {
+            // Same scene-to-view scale and hotspot as the incoming Xcursor
+            // bitmap; no flash of an unrelated Wayland/Android arrow.
+            canvas.scale(surface.cursorScaleX(), surface.cursorScaleY());
+            canvas.drawBitmap(xfceStartupCursor, -xfceHotspotX, -xfceHotspotY, bitmapPaint);
         } else {
             float scale = PointerStartupPolicy.fallbackCursorScale(
                     Math.min(surface.cursorScaleX(), surface.cursorScaleY()));
