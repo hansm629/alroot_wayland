@@ -666,3 +666,12 @@ the private ICD and the XCB WSI. See
 `S24_RESIZE_STRESS=1 bash graphics/tools/test-s24-wrapper-xcb-resize.sh`.
 **Do not promote awstart yet** without the user's physical display visual
 acceptance and device-vendor capability gates.
+
+**S24 visual-test note:** The Termux shell defaults to `DISPLAY=:0` but
+Alroot Wayland helper XFCE uses a private display such as `:94`. Automated
+`test-s24-wrapper-xcb-resize.sh` cases intentionally close their own demo
+windows and now print live progress instead of hiding it in logs. For a
+*persistent* window, run
+`bash graphics/tools/test-s24-wrapper-xcb-resize.sh --visual vulkan`
+or `--visual zink`, then bring the **Alroot Wayland Android helper APK**
+foreground. The test window will not appear in Termux-X11 `:0`.

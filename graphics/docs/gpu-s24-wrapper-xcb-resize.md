@@ -109,6 +109,51 @@ bash graphics/tools/test-s24-wrapper-xcb-resize.sh
 S24_RESIZE_STRESS=1 bash graphics/tools/test-s24-wrapper-xcb-resize.sh
 ```
 
+### Important: automatic tests vs. user-visible demo (2026-10-30 follow-up)
+
+The S26U Termux shell's inherited `DISPLAY` is **`:0`**, whereas the
+running private Alroot Wayland Android helper XFCE uses **`:94`** (or
+whatever `awstart --status` currently reports). Running a Vulkan client
+with `DISPLAY=:94` does **not** display the window in Termux-X11 `:0`,
+nor in the Termux terminal itself. **Bring the Alroot Wayland helper Android
+app to the foreground** to actually observe the temporary X11 window.
+
+The original acceptance shell script redirected every test's stdout to its
+log and closed each app after a short automated check. This looked like a
+silent/hung test to the user. The updated script now streams per-case
+window-map, pixel, resize, and client-liveness results to the terminal,
+and labels which Android activity/display contains the window. The
+automatic test still intentionally cleans up the demo window afterward;
+that behavior alone is not a crash.
+
+For **physical** visual acceptance, run the interactive mode from Termux,
+then switch to the **Alroot Wayland** Android helper APK (not Termux-X11):
+
+```sh
+cd ~/alroot_wayland
+bash graphics/tools/test-s24-wrapper-xcb-resize.sh --visual vulkan
+# Or for a visible automatic size cycle followed by a persistent window:
+bash graphics/tools/test-s24-wrapper-xcb-resize.sh --visual vulkan --auto-resize
+# For Mesa27 Zink + the private S24 Vulkan Wrapper:
+bash graphics/tools/test-s24-wrapper-xcb-resize.sh --visual zink
+```
+
+In interactive mode the app stays alive until its window is closed or the
+user presses Ctrl+C; exit codes and abnormal exits are printed to the
+terminal. Only the test application's window may be raised/resized, not
+other windows or the Android display configuration. This mode **does not**
+start/restart XFCE, modify a system driver or assert physical pixel PASS.
+
+Observed retest: from a shell with `DISPLAY=:0`, manual private `vkcube`
+with the authenticated `DISPLAY=:94` remained running, published a new
+WM-managed XID on `:94`, and created no XID on `:0`; the diagnostic ended
+only when the test intentionally sent SIGTERM. Visual-mode Vulkan also
+mapped its own XID and completed three scheduled resizes; Mesa27 Zink
+`glxgears` mapped its own XID and rendered while the test held it open.
+Android foreground activity state cannot be inspected from the Termux
+shell due to missing `android.permission.DUMP` permission, so only the
+user can confirm whether the helper was foregrounded and displaying it.
+
 Private ICD: `.source/gpu-stage1/s24-wrapper-xcb-resize/runtime/wrapper_icd.private.json`.
 Launch a demo with this private ICD and the scoped opt-in environment;
 the test harness already handles DISPLAY, Xauthority and Mesa27 Zink paths.

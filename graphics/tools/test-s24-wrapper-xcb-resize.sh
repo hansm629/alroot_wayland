@@ -11,6 +11,11 @@ ICD="$OUT/runtime/wrapper_icd.private.json"
 SOURCE="$ROOT/.source/gpu-stage1/wrapper-meson/source/src/vulkan"
 LOGS="$OUT/logs"
 mkdir -p "$LOGS"
+if [[ "${1:-}" == --visual ]]; then
+    shift
+    echo 'S24_VISUAL_MODE=INTERACTIVE_NO_AUTOMATIC_DEMO_TIMEOUT'
+    exec python3 -u "$ROOT/graphics/tools/run-s24-wrapper-visual.py" "$@"
+fi
 [[ -s "$ICD" && -s "$OUT/runtime/libvulkan_wrapper.so" ]] || {
     echo S24_WRAPPER_TEST=BLOCKED_BUILD_PRIVATE_WRAPPER_FIRST >&2; exit 2;
 }
@@ -61,13 +66,24 @@ echo S24_STALE_IMAGEVIEW_VENDOR_CRASH_GUARD=PASS
 before="$(awstart --status | sed -n 's/^xwayland: RUNNING \([0-9]*\).*/\1/p')"
 [[ "$before" =~ ^[0-9]+$ ]] || { echo S24_LIVE_XFCE=NOT_RUNNING;exit 2; }
 installed_hash="$(sha256sum "$PREFIX/lib/libvulkan_wrapper.so" | cut -d' ' -f1)"
+live_display="$(sed -n 's/^X DISPLAY: \(:[0-9]*\)$/\1/p' <(awstart --status))"
+[[ -n "$live_display" && "$live_display" != :0 ]] || {
+    echo S24_LIVE_DISPLAY=BLOCKED_INVALID_DISPLAY >&2;exit 2;
+}
+echo "S24_TEST_XFCE_DISPLAY=$live_display"
+echo "S24_TEST_CALLER_DISPLAY=${DISPLAY:-unset}"
+echo 'S24_TEST_VIEW_LOCATION=ALROOT_WAYLAND_HELPER_APP_NOT_TERMUX_X11'
+echo 'S24_TEST_MODE=AUTOMATIC_TEMPORARY_WINDOWS_NOT_INTERACTIVE'
+echo 'S24_TEST_VISUAL_COMMAND=python3 graphics/tools/run-s24-wrapper-visual.py vulkan'
+echo 'S24_TEST_NOTE=This is an automated GPU/pixel check; the demo windows are deliberately closed by the harness.'
 
 run() {
     local label="$1" seconds="$2"; shift 2
     local file="$LOGS/$label.log"
+    echo "S24[$label]=STARTED_ON_${live_display}_SEE_ALROOT_HELPER"
     if ! timeout -s TERM -k 3s "$seconds" env S24_WRAPPER_XCB_AHB_PAD_HEIGHT=1 \
         python3 -u graphics/tools/test-s23-live-xfce-windowed.py \
-          --route wrapper-s24 "$@" > "$file" 2>&1; then
+          --route wrapper-s24 "$@" 2>&1 | tee "$file"; then
         echo "S24[$label]=FAIL_OR_TIMEOUT"
         tail -30 "$file"
         return 4
@@ -86,9 +102,10 @@ run glxgears-regular-resize 42 --only-gears --resize-own-window
 for scene in --only-vulkan --only-gears; do
     name="${scene#--only-}"
     file="$LOGS/optin-disabled-$name.log"
+    echo "S24[optin-disabled-$name]=STARTED_ON_${live_display}_SEE_ALROOT_HELPER"
     timeout -s TERM -k 3s 24s env -u S24_WRAPPER_XCB_AHB_PAD_HEIGHT \
         python3 -u graphics/tools/test-s23-live-xfce-windowed.py \
-          --route wrapper-s24 "$scene" > "$file" 2>&1 || {
+          --route wrapper-s24 "$scene" 2>&1 | tee "$file" || {
         echo "S24[optin-disabled-$name]=FAIL"
         tail -18 "$file"
         exit 4
