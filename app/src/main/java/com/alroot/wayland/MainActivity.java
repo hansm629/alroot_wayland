@@ -176,9 +176,9 @@ public final class MainActivity extends Activity implements SurfaceHolder.Callba
         view.getHolder().addCallback(this);
         FrameLayout root = new FrameLayout(this);
         root.setBackgroundColor(Color.BLACK);
-        // The scene does not directly composite ROLE_CURSOR. Keep Android's
-        // sole mouse pointer visible until a touchpad gesture chooses the
-        // Alroot software overlay. Do not hide both and lose the cursor.
+        // The scene does not directly composite ROLE_CURSOR. In touchpad mode
+        // the centered software overlay owns the cursor from the first frame;
+        // Android's independently positioned hardware cursor stays hidden.
         root.addView(view, new FrameLayout.LayoutParams(-1, -1));
         cursorOverlay = new CursorOverlay(this, view);
         // Draw on top without stealing the mouse/touch events from SurfaceView.
@@ -548,6 +548,9 @@ public final class MainActivity extends Activity implements SurfaceHolder.Callba
             refreshPiPParams();
         }
         main.post(this::applyScale);
+        // PiP hides the overlay without changing its native cursor serial.
+        // Force a redraw on both transitions even if there is no new motion.
+        if (cursorOverlay != null) cursorOverlay.invalidate();
         android.util.Log.i("AlrootWayland", "PiP changed active=" + inPictureInPictureMode
                 + " compositor service retained=" + HelperService.running);
     }

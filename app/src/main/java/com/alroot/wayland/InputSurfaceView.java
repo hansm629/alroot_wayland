@@ -69,6 +69,7 @@ public final class InputSurfaceView extends SurfaceView {
     private int imeCharacterCount;
     private int imeFirstEditorDiagnostics;
     private int pointerSceneClickDiagnostics;
+    private int pointerViewportRemapDiagnostics;
     private final RectF picture = new RectF();
     private PointerIcon guestIcon;
     private boolean guestCursorHidden;
@@ -81,11 +82,12 @@ public final class InputSurfaceView extends SurfaceView {
                 touchSlop, getResources().getDisplayMetrics().density);
         SharedPreferences p = context.getSharedPreferences("display", Context.MODE_PRIVATE);
         inputMode = p.getInt("input_mode", MODE_TOUCHPAD);
-        // P18 forced the project overlay on before the first touch. Android's
-        // existing mouse cursor was still visible, resulting in two cursors
-        // (one at the old Android coordinate, one at the scene center).
-        // Use hardware pointer alone until an intentional touchpad gesture.
-        touchpadCursorActive = false;
+        // In touchpad mode the guest cursor overlay owns the pointer from
+        // startup. Hide Android's independently positioned hardware pointer
+        // even before the guest supplies its first bitmap; the overlay draws
+        // a small temporary arrow at the scene center in that interval.
+        // A real physical-mouse event switches ownership back to Android.
+        touchpadCursorActive = inputMode == MODE_TOUCHPAD;
         pointerSpeed = p.getInt("pointer_speed", 190);
         acceleration = p.getInt("pointer_accel", 110);
         setFocusable(true);
@@ -112,11 +114,12 @@ public final class InputSurfaceView extends SurfaceView {
             // the native pointer if this Activity reattached an old server.
         }
         pointerViewSized = true;
+        refreshPointerOwnership();
         if (oldw == 0 && oldh == 0)
-            android.util.Log.i("AlrootWayland", "P18 pointer view ready, " +
+            android.util.Log.i("AlrootWayland", "S21 pointer view ready, " +
                     "visual-center=" + (int)lastX + "," + (int)lastY +
                     " touchpad=" + (inputMode == MODE_TOUCHPAD) +
-                    " Android-cursor-hidden=" + (inputMode == MODE_TOUCHPAD));
+                    " overlay-active=" + touchpadCursorActive);
         if (onCursorMove != null) onCursorMove.run();
     }
 
@@ -125,7 +128,7 @@ public final class InputSurfaceView extends SurfaceView {
     public float pointerY() { return lastY; }
     public boolean isSoftwareCursorWanted() {
         return PointerStartupPolicy.showSoftwareCursor(inputMode, captured,
-                touchpadCursorActive && guestIcon != null, pointerViewSized);
+                touchpadCursorActive, pointerViewSized);
     }
     public float cursorScaleX() { return 1f / pointerScaleX; }
     public float cursorScaleY() { return 1f / pointerScaleY; }
@@ -138,7 +141,7 @@ public final class InputSurfaceView extends SurfaceView {
         if (mode < MODE_TOUCHPAD || mode > MODE_DIRECT_TOUCH) return;
         cancelGesture();
         inputMode = mode;
-        touchpadCursorActive = false;
+        touchpadCursorActive = inputMode == MODE_TOUCHPAD;
         pointerSpeed = Math.max(50, Math.min(300, speed));
         acceleration = Math.max(0, Math.min(200, accel));
         getContext().getSharedPreferences("display", Context.MODE_PRIVATE).edit()
@@ -224,7 +227,7 @@ public final class InputSurfaceView extends SurfaceView {
     /** Make the same Android View own either hardware cursor or overlay. */
     private void refreshPointerOwnership() {
         if (PointerStartupPolicy.hideSystemCursor(inputMode, captured,
-                guestCursorHidden, touchpadCursorActive && guestIcon != null))
+                guestCursorHidden, touchpadCursorActive))
             setPointerIcon(PointerIcon.getSystemIcon(getContext(), PointerIcon.TYPE_NULL));
         else
             setPointerIcon(guestIcon); // null restores the system default
@@ -233,7 +236,7 @@ public final class InputSurfaceView extends SurfaceView {
     @Override public PointerIcon onResolvePointerIcon(MotionEvent event, int pointerIndex) {
         if (PointerStartupPolicy.hideSystemCursor(
                 inputMode, captured, guestCursorHidden,
-                touchpadCursorActive && guestIcon != null))
+                touchpadCursorActive))
             return PointerIcon.getSystemIcon(getContext(), PointerIcon.TYPE_NULL);
         return guestIcon != null ? guestIcon : super.onResolvePointerIcon(event, pointerIndex);
     }
@@ -404,7 +407,15 @@ public final class InputSurfaceView extends SurfaceView {
     }
 
     public void updateTransform(int guestWidth, int guestHeight, int mode) {
-        float w = Math.max(1, getWidth()), h = Math.max(1, getHeight());
+        // PiP and immersive/fullscreen transitions resize the Android View,
+        // not the guest desktop. Keep the same logical guest pointer rather
+        // than clamping its old *view-pixel* coordinates into the PiP bounds:
+        // the latter leaves the cursor near the top-left when fullscreen
+        // returns. Never emit a synthetic Wayland motion for a resize.
+        if (getWidth() <= 0 || getHeight() <= 0) return;
+        float oldLeft = picture.left, oldTop = picture.top;
+        float oldWidth = picture.width(), oldHeight = picture.height();
+        float w = getWidth(), h = getHeight();
         if (mode == 2) {
             picture.set(0, 0, w, h);
         } else {
@@ -416,8 +427,29 @@ public final class InputSurfaceView extends SurfaceView {
         pointerScaleX = guestWidth / Math.max(1, picture.width());
         pointerScaleY = guestHeight / Math.max(1, picture.height());
         if (pointerInitialized) {
-            lastX = Math.max(picture.left, Math.min(picture.right - 1, lastX));
-            lastY = Math.max(picture.top, Math.min(picture.bottom - 1, lastY));
+            boolean changed = pointerViewSized && oldWidth > 0 && oldHeight > 0 &&
+                    (oldLeft != picture.left || oldTop != picture.top ||
+                     oldWidth != picture.width() || oldHeight != picture.height());
+            if (changed) {
+                float previousX = lastX, previousY = lastY;
+                lastX = PointerStartupPolicy.remapViewCoordinate(lastX,
+                        oldLeft, oldWidth, picture.left, picture.width());
+                lastY = PointerStartupPolicy.remapViewCoordinate(lastY,
+                        oldTop, oldHeight, picture.top, picture.height());
+                if (pointerViewportRemapDiagnostics++ < 12)
+                    android.util.Log.i("AlrootWayland", "S21 pointer viewport remap" +
+                            " old=" + Math.round(oldWidth) + "x" + Math.round(oldHeight) +
+                            " new=" + Math.round(picture.width()) + "x" +
+                            Math.round(picture.height()) +
+                            " cursor=" + Math.round(previousX) + "," +
+                            Math.round(previousY) + " -> " +
+                            Math.round(lastX) + "," + Math.round(lastY) +
+                            " (no native pointer warp)");
+                if (onCursorMove != null) onCursorMove.run();
+            } else {
+                lastX = Math.max(picture.left, Math.min(picture.right - 1, lastX));
+                lastY = Math.max(picture.top, Math.min(picture.bottom - 1, lastY));
+            }
         }
     }
 
