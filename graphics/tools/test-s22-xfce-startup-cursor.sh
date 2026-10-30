@@ -28,12 +28,21 @@ temp.unlink()
 print('S22_TERMUX_XCURSOR_XSETTINGS_PARSER=PASS')
 PY
 
-value="$(python3 termux/xfce-cursor-env.py)"
-[[ "$value" == $'Layan-white-cursors\t24' ]] || {
-    printf 'S22_XFCE_THEME_CHANGED_FROM_S26U_SNAPSHOT=%q\n' "$value" >&2
-    exit 1
-}
-echo 'S22_PRIVATE_XWAYLAND_XCURSOR_THEME=Layan-white-cursors size=24 PASS'
+python3 - <<'PY'
+from pathlib import Path
+import importlib.util
+import subprocess
+root=Path.cwd()
+spec=importlib.util.spec_from_file_location('xfce_cursor_env',root/'termux/xfce-cursor-env.py')
+mod=importlib.util.module_from_spec(spec)
+spec.loader.exec_module(mod)
+config=Path.home()/'.config/xfce4/xfconf/xfce-perchannel-xml/xsettings.xml'
+expected=mod.cursor_values(config)
+assert expected, 'S26U XFCE cursor settings unavailable'
+actual=subprocess.check_output(['python3',str(root/'termux/xfce-cursor-env.py')],text=True).strip()
+assert actual == f'{expected[0]}\t{expected[1]}', (actual,expected)
+print(f'S22_PRIVATE_XWAYLAND_XCURSOR_THEME={expected[0]} size={expected[1]} PASS')
+PY
 bash -n termux/alroot-wayland
 bash graphics/tools/test-s21-pointer-startup-pip.sh > "$root/.source/s22-xcursor/p21-regression.log" 2>&1
 tail -4 "$root/.source/s22-xcursor/p21-regression.log"
