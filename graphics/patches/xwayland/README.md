@@ -154,6 +154,32 @@ Android screen is still **USER_VISUAL_TEST_REQUIRED**, as isolated XFWM4
 sampling showed improvement but **not zero black events**. See
 `graphics/docs/gpu-s28-kgsl-xcb-resize-flicker.md`.
 
+### S29 native-pixel Vulkan window preservation (Adreno 840, candidate)
+
+`kgsl/0006-kgsl-native-pixel-resize-preserve.patch` applies **after**
+S28's 0005 only in the separate private KGSL source. It replaces S28's
+bilinear stretch and repeated old-image tiles with an exact **1:1
+centered previous frame** and a GPU-sampled 1x1 background color fill
+for exposed right/bottom pixels. Gate: `S29_KGSL_NATIVE_RESIZE=1` and
+Mesa Vulkan XCB `_MESA_DRV` marker on the private rootful KGSL server.
+No CPU pixel readback or system driver replacement is introduced.
+
+```sh
+bash graphics/tools/build-s29-kgsl-native-resize.sh
+bash graphics/tools/test-s29-build-and-scope.sh
+python3 graphics/tools/test-s29-native-geometry.py
+python3 graphics/tools/test-s29-vulkan-resize-edges.py --wm --seconds 8
+```
+
+The S16/S27 and S28 private binaries are retained with fixed SHA256;
+the new S29 executable is linked in a different project-private
+directory. Session switch is **only** via explicit
+`start-s29-kgsl-native-resize.sh --restart`, with `--restore-s28`
+rollback. In Xfwm4 live Vulkan, right/bottom black pixels were greatly
+reduced but not eradicated; synthetic no-Present Xfwm4 still exposes a
+lower black region. **Physical Android visual testing is required.**
+See `graphics/docs/gpu-s29-pixel-exact-vulkan-resize.md`.
+
 `S17_MATRIX_MODE=smoke bash graphics/tools/test-s17-zink-matrix.sh` checks
 Termux wrapper + Zink, Termux Turnip + Zink and Debian Turnip + Zink on
 isolated Xwayland, validating runtime execution, AHB/ABI branch, X11

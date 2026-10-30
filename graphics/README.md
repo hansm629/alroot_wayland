@@ -767,3 +767,22 @@ were preserved. No further XFCE restart is needed. Run
 `python3 graphics/tools/test-s28-s26-visual-session-guard.py` for a
 read-only regression check. Physical flicker remains separately
 user-test-pending.
+
+**GPU-S29 native-pixel Vulkan window resizing (2026-10-31):** Two real
+Android video recordings showed S28's bilinear previous-frame resize
+stretching `vkcube` and displacing `glxgears` gears while red/bottom
+pixels from the old window remained near the new edges. S29 is a
+**separate opt-in KGSL Xwayland binary** that reuses the prior frame at
+native **1:1 pixel scale** (no bilinear filtering or edge tiling), fills
+newly exposed regions with a GPU-sampled last-frame background texel,
+and waits for normal client Vulkan Present to replace it. In 25 deliberate
+no-client-repaint resizes, S28 enlarged a sharp **20px** red bar to
+**36px** and leaked red/blue edge strips; S29 retained **20px** and clean
+outer edges. Isolated Xfwm4 + continuously presenting `vkcube` reduced
+right/bottom black edge observations from **44 to 2** over eight seconds;
+residual rare black edges and the synthetic *never-redrawing* Xfwm4
+scenario remain unresolved. Existing S24/S26 Wrapper, global drivers,
+Android APK, source XFCE/IME and S16/S28 executables are preserved.
+Manual physical-screen user acceptance **still required**; do not promote
+to default. Build, tests, exact pinned session validation and explicit
+S28 rollback: `graphics/docs/gpu-s29-pixel-exact-vulkan-resize.md`.

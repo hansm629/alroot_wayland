@@ -51,7 +51,8 @@ def main():
     print('S28_ALLOWLISTED_S16_AND_S28_BINARY_SHA256=PASS', flush=True)
 
     label = guard.validate_private_kgsl_xwayland(pid, display)
-    assert label in ('S16_S27_KGSL_BASELINE', 'S28_KGSL_RESIZE_PRESERVE')
+    assert label in ('S16_S27_KGSL_BASELINE', 'S28_KGSL_RESIZE_PRESERVE',
+                     'S29_KGSL_NATIVE_RESIZE')
     print(f'S28_LIVE_PRIVATE_XWAYLAND={label} PID={pid} DISPLAY={display}', flush=True)
 
     scripts = {

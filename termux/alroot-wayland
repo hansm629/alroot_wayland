@@ -302,10 +302,13 @@ start_xwayland() {
         # Android APK, global Termux-X11 or generic GPU vendors.
         local required="$HOME/alroot_wayland/.source/gpu-stage1/xwayland-kgsl/build/hw/xwayland/Xwayland"
         local s28_candidate="$HOME/alroot_wayland/.source/gpu-stage1/s28-kgsl-resize-preserve/runtime/Xwayland"
+        local s29_candidate="$HOME/alroot_wayland/.source/gpu-stage1/s29-native-resize/runtime/Xwayland"
         local dualabi="$HOME/alroot_wayland/.source/gpu-stage27-pr25/s16-xwayland-gpu/xshmfence/libalroot_xshmfence_dualabi.so"
-        if [[ ( "$xwayland_binary" != "$required" && "$xwayland_binary" != "$s28_candidate" ) ||
+        if [[ ( "$xwayland_binary" != "$required" && "$xwayland_binary" != "$s28_candidate" && "$xwayland_binary" != "$s29_candidate" ) ||
               ( "$xwayland_binary" == "$s28_candidate" && "${S28_KGSL_RESIZE_PRESERVE:-0}" != 1 ) ||
               ( "$xwayland_binary" != "$s28_candidate" && "${S28_KGSL_RESIZE_PRESERVE:-0}" == 1 ) ||
+              ( "$xwayland_binary" == "$s29_candidate" && "${S29_KGSL_NATIVE_RESIZE:-0}" != 1 ) ||
+              ( "$xwayland_binary" != "$s29_candidate" && "${S29_KGSL_NATIVE_RESIZE:-0}" == 1 ) ||
               "$glamor" != es || ! -s "$dualabi" ]];then
             echo '[Alroot GPU] Cannot enable dual-ABI fence outside private KGSL GLAMOR' >&2
             return 1
