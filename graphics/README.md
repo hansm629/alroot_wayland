@@ -751,3 +751,19 @@ separate xfwm4 the same test class changed **21 to 11**. Thus it is
 build, source-replay, isolated X11 tests and manual opt-in/rollback:
 `graphics/docs/gpu-s28-kgsl-xcb-resize-flicker.md`. No default change,
 system driver update or automatic XFCE restart.
+
+**GPU-S28 ↔ GPU-S26 visual integration guard (2026-10-31):** The S28
+explicit XFCE launcher uses its own private binary under
+`.source/gpu-stage1/s28-kgsl-resize-preserve/runtime/Xwayland`, but the
+S24/S26 persistent demo runner (and S23/S26 auxiliary live tests)
+still only accepted the old `xwayland-kgsl` path. That wrongly rejected
+the real S28 desktop with `unexpected Xwayland process`. These scripts
+now share an exact allowlist of **the existing private KGSL and S28
+private KGSL Xwayland**, checking actual /proc/PID/exe, argv display,
+Termux UID and each pinned SHA256. The system Termux-X11 server is still
+rejected. Real S28 XFCE `:97` successfully opened both S26 Zink
+`glxgears` and Vulkan `vkcube`, and the existing XFCE/Xwayland PIDs
+were preserved. No further XFCE restart is needed. Run
+`python3 graphics/tools/test-s28-s26-visual-session-guard.py` for a
+read-only regression check. Physical flicker remains separately
+user-test-pending.

@@ -13,6 +13,7 @@ import signal
 import subprocess
 import sys
 import time
+from private_kgsl_xwayland_session import validate_private_kgsl_xwayland
 
 HOME = pathlib.Path('/data/data/com.termux/files/home')
 ROOT = HOME / 'alroot_wayland'
@@ -42,9 +43,7 @@ def require_session():
     display, pid = d.group(1), int(m.group(1))
     if display == ':0' or not (STATE / 'Xauthority').is_file():
         raise RuntimeError('refusing to target :0 or an unauthenticated X server')
-    command_line = pathlib.Path(f'/proc/{pid}/cmdline').read_bytes()
-    if b'/alroot_wayland/.source/gpu-stage1/xwayland-kgsl/' not in command_line:
-        raise RuntimeError('unexpected Xwayland process; will not use system Termux-X11')
+    validate_private_kgsl_xwayland(pid, display)
     return pid, display
 
 
@@ -60,6 +59,7 @@ def run():
     if not icd.is_file() or not (icd.parent / 'libvulkan_wrapper.so').is_file():
         raise RuntimeError('missing private wrapper ICD; build the requested route first')
     pid, display = require_session()
+    private_xwayland = validate_private_kgsl_xwayland(pid, display)
     env = os.environ.copy()
     original_display = env.get('DISPLAY', 'unset')
     for key in ('WAYLAND_DISPLAY', 'LD_PRELOAD', 'LIBGL_ALWAYS_SOFTWARE',
@@ -85,6 +85,7 @@ def run():
 
     baseline = x11_windows(env)
     print('S24_VISUAL_PRIVATE_WRAPPER=' + ('S26_TRANSIENT_RETRY' if args.s26 else 'S24_BASELINE'), flush=True)
+    print('S24_VISUAL_PRIVATE_XWAYLAND=' + private_xwayland, flush=True)
     print('S24_VISUAL_TARGET=ALROOT_WAYLAND_HELPER_XFCE_' + display, flush=True)
     print('S24_VISUAL_CALLER_DISPLAY=' + original_display, flush=True)
     print('S24_VISUAL_NOT_ON_TERMUX_X11_DISPLAY_0=TRUE', flush=True)

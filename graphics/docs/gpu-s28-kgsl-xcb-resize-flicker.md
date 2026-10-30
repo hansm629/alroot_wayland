@@ -107,6 +107,7 @@ From a native Termux shell:
 cd ~/alroot_wayland
 bash graphics/tools/build-s28-kgsl-resize-preserve.sh
 bash graphics/tools/test-s28-build-and-scope.sh
+python3 graphics/tools/test-s28-s26-visual-session-guard.py
 python3 graphics/tools/test-s28-kgsl-resize-preserve.py --demo vkcube --seconds 10
 python3 graphics/tools/test-s28-kgsl-resize-preserve.py --demo vkcube --wm --seconds 10
 python3 graphics/tools/test-s28-kgsl-resize-preserve.py --mode candidate --demo zink --wm --seconds 6
@@ -129,6 +130,15 @@ bash graphics/tools/test-s26-wrapper-xcb-resize.sh --visual zink
 ```
 
 Open the **Alroot Wayland helper Android app**, not Termux-X11 `:0`.
+The S28 candidate is now recognized by the S24/S26 persistent visual
+runner, the S26 fault-injection runner and the S23 live X11 matrix via
+an **exact executable allowlist** (running PID, authenticated DISPLAY,
+actual /proc executable, native Termux UID and pinned binary SHA256).
+Previously these scripts hard-coded only the older `xwayland-kgsl`
+path and misleadingly rejected the correct S28 process as an
+untrusted Termux-X11 server. The fix only extends the approved
+private-binary allowlist; it does not weaken the system-X11 exclusion.
+**No second XFCE restart is required** after this guard fix.
 Drag a Zink `glxgears` window repeatedly through the old failure window,
 looking for black flashes, stretched previous frames, painting corruption,
 client errors and general Xfwm4/desktop regressions. Then repeat with

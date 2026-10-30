@@ -15,6 +15,7 @@ import signal
 import subprocess
 import sys
 import time
+from private_kgsl_xwayland_session import validate_private_kgsl_xwayland
 
 HOME = Path('/data/data/com.termux/files/home')
 PREFIX = Path('/data/data/com.termux/files/usr')
@@ -48,9 +49,7 @@ def private_session():
     if not x or not d or d.group(1) == ':0' or 'x11_desktop: READY' not in p.stdout:
         raise RuntimeError('private GPU XFCE not running')
     pid = int(x.group(1))
-    cmdline = Path(f'/proc/{pid}/cmdline').read_bytes()
-    if b'/alroot_wayland/.source/gpu-stage1/xwayland-kgsl/' not in cmdline:
-        raise RuntimeError('refusing unrelated X11 server')
+    validate_private_kgsl_xwayland(pid, d.group(1))
     return pid, d.group(1)
 
 

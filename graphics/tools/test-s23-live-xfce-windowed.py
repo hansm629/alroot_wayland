@@ -15,6 +15,7 @@ import signal
 import subprocess
 import sys
 import time
+from private_kgsl_xwayland_session import validate_private_kgsl_xwayland
 
 HOME = pathlib.Path('/data/data/com.termux/files/home')
 PREFIX = pathlib.Path('/data/data/com.termux/files/usr')
@@ -48,11 +49,7 @@ def require_private_session():
     display, pid = display_match.group(1), int(match.group(1))
     if display == ':0' or not (STATE / 'Xauthority').is_file():
         raise RuntimeError('unsafe display or missing authenticated Xauthority')
-    cmdline = pathlib.Path(f'/proc/{pid}/cmdline').read_bytes().replace(b'\x00', b' ')
-    if b'/alroot_wayland/.source/gpu-stage1/xwayland-kgsl/' not in cmdline:
-        raise RuntimeError('running Xwayland is not the validated private KGSL server')
-    if not re.search(rf'Xwayland {re.escape(display)} ', cmdline.decode(errors='replace')):
-        raise RuntimeError('Xwayland PID/actual DISPLAY mismatch')
+    validate_private_kgsl_xwayland(pid, display)
     return pid, display
 
 
