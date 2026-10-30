@@ -127,6 +127,9 @@ static int log_budget(void) {
 #ifndef BTN_RIGHT
 #define BTN_RIGHT 0x111
 #endif
+#ifndef BTN_MIDDLE
+#define BTN_MIDDLE 0x112
+#endif
 
 #define INPUT_SPACE_W 1920
 #define INPUT_SPACE_H 1080
@@ -2960,6 +2963,12 @@ static void pointer_input(double x, double y, int relative, uint32_t button, int
         }
         if (k) confine_clamp(k, &x, &y);
         g_ptr_x = x; g_ptr_y = y;
+        /* A relative/captured pointer might have moved the actual guest
+         * cursor after the last absolute event. Keep the baseline used for
+         * future absolute->relative conversions equal to that live cursor,
+         * rather than generating a large phantom delta on release. Locked
+         * pointers remain frozen and the existing unlock path resets raw. */
+        g_raw_x = g_ptr_x; g_raw_y = g_ptr_y; g_raw_valid = 1;
         if (k) {
             target = k->surface;
         } else if (g_desktop) {
@@ -2988,7 +2997,14 @@ static void pointer_input(double x, double y, int relative, uint32_t button, int
     // Absolute touch events still carry their position, including on clicks.
     if (!(k && k->is_lock) && (!relative || dx != 0 || dy != 0))
         for_each_pointer_of(client, sp) wl_pointer_send_motion(sp->ptr, t, fx, fy);
-    send_relative_motion(client, dx, dy);
+    /* On a rootful desktop, ordinary Android absolute motion already
+     * sends wl_pointer.motion at the exact guest pixel coordinate. Emitting
+     * an additional zwp_relative_pointer_v1 delta makes Xwayland sometimes
+     * dispatch through its pointer-warp emulator, accumulating a second
+     * movement under grabs/menus. Keep raw relative motion for actual
+     * pointer capture and other native Wayland clients only. */
+    if (relative || k || target != g_desktop)
+        send_relative_motion(client, dx, dy);
     for_each_pointer_of(client, sp) {
         if (button)
             wl_pointer_send_button(sp->ptr, wl_display_next_serial(g_display), t, button,
@@ -3391,6 +3407,29 @@ static int on_input_readable(int fd, uint32_t mask, void *data) {
             pointer_event(x, y, 0, 0);
             break;
         }
+        case 13: {
+            /* P20: atomic absolute pointer + button. Coordinates and
+             * button state are conveyed in ONE pipe record, handled by ONE
+             * Wayland event frame (motion before button). This avoids
+             * sending a mouse click at the previous position if two
+             * separate asynchronous input writes are interleaved/dropped.
+             * Never synthesize a warp for captured games (Java keeps type3). */
+            if (m.p3 != BTN_LEFT && m.p3 != BTN_RIGHT && m.p3 != BTN_MIDDLE)
+                break;
+            int sw, sh;
+            scene_size(&sw, &sh);
+            double x = m.p1, y = m.p2;
+            if (x < 0) x = 0;
+            if (y < 0) y = 0;
+            if (x >= sw) x = sw - 1;
+            if (y >= sh) y = sh - 1;
+            pointer_event(x, y, (uint32_t)m.p3, m.p4 ? 1 : 0);
+            static int trace_click_count;
+            if (m.p4 && trace_click_count++ < 12)
+                alroot_log("pointer", "P20 atomic scene click at %d,%d button=%d",
+                           (int)x, (int)y, m.p3);
+            break;
+        }
         case 8: output_resized(); break;
         case 9:
             vk_present_set_scale_mode(m.p1, m.p2);
@@ -3480,6 +3519,34 @@ void alroot_wayland_send_scene_input(int type, int a, int b) {
     struct input_msg m = { type, a, b, 0, 0 };
     ssize_t n = write(g_input_pipe[1], &m, sizeof(m));
     (void)n;
+}
+
+void alroot_wayland_send_scene_button(int x, int y, int button, int pressed) {
+    if (g_input_pipe[1] < 0) return;
+    if (button != BTN_LEFT && button != BTN_RIGHT && button != BTN_MIDDLE)
+        return;
+    struct input_msg m = { 13, x, y, button, !!pressed };
+    /* PIPE_BUF guarantees this small input record is indivisible. The
+     * compositor's pipe is nonblocking; a bounded POLLOUT retry prevents
+     * accidental click loss under rendering load without blocking Android's
+     * UI thread indefinitely. Never deliver button without its motion. */
+    ssize_t n;
+    do { n = write(g_input_pipe[1], &m, sizeof(m)); }
+    while (n < 0 && errno == EINTR);
+    if (n < 0 && (errno == EAGAIN || errno == EWOULDBLOCK)) {
+        struct pollfd pfd = {.fd = g_input_pipe[1], .events = POLLOUT};
+        if (poll(&pfd, 1, 4) > 0) {
+            do { n = write(g_input_pipe[1], &m, sizeof(m)); }
+            while (n < 0 && errno == EINTR);
+        }
+    }
+    if (n != (ssize_t)sizeof(m)) {
+        static atomic_int dropped;
+        int count = atomic_fetch_add(&dropped, 1);
+        if (count < 12)
+            alroot_log("pointer", "P20 scene button packet not queued: errno=%d count=%d",
+                       errno, count + 1);
+    }
 }
 
 

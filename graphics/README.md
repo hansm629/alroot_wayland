@@ -617,3 +617,16 @@ were verified and cleaned, and the recovered S26U `:92` reached XFCE READY
 with fresh Android GPU-copy and non-black frame logs. Repeatable read-only
 check: `bash graphics/tools/test-s17-start-lock-lifetime.sh`. See
 `graphics/docs/gpu-s17-black-screen-start-lock-recovery.md`.
+
+**GPU-S20 pointer-drift correction:** recorded S26U XFCE right-click drift;
+actual Wayland→Xwayland absolute point tests were exact, but the installed
+APK predated the S16/P19 Java guest-scene pointer change. The S20 candidate
+adds one view→guest mapping shared by cursor and atomic click, uses a
+single JNI pipe record for motion+button, removes redundant relative
+pointer dispatch on rootful absolute moves, and keeps captured game
+movement from displacing the Android overlay cursor. Independent Java
+50k-gesture and native source tests are in
+`bash graphics/tools/test-s20-pointer-atomic.sh`; physical XFCE cursor
+alignment requires installing the new signed APK and checking the recorded
+terminal right-click/menu reproduction. See
+`graphics/docs/gpu-s20-pointer-drift-atomic.md`.

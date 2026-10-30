@@ -26,16 +26,18 @@ checks = {
     'captured_mouse_uses_relative_motion_not_absolute':
         'Captured pointer events provide relative deltas only' in JAVA,
     'touchpad_cursor_is_authoritative_absolute':
-        'if (inputMode == MODE_TOUCHPAD && !captured)' in JAVA and
+        'if (inputMode == MODE_TOUCHPAD)' in JAVA and
         'absolute(lastX, lastY);' in JAVA,
     'captured_game_pointer_retains_relative_deltas':
-        'WaylandCompositor.nativeSendSceneInput(6,' in JAVA,
-    'touchpad_tap_reanchors_before_button':
-        'touchpadCursorActive && pointerInitialized' in JAVA and
-        'absolute(lastX, lastY);' in JAVA and
-        JAVA.index('absolute(lastX, lastY);') < JAVA.index('WaylandCompositor.nativeSendSceneInput(3, evdev, down ? 1 : 0);'),
+        'WaylandCompositor.nativeSendSceneInput(6,' in JAVA and
+        'Do NOT integrate captured deltas' in JAVA,
+    'touchpad_tap_atomic_guest_coordinate_before_button':
+        'WaylandCompositor.nativeSendSceneButton(gx, gy, evdev, down ? 1 : 0);' in JAVA and
+        'case 13: {' in CPP and
+        'pointer_event(x, y, (uint32_t)m.p3, m.p4 ? 1 : 0);' in CPP,
     'new_absolute_cursor_uses_guest_scene_no_second_transform':
         'WaylandCompositor.nativeSendSceneInput(12, gx, gy);' in JAVA and
+        'PointerSceneCoordinatePolicy.guestCoordinate(' in JAVA and
         'case 12: {' in CPP and
         'pointer_event(x, y, 0, 0);' in CPP,
     'legacy_scene_input_inverse_kept_for_older_clients':

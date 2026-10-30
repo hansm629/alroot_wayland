@@ -292,6 +292,10 @@ public final class WaylandCompositor {
 
     public static native void nativeSendSceneInput(int type, int a, int b);
 
+    /** Pointer motion and mouse button in ONE ordered Wayland input packet. */
+    public static native void nativeSendSceneButton(int sceneX, int sceneY,
+                                                    int evdevButton, int state);
+
     public static final int FG_ENGINE_LSFG = 0, FG_ENGINE_DDFG = 1;
 
     public static native void nativeSetFrameGenEngine(int kind);

@@ -68,6 +68,7 @@ public final class InputSurfaceView extends SurfaceView {
     private int imeEventCount;
     private int imeCharacterCount;
     private int imeFirstEditorDiagnostics;
+    private int pointerSceneClickDiagnostics;
     private final RectF picture = new RectF();
     private PointerIcon guestIcon;
     private boolean guestCursorHidden;
@@ -149,15 +150,36 @@ public final class InputSurfaceView extends SurfaceView {
         if (onCursorMove != null) onCursorMove.run();
     }
     private void sendButton(int evdev, boolean down) {
-        if (down && inputMode == MODE_TOUCHPAD && !captured &&
-                touchpadCursorActive && pointerInitialized) {
-            // A stationary tap/long-press has no motion delta to re-sync the
-            // guest after a temporary pointer lock, output resize or X11
-            // cursor warp. Anchor its target to the *displayed* cursor on
-            // EVERY touchpad click. Physical mice already send an absolute
-            // coordinate before this function and must not be re-anchored.
-            absolute(lastX, lastY);
+        if (!captured && pointerInitialized &&
+                (evdev == 272 || evdev == 273 || evdev == 274)) {
+            // P20: one atomic input packet carries BOTH absolute guest-scene
+            // pointer coordinates and button state. Previously `absolute()`
+            // and `nativeSendSceneInput(3)` queued two asynchronous packets.
+            // Under heavy GPU/desktop load, button handling could reference
+            // the previous guest cursor when the motion packet was delayed
+            // or dropped. A single Wayland frame sends motion before button.
+            // Touchpad taps target the visible *persistent* cursor, not the
+            // finger-down coordinate; physical mouse updates lastX on input.
+            SharedPreferences prefs = getContext().getSharedPreferences(
+                    "display", Context.MODE_PRIVATE);
+            int w = prefs.getInt("width", 1920), h = prefs.getInt("height", 1080);
+            updateTransform(w, h, prefs.getBoolean("fullscreen", true)
+                    ? 1 : prefs.getInt("mode", 1));
+            int gx = PointerSceneCoordinatePolicy.guestCoordinate(
+                    lastX, picture.left, pointerScaleX, w);
+            int gy = PointerSceneCoordinatePolicy.guestCoordinate(
+                    lastY, picture.top, pointerScaleY, h);
+            WaylandCompositor.nativeSendSceneButton(gx, gy, evdev, down ? 1 : 0);
+            if (down && pointerSceneClickDiagnostics++ < 12) {
+                android.util.Log.i("AlrootWayland", "P20 atomic pointer-click guest=" +
+                        gx + "," + gy + " view=" + Math.round(lastX) +
+                        "," + Math.round(lastY) + " button=" + evdev +
+                        " mode=" + inputMode + " captured=false");
+            }
+            return;
         }
+        // Constrained/pointer-captured games retain the established relative
+        // pointer and button protocol; never force absolute cursor warps.
         WaylandCompositor.nativeSendSceneInput(3, evdev, down ? 1 : 0);
     }
     private void sendHardwareMouseButton(int evdev, boolean down) {
@@ -414,10 +436,10 @@ public final class InputSurfaceView extends SurfaceView {
         // do the same inverse picture FIT map that already positions the
         // Android cursor/overlay and let the compositor clamp to its live
         // Xwayland scene without applying a second transform.
-        int gx = Math.max(0, Math.min(w - 1,
-                Math.round((x - picture.left) * pointerScaleX)));
-        int gy = Math.max(0, Math.min(h - 1,
-                Math.round((y - picture.top) * pointerScaleY)));
+        int gx = PointerSceneCoordinatePolicy.guestCoordinate(
+                x, picture.left, pointerScaleX, w);
+        int gy = PointerSceneCoordinatePolicy.guestCoordinate(
+                y, picture.top, pointerScaleY, h);
         WaylandCompositor.nativeSendSceneInput(12, gx, gy);
         lastX = Math.max(picture.left, Math.min(picture.right - 1, x));
         lastY = Math.max(picture.top, Math.min(picture.bottom - 1, y));
@@ -431,9 +453,19 @@ public final class InputSurfaceView extends SurfaceView {
             lastY = getHeight() / 2f;
             pointerInitialized = true;
         }
+        if (captured) {
+            // Xwayland/game pointer constraints freeze the native absolute
+            // cursor during raw movement. Do NOT integrate captured deltas
+            // into the Android overlay's lastX/Y: otherwise the overlay
+            // accumulates a different pointer position, exposed on unlock.
+            WaylandCompositor.nativeSendSceneInput(6,
+                    Math.round(dx * pointerScaleX * 256f),
+                    Math.round(dy * pointerScaleY * 256f));
+            return;
+        }
         lastX = Math.max(picture.left, Math.min(picture.right - 1, lastX + dx));
         lastY = Math.max(picture.top, Math.min(picture.bottom - 1, lastY + dy));
-        if (inputMode == MODE_TOUCHPAD && !captured) {
+        if (inputMode == MODE_TOUCHPAD) {
             // P19: Android's touchpad overlay and the Wayland pointer used to
             // maintain INDEPENDENT relative position accumulators. Rounding,
             // scene resizing, X11 warp/focus and clamping could gradually

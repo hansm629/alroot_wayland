@@ -28,6 +28,7 @@ extern int  alroot_cursor_serial(void);
 extern int alroot_hud_frame_times(float *out, int len, int64_t *total);
 extern void alroot_wayland_send_key(int evdev, int state);
 extern void alroot_wayland_send_scene_input(int type, int a, int b);
+extern void alroot_wayland_send_scene_button(int x, int y, int button, int state);
 extern void alroot_wayland_vsync(int64_t frame_time_ns);
 extern void alroot_stream_set(int on);
 extern void alroot_stream_frame(AHardwareBuffer *ahb);
@@ -307,6 +308,13 @@ JNIEXPORT void JNICALL
 Java_com_alroot_wayland_WaylandCompositor_nativeSendSceneInput(
         JNIEnv *env, jclass clazz, jint type, jint a, jint b) {
     alroot_wayland_send_scene_input(type, a, b);
+}
+
+JNIEXPORT void JNICALL
+Java_com_alroot_wayland_WaylandCompositor_nativeSendSceneButton(
+        JNIEnv *env, jclass clazz, jint x, jint y, jint button, jint state) {
+    (void)env; (void)clazz;
+    alroot_wayland_send_scene_button(x, y, button, state);
 }
 
 JNIEXPORT void JNICALL
