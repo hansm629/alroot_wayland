@@ -237,3 +237,10 @@ cursor position before the click and deduplicate button transitions.
 round-trip quantization error was **0.5 scene pixel** for all three
 50,000-step cases. This is a math/source test, not a substitute for
 physical pointer+click validation on the updated APK.
+
+
+For no-motion taps/long-presses after an X11 warp or a pointer capture
+transition, the ordinary touchpad `sendButton()` now reanchors the actual
+Wayland pointer to the displayed `lastX,lastY` **immediately before** the
+button press. Hardware mouse clicks retain their own event coordinates and
+are excluded from that touchpad-specific reanchoring.

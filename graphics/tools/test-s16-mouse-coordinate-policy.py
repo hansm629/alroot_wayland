@@ -30,6 +30,10 @@ checks = {
         'absolute(lastX, lastY);' in JAVA,
     'captured_game_pointer_retains_relative_deltas':
         'WaylandCompositor.nativeSendSceneInput(6,' in JAVA,
+    'touchpad_tap_reanchors_before_button':
+        'touchpadCursorActive && pointerInitialized' in JAVA and
+        'absolute(lastX, lastY);' in JAVA and
+        JAVA.index('absolute(lastX, lastY);') < JAVA.index('WaylandCompositor.nativeSendSceneInput(3, evdev, down ? 1 : 0);'),
     'new_absolute_cursor_uses_guest_scene_no_second_transform':
         'WaylandCompositor.nativeSendSceneInput(12, gx, gy);' in JAVA and
         'case 12: {' in CPP and

@@ -149,6 +149,15 @@ public final class InputSurfaceView extends SurfaceView {
         if (onCursorMove != null) onCursorMove.run();
     }
     private void sendButton(int evdev, boolean down) {
+        if (down && inputMode == MODE_TOUCHPAD && !captured &&
+                touchpadCursorActive && pointerInitialized) {
+            // A stationary tap/long-press has no motion delta to re-sync the
+            // guest after a temporary pointer lock, output resize or X11
+            // cursor warp. Anchor its target to the *displayed* cursor on
+            // EVERY touchpad click. Physical mice already send an absolute
+            // coordinate before this function and must not be re-anchored.
+            absolute(lastX, lastY);
+        }
         WaylandCompositor.nativeSendSceneInput(3, evdev, down ? 1 : 0);
     }
     private void sendHardwareMouseButton(int evdev, boolean down) {
