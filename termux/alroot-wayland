@@ -10,6 +10,18 @@ export TMPDIR="$PREFIX/tmp"
 mkdir -p "$STATE" "$LOGS"
 chmod 700 "$STATE" "$LOGS"
 
+# Non-sensitive action diagnostics: when a session is terminated unexpectedly
+# we need to distinguish an explicit stop request from a client/server crash.
+# Do not store arguments, environment values, user commands or credentials.
+control_event() {
+    local action="$1" source="unknown" pgid="unknown" sid="unknown"
+    source="$(ps -o comm= -p "$PPID" 2>/dev/null | tr -d '\n' | cut -c1-48)"
+    read -r pgid sid < <(ps -o pgid=,sid= -p $$ 2>/dev/null) || true
+    printf '%s action=%s pid=%s parent_pid=%s parent_name=%s pgid=%s sid=%s\n' \
+        "$(date -Is)" "$action" "$$" "$PPID" "$source" "$pgid" "$sid" \
+        >> "$LOGS/session-control.log"
+}
+
 usage() {
     echo 'usage: alroot-wayland start --profile xfce-labwc|xfce-shm-direct'
     echo '       alroot-wayland status|open|stop|doctor|logs'
@@ -341,6 +353,7 @@ start_session() {
     # only while installing one startup state and explicitly unlocks below.
     exec 8>"$STATE/start.lock"
     flock -n 8 || { echo 'another Alroot startup is active' >&2; exec 8>&-; return 1; }
+    control_event START_BEGIN
     if alive xwayland || alive xfce || alive labwc || alive clipboard || alive ime; then
         echo 'Existing Alroot session found; run status or stop first' >&2; return 1
     fi
@@ -400,7 +413,10 @@ start_session() {
     done
     # Failed intermediate stages must not leave project-owned processes alive.
     rm -f "$STATE/ime-active"
-    trap 'rc=$?; if ((rc != 0)); then stop_one ime; stop_one clipboard; stop_one xfce; stop_one xwayland; stop_one labwc; fi' EXIT
+    # Every cleanup role is attempted even when an earlier TERM does not
+    # stop a process promptly. Otherwise `set -e` can abort this EXIT trap
+    # halfway through and leave a private Xwayland running without XFCE.
+    trap 'rc=$?; if ((rc != 0)); then control_event START_ROLLBACK; for r in ime clipboard xfce xwayland labwc; do stop_one "$r" || true; done; fi' EXIT
     if ! wait_socket wayland-0; then
         echo "BLOCKED: Android helper socket $RUNTIME/wayland-0 is not accepting connections" >&2
         return 1
@@ -532,6 +548,7 @@ start_session() {
             echo 'WARNING: XRandR refresh sync failed; see refresh.log' >&2
     fi
     echo "Alroot $profile started on $(cat "$STATE/display")"
+    control_event START_READY
     # A successful startup must NEVER retain the flock in child processes.
     # In particular, a subsequently hung Xwayland must not block recovery.
     flock -u 8
@@ -543,14 +560,68 @@ stop_one() {
     local role="$1" pid=""
     if owned_pid_active "$role"; then
         read -r pid _ < "$STATE/$role.pid"
+        # This must not signal its OWN process group; doing so can interrupt
+        # the remaining stop steps and leave the Xwayland server behind.
+        local self_pgid="" mode="pid"
+        self_pgid="$(ps -o pgid= -p $$ 2>/dev/null | tr -d ' ')"
         if [[ "$role" == xfce ]] && isolated_session_leader "$pid"; then
+            if [[ "$self_pgid" == "$pid" ]]; then
+                echo "BLOCKED: stop would kill its own XFCE session group $pid" >&2
+                return 2
+            fi
+            mode=group
             kill -TERM -- "-$pid" 2>/dev/null || true
         else
             kill -TERM "$pid" 2>/dev/null || true
         fi
         echo "signalled Alroot $role pid $pid"
+        local attempt
+        for ((attempt=0;attempt<24;++attempt));do
+            owned_pid_active "$role" || break
+            sleep .1
+        done
+        if owned_pid_active "$role";then
+            echo "Alroot $role did not exit on TERM; killing only verified project-owned $mode $pid" >&2
+            if [[ "$mode" == group ]];then
+                kill -KILL -- "-$pid" 2>/dev/null || true
+            else
+                kill -KILL "$pid" 2>/dev/null || true
+            fi
+            for ((attempt=0;attempt<12;++attempt));do
+                owned_pid_active "$role" || break
+                sleep .1
+            done
+        fi
+        if owned_pid_active "$role";then
+            echo "FAILED: Alroot $role $pid still alive; preserving PID record for safe recovery" >&2
+            return 1
+        fi
     fi
     rm -f "$STATE/$role.pid"
+}
+
+stop_session() {
+    # Mutual exclusion with the startup-only lock prevents a stop from
+    # killing a half-launched desktop and accidentally leaving Xwayland.
+    exec 8>"$STATE/start.lock"
+    flock -w 25 8 || { echo 'BLOCKED: an Alroot session is starting; stop lock timed out' >&2; exec 8>&-; return 2; }
+    control_event STOP_BEGIN
+    rm -f "$STATE/ime-active" "$STATE/ime-fcitx-enabled" "$STATE/labwc-geometry"
+    local failed=0 role
+    for role in ime clipboard xfce xwayland labwc;do
+        stop_one "$role" || failed=1
+    done
+    if ((failed));then
+        control_event STOP_INCOMPLETE
+        echo 'Alroot stop incomplete: owned PID marker kept where process survived' >&2
+        flock -u 8
+        exec 8>&-
+        return 1
+    fi
+    rm -f "$STATE/display" "$STATE/labwc-socket"
+    control_event STOP_COMPLETE
+    flock -u 8
+    exec 8>&-
 }
 
 case "${1:-}" in
@@ -593,16 +664,7 @@ case "${1:-}" in
         [[ ! -f "$STATE/display" ]] || echo "X DISPLAY: $(cat "$STATE/display")"
         ;;
     stop)
-        rm -f "$STATE/ime-active"
-        rm -f "$STATE/ime-fcitx-enabled"
-        rm -f "$STATE/labwc-geometry"
-        stop_one ime
-        stop_one clipboard
-        stop_one xfce
-        stop_one xwayland
-        stop_one labwc
-        rm -f "$STATE/display"
-        rm -f "$STATE/labwc-socket"
+        stop_session
         ;;
     open)
         am start -n com.alroot.wayland/.MainActivity

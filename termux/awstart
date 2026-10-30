@@ -156,6 +156,15 @@ case "$action" in
     smoke) exec "$PREFIX/bin/bash" "$PROJECT/tests/p01-smoke.sh" ;;
     refresh-diag) exec "$PREFIX/bin/bash" "$PROJECT/tests/p03-fundamentals.sh" ;;
     stop)
+        # Never terminate the very XFCE session executing this command.
+        # Inside that desktop the user must use a separate native Termux
+        # shell, just as for --restart. Otherwise the session group may
+        # signal its own stop command and leave an orphaned Xwayland PID.
+        if (( !dry_run )) && [[ "${XDG_CONFIG_HOME:-}" == "$STATE/xfce-config" ]] &&
+           [[ -n "${DISPLAY:-}" && -r "$STATE/display" ]] &&
+           [[ "${DISPLAY%%.*}" == "$(cat "$STATE/display")" ]]; then
+            die 'Cannot stop from inside the running Alroot XFCE terminal. Use a separate native Termux shell.'
+        fi
         "$CLI" stop
         msg 'Project session stop requested; native Android host remains until explicitly stopped.'
         exit 0 ;;
@@ -229,6 +238,12 @@ if grep -q '^xfce: RUNNING ' <<< "$current_status"; then
 fi
 
 if ((topapp)); then
+    # REQUESTED means the Android Activity called ProcessBuilder.start(),
+    # NOT that the new Termux bash process actually entered start_session().
+    # Count private START_BEGIN entries so a failed Java child spawn is
+    # diagnosed separately from a native Xwayland/XFCE failure.
+    start_count_before="$(grep -c ' action=START_BEGIN ' "$STATE/logs/session-control.log" 2>/dev/null || true)"
+    start_count_before="${start_count_before:-0}"
     umask 077
     mkdir -p "$CONTROL"
     chmod 700 "$STATE" "$CONTROL"
@@ -289,5 +304,13 @@ for ((attempt=0; attempt<40; ++attempt)); do
 done
 msg 'Desktop did not reach process readiness; latest status:'
 "$CLI" status
+if ((topapp));then
+    start_count_after="$(grep -c ' action=START_BEGIN ' "$STATE/logs/session-control.log" 2>/dev/null || true)"
+    start_count_after="${start_count_after:-0}"
+    if (( start_count_after <= start_count_before ));then
+        msg 'Foreground Activity acknowledged ProcessBuilder.start, but the Termux session CLI did not begin. This is a helper child-execution failure, not an Xwayland/GLX crash.'
+        msg 'A caller may retry with the explicit S25 shell-recovery route; no system GPU driver will be changed.'
+    fi
+fi
 msg 'Collect logs: awstart --logs'
 exit 1

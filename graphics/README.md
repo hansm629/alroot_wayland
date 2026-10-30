@@ -718,3 +718,20 @@ See `graphics/docs/gpu-s26-wrapper-xcb-transient-resize-recovery.md` and
 `S26_RESIZE_STRESS=1 bash graphics/tools/test-s26-wrapper-xcb-resize.sh`;
 visual candidate: `bash graphics/tools/test-s26-wrapper-xcb-resize.sh
 --visual zink` (open the Alroot Wayland Android helper app).
+
+**GPU-S27 session-control recovery (2026-10-30):** The old two-command
+`awstart --stop; bash termux/start-s25-kgsl-topapp.sh` could leave XFCE
+down and a partially stopped, orphaned private Xwayland. On S26U,
+the Android foreground helper acknowledged `ProcessBuilder.start` but
+did **not** run the Termux session CLI; a native Termux shell launch
+worked. Start and stop now share a project lock, stop verifies each owned
+PID, invocation from within XFCE is blocked, and the helper launcher
+distinguishes `REQUESTED` from actual `START_BEGIN`. Use only one command
+`bash termux/start-s25-kgsl-topapp.sh --restart`, which attempts top-app
+and **explicitly labels its native shell fallback**; or add `--shell`
+to bypass the currently unverified Activity child process and use the
+known-good private GPU path directly. Actual S26U one-command retry
+survived 36s with new private KGSL Xwayland + XFCE READY, CPU affinity
+`0–5` under `/foreground` in fallback. **Not proof of top-app CPU mode**.
+Don't stop a working desktop just for client testing. See
+`graphics/docs/gpu-s27-xfce-launch-recovery.md`.
