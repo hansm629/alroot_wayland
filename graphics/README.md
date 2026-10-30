@@ -630,3 +630,24 @@ movement from displacing the Android overlay cursor. Independent Java
 alignment requires installing the new signed APK and checking the recorded
 terminal right-click/menu reproduction. See
 `graphics/docs/gpu-s20-pointer-drift-atomic.md`.
+
+**GPU-S23 Mesa27 Xwayland acceptance (S26U, 2026-10-30):** all three
+Zink stacks passed the isolated 9-case GLX/GLmark/Vulkan XCB matrix using
+the pinned Mesa27 sources. On the **actual** live XFCE Xwayland `:94`, all
+three also created mapped GLmark2 and Vulkan cube windows with nonblank,
+varied XGetImage pixels; no existing session restart was needed. Termux
+Turnip and Debian glibc Turnip passed three consecutive `vkcube` and
+`glxgears` window resizes. **The Vulkan-wrapper route has a release-blocking
+resize regression**: `vkcube` SIGSEGV in the Qualcomm `vkCreateImageView`
+path, and Zink/GLX `glxgears` reports `GLXBadCurrentWindow`. The latter
+also reproduces with system Mesa26.3, so do not blame Mesa27 unilaterally.
+Wrapper+Zink still passes the nonresizing windowed GLmark smoke. S20–S22
+pointer/cursor policy regressions and protected Termux graphics hashes PASS.
+**Do not promote KGSL GPU Xwayland to the awstart default** until those
+resizing errors and actual Android UI acceptance are resolved. Read
+`graphics/docs/gpu-s23-mesa27-xwayland-validation.md` and use the scoped
+test scripts `graphics/tools/test-s23-mesa27-zink-matrix.sh` and
+`graphics/tools/test-s23-live-xfce-windowed.py`; all live tests touch only
+their own temporary demo windows. Mesa27 and Alroot runtime trial builds
+remain private; global drivers, Termux-X11 :0, and the existing APK were
+not replaced.

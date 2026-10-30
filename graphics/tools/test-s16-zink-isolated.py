@@ -136,6 +136,20 @@ def main():
                   'LIBGL_KOPPER_DRI2=1',
                   'VK_DRIVER_FILES=/usr/share/vulkan/icd.d/freedreno_icd.aarch64.json',
                   'VK_ICD_FILENAMES=/usr/share/vulkan/icd.d/freedreno_icd.aarch64.json'])
+        glibc_runtime = os.environ.get('S16_ZINK_TEST_GLIBC27_RUNTIME')
+        if glibc_runtime and name.startswith('debian-turnip-'):
+            runtime = pathlib.Path(glibc_runtime).resolve()
+            icd27 = runtime / 'turnip_icd.private.json'
+            if ROOT.resolve() not in runtime.parents or not icd27.is_file() or not (
+                    runtime / 'lib/libGLX_mesa.so.0').exists():
+                print('S16_ZINK_GLIBC27_RUNTIME_INVALID_OR_MISSING', flush=True)
+                return 2
+            extra = [p for p in extra if not p.startswith(('VK_DRIVER_FILES=',
+                                                            'VK_ICD_FILENAMES='))]
+            extra += [f'VK_DRIVER_FILES={icd27}', f'VK_ICD_FILENAMES={icd27}',
+                      f'LD_LIBRARY_PATH={runtime}/lib',
+                      f'LIBGL_DRIVERS_PATH={runtime}/lib/dri']
+            print('S16_ZINK_PRIVATE_GLIBC27_RUNTIME=' + str(runtime), flush=True)
         if 'kgsl-control' in name:
             extra = [f'DISPLAY={display}', f'XAUTHORITY={auth}',
                      'MESA_LOADER_DRIVER_OVERRIDE=kgsl', 'GALLIUM_DRIVER=freedreno']
@@ -150,6 +164,18 @@ def main():
                    *extra, *guest_program]
     elif is_alroot:
         guest_icd = '/usr/share/vulkan/icd.d/freedreno_icd.aarch64.json'
+        glibc_runtime = os.environ.get('S16_ZINK_TEST_GLIBC27_RUNTIME')
+        if glibc_runtime:
+            runtime = pathlib.Path(glibc_runtime).resolve()
+            icd27 = runtime / 'turnip_icd.private.json'
+            if ROOT.resolve() not in runtime.parents or not icd27.is_file() or not (
+                    runtime / 'lib/libGLX_mesa.so.0').exists():
+                print('S16_ZINK_ALROOT_GLIBC27_RUNTIME_INVALID_OR_MISSING', flush=True)
+                return 2
+            guest_icd = str(icd27)
+            client.update(LD_LIBRARY_PATH=str(runtime / 'lib'),
+                          LIBGL_DRIVERS_PATH=str(runtime / 'lib/dri'))
+            print('S16_ZINK_PRIVATE_ALROOT_GLIBC27_RUNTIME=' + str(runtime), flush=True)
         client.update(MESA_LOADER_DRIVER_OVERRIDE='zink', GALLIUM_DRIVER='zink',
                       ALROOT_MESA_DRIVER='zink', ALROOT_VK_ICD=guest_icd,
                       ALROOT_KEEP_GPU_ENV='1', ALROOT_SVC_PATCH='1',
@@ -166,6 +192,16 @@ def main():
                if 'wrapper-private' in name
                else PREFIX / 'share/vulkan/icd.d' /
                ('wrapper_icd.aarch64.json' if 'wrapper' in name else 'freedreno_icd.aarch64.json'))
+        # Optional Mesa27-only private Turnip comparison. Never touch the
+        # installed ICD JSON or change the existing S17 defaults; only accept
+        # a project-owned manifest with an explicitly requested Turnip case.
+        override = os.environ.get('S16_ZINK_TEST_TURNIP_ICD')
+        if override and name.startswith('termux-turnip-'):
+            icd = pathlib.Path(override).resolve()
+            if ROOT.resolve() not in icd.parents or not icd.is_file():
+                print('S16_ZINK_PRIVATE_TURNIP_ICD=INVALID_PATH')
+                return 2
+            print('S16_ZINK_PRIVATE_TURNIP_ICD=' + str(icd), flush=True)
         if not icd.is_file():
             print('S16_ZINK_SELECTED_ICD_NOT_FOUND', icd)
             return 2

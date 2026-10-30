@@ -1,0 +1,130 @@
+--- a/src/preload/alroot_guest_preload_src.c
++++ b/src/preload/alroot_guest_preload_src.c
+@@ -5570,0 +5571,73 @@
++/* xcb_connect_to_fd() does NOT discover Xauthority on its own: a NULL auth
++ * pointer asks the X server for an unauthenticated connection.  That works on
++ * legacy no-cookie Termux-X11, but breaks authenticated private Xwayland.
++ * Obtain the MIT record via libXau's standard matching algorithm without a
++ * hard dependency on X11 development headers or libXau at preload startup.
++ * Never log, cache or persist the cookie in the Alroot runtime. */
++struct alroot_xau_record {
++    unsigned short family, address_length;
++    char *address;
++    unsigned short number_length;
++    char *number;
++    unsigned short name_length;
++    char *name;
++    unsigned short data_length;
++    char *data;
++};
++
++struct alroot_xcb_auth {
++    int namelen;
++    char *name;
++    int datalen;
++    char *data;
++};
++
++static void *_xcb_xau_mit_record(int display, void **lib_out,
++                                  void (**dispose_out)(void *)) {
++    if (lib_out) *lib_out = NULL;
++    if (dispose_out) *dispose_out = NULL;
++    const char *authority = getenv("XAUTHORITY");
++    if (!authority || !*authority || !lib_out || !dispose_out) return NULL;
++
++    void *lib = dlopen("libXau.so.6", RTLD_NOW | RTLD_NOLOAD | RTLD_LOCAL);
++    if (!lib) lib = dlopen("libXau.so.6", RTLD_NOW | RTLD_LOCAL);
++    if (!lib) return NULL;
++    typedef void *(*best_auth_fn)(unsigned short, unsigned short, const char *,
++                                  unsigned short, const char *, int, char **,
++                                  const int *);
++    best_auth_fn best = (best_auth_fn)dlsym(lib, "XauGetBestAuthByAddr");
++    void (*dispose)(void *) = (void (*)(void *))dlsym(lib, "XauDisposeAuth");
++    if (!best || !dispose) { dlclose(lib); return NULL; }
++
++    char hostname[256], number[32];
++    if (gethostname(hostname, sizeof(hostname) - 1) != 0) {
++        dlclose(lib);
++        return NULL;
++    }
++    hostname[sizeof(hostname) - 1] = '\0';
++    int number_len = snprintf(number, sizeof(number), "%d", display);
++    size_t host_len = strlen(hostname);
++    if (!host_len || host_len > UINT16_MAX ||
++        number_len < 1 || number_len >= (int)sizeof(number)) {
++        dlclose(lib);
++        return NULL;
++    }
++    char *types[] = {"MIT-MAGIC-COOKIE-1"};
++    const int lengths[] = {18};
++    /* Xauth FamilyLocal = 256.  The exact socket is AF_UNIX; do not guess a
++     * TCP address or use FamilyWild to bypass the server's access control. */
++    struct alroot_xau_record *record = (struct alroot_xau_record *)best(
++        256, (unsigned short)host_len, hostname,
++        (unsigned short)number_len, number, 1, types, lengths);
++    if (!record || record->name_length != 18 || record->data_length != 16 ||
++        !record->name || !record->data ||
++        memcmp(record->name, "MIT-MAGIC-COOKIE-1", 18) != 0) {
++        if (record) dispose(record);
++        dlclose(lib);
++        return NULL;
++    }
++    *lib_out = lib;
++    *dispose_out = dispose;
++    return record;
++}
++
+@@ -5572 +5645,2 @@
+-                             int display, int screen, int err) {
++                             int display, int screen, int err,
++                             const char *auth_mode) {
+@@ -5578 +5652 @@
+-            "screen=%d errno=%d auth=none build_id=%s\n",
++            "screen=%d errno=%d auth=%s build_id=%s\n",
+@@ -5579,0 +5654 @@
++            auth_mode ? auth_mode : "none",
+@@ -5602 +5677 @@
+-                         ENOSYS);
++                         ENOSYS, "none");
+@@ -5612 +5687 @@
+-                         ENOSYS);
++                         ENOSYS, "none");
+@@ -5622 +5697 @@
+-                         open_errno);
++                         open_errno, "none");
+@@ -5627,5 +5702,18 @@
+-    /* xcb_connect_to_fd takes ownership of fd, including failure objects.  A
+-     * NULL auth pointer is intentional for Termux-X11's local no-cookie lane;
+-     * it is the same unauthenticated setup path libxcb uses when no Xauthority
+-     * record is available. */
+-    void *connection = to_fd(fd, NULL);
++    /* Auth is optional, but must NOT be dropped for a private X server using
++     * MIT-MAGIC-COOKIE-1.  The old NULL path stays for no-cookie X servers.
++     * XCB consumes/copies the auth setup during to_fd, before freeing Xau. */
++    void *xau_lib = NULL;
++    void (*xau_dispose)(void *) = NULL;
++    struct alroot_xau_record *record = (struct alroot_xau_record *)
++        _xcb_xau_mit_record(display, &xau_lib, &xau_dispose);
++    struct alroot_xcb_auth auth;
++    if (record) {
++        auth.namelen = record->name_length;
++        auth.name = record->name;
++        auth.datalen = record->data_length;
++        auth.data = record->data;
++    }
++    const char *auth_mode = record ? "xau-mit" : "none";
++    void *connection = to_fd(fd, record ? &auth : NULL);
++    if (record) xau_dispose(record);
++    if (xau_lib) dlclose(xau_lib);
+@@ -5634 +5722 @@
+-                         EIO);
++                         EIO, auth_mode);
+@@ -5643 +5731 @@
+-                         ENOSYS);
++                         ENOSYS, auth_mode);
+@@ -5650 +5738 @@
+-                         xcb_error);
++                         xcb_error, auth_mode);
+@@ -5654 +5742 @@
+-    _xcb_direct_emit("PASS", endpoint, display, screen, 0);
++    _xcb_direct_emit("PASS", endpoint, display, screen, 0, auth_mode);
