@@ -2,6 +2,7 @@
  * No CPU pixel upload.  Transfer output copied ONLY to a tiny readback buffer
  * for the 5-pixel acceptance test.  This is a one-shot disposable consumer. */
 static int s16_gpu_copy_probe(int fd,const struct header*h){
+ const int use_sync_file=getenv("S16_GPU_SYNC_FD_WAIT")!=NULL;
  int result=-1;
  void*lib=dlopen("/system/lib64/libvulkan.so",RTLD_NOW|RTLD_LOCAL);
  if(!lib)return -1;
@@ -29,8 +30,8 @@ static int s16_gpu_copy_probe(int fd,const struct header*h){
  printf("S16_COPY_DMA_BUF_EXTERNAL_FEATURES=0x%x\n",ep.externalMemoryProperties.externalMemoryFeatures);
  if(!(ep.externalMemoryProperties.externalMemoryFeatures&VK_EXTERNAL_MEMORY_FEATURE_IMPORTABLE_BIT))goto cleanup_instance;
  float priority=1.f;VkDeviceQueueCreateInfo qi={.sType=VK_STRUCTURE_TYPE_DEVICE_QUEUE_CREATE_INFO,.queueFamilyIndex=q,.queueCount=1,.pQueuePriorities=&priority};
- const char *extensions[]={"VK_KHR_external_memory_fd","VK_EXT_external_memory_dma_buf"};
- VkDeviceCreateInfo di={.sType=VK_STRUCTURE_TYPE_DEVICE_CREATE_INFO,.queueCreateInfoCount=1,.pQueueCreateInfos=&qi,.enabledExtensionCount=2,.ppEnabledExtensionNames=extensions};
+ const char *extensions[]={"VK_KHR_external_memory_fd","VK_EXT_external_memory_dma_buf","VK_KHR_external_semaphore_fd"};
+ VkDeviceCreateInfo di={.sType=VK_STRUCTURE_TYPE_DEVICE_CREATE_INFO,.queueCreateInfoCount=1,.pQueueCreateInfos=&qi,.enabledExtensionCount=use_sync_file?3u:2u,.ppEnabledExtensionNames=extensions};
  VkDevice dev=VK_NULL_HANDLE;r=CreateDevice_fn(phy,&di,NULL,&dev);if(r){printf("S16_COPY_VK_DEVICE_RC=%d\n",r);goto cleanup_instance;}
  PFN_vkGetDeviceProcAddr gd=(PFN_vkGetDeviceProcAddr)GetDeviceProcAddr_fn;
 #define P(n) PFN_vk##n n##_fn=(PFN_vk##n)gd(dev,"vk" #n)
@@ -39,10 +40,12 @@ static int s16_gpu_copy_probe(int fd,const struct header*h){
  P(GetMemoryFdPropertiesKHR);P(CreateCommandPool);P(DestroyCommandPool);P(AllocateCommandBuffers);P(BeginCommandBuffer);P(EndCommandBuffer);
  P(CmdPipelineBarrier);P(CmdCopyBufferToImage);P(CmdCopyImageToBuffer);P(GetDeviceQueue);P(QueueSubmit);P(QueueWaitIdle);
  P(MapMemory);P(UnmapMemory);P(InvalidateMappedMemoryRanges);P(DestroyDevice);
+ P(CreateSemaphore);P(DestroySemaphore);P(ImportSemaphoreFdKHR);
 #undef P
  VkBuffer src=VK_NULL_HANDLE,back=VK_NULL_HANDLE;VkImage dst=VK_NULL_HANDLE;
  VkDeviceMemory srcMem=VK_NULL_HANDLE,dstMem=VK_NULL_HANDLE,backMem=VK_NULL_HANDLE;
  VkCommandPool cp=VK_NULL_HANDLE;
+ VkSemaphore s16_wait_sem=VK_NULL_HANDLE;
  VkPhysicalDeviceMemoryProperties props;GetPhysicalDeviceMemoryProperties_fn(phy,&props);
  VkDeviceSize payload=(VkDeviceSize)h->stride*(h->height-1u)+(VkDeviceSize)h->width*4u;
  VkExternalMemoryBufferCreateInfo external={.sType=VK_STRUCTURE_TYPE_EXTERNAL_MEMORY_BUFFER_CREATE_INFO,.handleTypes=VK_EXTERNAL_MEMORY_HANDLE_TYPE_DMA_BUF_BIT_EXT};
@@ -106,7 +109,29 @@ static int s16_gpu_copy_probe(int fd,const struct header*h){
  CmdPipelineBarrier_fn(cmd,VK_PIPELINE_STAGE_TRANSFER_BIT,VK_PIPELINE_STAGE_HOST_BIT,0,0,NULL,1,&rbDone,0,NULL);
  r=EndCommandBuffer_fn(cmd);if(r)goto finish;
  VkQueue queue;GetDeviceQueue_fn(dev,q,0,&queue);
- VkSubmitInfo submit={.sType=VK_STRUCTURE_TYPE_SUBMIT_INFO,.commandBufferCount=1,.pCommandBuffers=&cmd};
+ VkPipelineStageFlags wait_stage=VK_PIPELINE_STAGE_TRANSFER_BIT;
+ if(use_sync_file){
+  struct dma_buf_export_sync_file snapshot={.flags=DMA_BUF_SYNC_READ,.fd=-1};
+  errno=0;
+  int er=ioctl(fd,DMA_BUF_IOCTL_EXPORT_SYNC_FILE,&snapshot);
+  printf("S16_DMA_BUF_EXPORT_SYNC_FILE=rc:%d errno:%d fd:%d\n",er,errno,snapshot.fd);
+  if(er!=0 || snapshot.fd<0)goto finish;
+  VkSemaphoreCreateInfo sci={.sType=VK_STRUCTURE_TYPE_SEMAPHORE_CREATE_INFO};
+  r=CreateSemaphore_fn(dev,&sci,NULL,&s16_wait_sem);
+  printf("S16_GPU_WAIT_CREATE_SEMAPHORE=%d\n",r);
+  if(r!=VK_SUCCESS){close(snapshot.fd);goto finish;}
+  VkImportSemaphoreFdInfoKHR import={.sType=VK_STRUCTURE_TYPE_IMPORT_SEMAPHORE_FD_INFO_KHR,
+   .semaphore=s16_wait_sem,.flags=VK_SEMAPHORE_IMPORT_TEMPORARY_BIT,
+   .handleType=VK_EXTERNAL_SEMAPHORE_HANDLE_TYPE_SYNC_FD_BIT,.fd=snapshot.fd};
+  r=ImportSemaphoreFdKHR_fn(dev,&import);
+  printf("S16_GPU_WAIT_IMPORT_SYNC_FD=%d\n",r);
+  if(r!=VK_SUCCESS){close(snapshot.fd);goto finish;}
+ }
+ VkSubmitInfo submit={.sType=VK_STRUCTURE_TYPE_SUBMIT_INFO,.commandBufferCount=1,
+  .pCommandBuffers=&cmd,
+  .waitSemaphoreCount=use_sync_file?1u:0u,
+  .pWaitSemaphores=use_sync_file?&s16_wait_sem:NULL,
+  .pWaitDstStageMask=use_sync_file?&wait_stage:NULL};
  r=QueueSubmit_fn(queue,1,&submit,VK_NULL_HANDLE);printf("S16_COPY_BUFFER_TO_IMAGE_SUBMIT=%d\n",r);if(r)goto finish;
  r=QueueWaitIdle_fn(queue);if(r)goto finish;
  void *mapped=NULL;r=MapMemory_fn(dev,backMem,0,VK_WHOLE_SIZE,0,&mapped);if(r)goto finish;
@@ -119,10 +144,24 @@ static int s16_gpu_copy_probe(int fd,const struct header*h){
   matched+=ok;
   printf("S16_COPY_STAGING_PIXEL_%d=%u,%u,%u,%u match=%d\n",i,pixel[0],pixel[1],pixel[2],pixel[3],ok);
  }
+ if(getenv("S16_FULL_FRAME_VALIDATE")){
+  const unsigned char *pixels=(const unsigned char*)mapped;
+  unsigned long long checked=0,mismatches=0;
+  for(uint32_t y=0;y<h->height;y++)for(uint32_t x=0;x<h->width;x++){
+   const unsigned char*p=pixels+((size_t)y*h->width+x)*4u;
+   checked++;
+   if(!(p[0]>=24 && p[0]<=28 && p[1]>=176 && p[1]<=182 &&
+        p[2]>=228 && p[2]<=232 && p[3]==255))mismatches++;
+  }
+  printf("S16_COPY_FULL_FRAME_PIXELS=checked:%llu mismatched:%llu\n",
+         checked,mismatches);
+  if(mismatches)matched=0;
+ }
  UnmapMemory_fn(dev,backMem);
  printf("S16_COPY_VKBUFFER_TO_VKIMAGE_GPU_PIXELS=%d/5\n",matched);
  result=(matched==5)?0:-1;
 finish:
+ if(s16_wait_sem)DestroySemaphore_fn(dev,s16_wait_sem,NULL);
  if(cp)DestroyCommandPool_fn(dev,cp,NULL);
  if(backMem)FreeMemory_fn(dev,backMem,NULL);
  if(back)DestroyBuffer_fn(dev,back,NULL);

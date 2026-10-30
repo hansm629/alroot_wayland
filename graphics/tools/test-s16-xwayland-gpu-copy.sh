@@ -41,12 +41,14 @@ for size in "${sizes[@]}"; do
         exit 1
     fi
     if ! grep -q '^S16_COPY_VKBUFFER_TO_VKIMAGE_GPU_PIXELS=5/5$' "$log" ||
-       ! grep -q '^S16_KGSL_TO_ANDROID_VKIMAGE_GPU_COPY=PASS$' "$log"; then
+       ! grep -q '^S16_KGSL_TO_ANDROID_VKIMAGE_GPU_COPY=PASS$' "$log" ||
+       { [[ -n "${S16_GPU_SYNC_FD_WAIT:-}" ]] &&
+         ! grep -q '^S16_GPU_WAIT_IMPORT_SYNC_FD=0$' "$log"; }; then
         echo "S16_KGSL_VKBUFFER_GPU_COPY[$size]=FAIL_PIXELS"
         tail -20 "$log"
         exit 1
     fi
-    echo "S16_KGSL_VKBUFFER_GPU_COPY[$size]=PASS (5/5 actual GPU pixels)"
+    echo "S16_KGSL_VKBUFFER_GPU_COPY[$size]=PASS (5/5 actual GPU pixels; syncfd=${S16_GPU_SYNC_FD_WAIT:+Vulkan-GPU-wait})"
 done
 if [[ -x "$OUT/kgsl-egl-to-android-vkbuffer" ]]; then
     echo 'S16_KGSL_SSBO_DIRECT_READER=PROVEN_IN_SEPARATE_S16_PROBE'

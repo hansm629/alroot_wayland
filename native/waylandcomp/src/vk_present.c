@@ -19,6 +19,8 @@
 #include <time.h>
 #include <pthread.h>
 #include <sys/stat.h>
+#include <sys/ioctl.h>
+#include <linux/dma-buf.h>
 #include <stdint.h>
 #include <android/log.h>
 #include <android/hardware_buffer.h>
@@ -46,6 +48,8 @@ struct vkp_image {
     VkDeviceMemory linear_source_mem;
     uint32_t linear_stride;
     int linear_copy;
+    int linear_source_fd;
+    VkSemaphore linear_source_wait;
 };
 
 static ANativeWindow *g_window;
@@ -103,6 +107,54 @@ static int g_black_state;
 
 static PFN_vkImportSemaphoreFdKHR g_import_sem_fd;
 static VkSemaphore g_wait_sem;
+
+/* The Xwayland EGL producer can finish its own queue but that alone does
+ * not give the Android Vulkan consumer a cross-API wait. Linux's standard
+ * implicit DMA-BUF write fence can be snapshotted as a sync_file, imported
+ * temporarily into one Vulkan semaphore per source, and waited in the very
+ * same submission that performs the S1.6 VkBuffer->VkImage GPU copy.
+ * No global GPU stall or extra CPU vkQueueWaitIdle is introduced. */
+#define VKP_MAX_LINEAR_GPU_WAITS 32
+static VkSemaphore g_linear_gpu_waits[VKP_MAX_LINEAR_GPU_WAITS];
+static unsigned g_linear_gpu_wait_count;
+static void linear_gpu_wait_reset(void) { g_linear_gpu_wait_count = 0; }
+static void linear_gpu_wait_prepare(struct vkp_image *img) {
+    if (!img || !img->linear_copy || img->linear_source_fd < 0 ||
+        !img->linear_source_wait || !g_import_sem_fd) return;
+    if (g_linear_gpu_wait_count >= VKP_MAX_LINEAR_GPU_WAITS) {
+        static int warned;
+        if (!warned++) alroot_log("gpu", "LINEAR DMA-BUF has more than %d source waits; "
+                                   "not all implicit fences can be transferred to Vulkan",
+                                   VKP_MAX_LINEAR_GPU_WAITS);
+        return;
+    }
+    struct dma_buf_export_sync_file sf = {
+        .flags = DMA_BUF_SYNC_READ, .fd = -1};
+    if (ioctl(img->linear_source_fd, DMA_BUF_IOCTL_EXPORT_SYNC_FILE, &sf) != 0 || sf.fd < 0) {
+        static int warned;
+        if (!warned++) alroot_log("gpu", "LINEAR DMA-BUF sync-file export is unavailable; "
+                                   "keeping the previous producer-side glFinish fallback");
+        return;
+    }
+    VkImportSemaphoreFdInfoKHR imp = {
+        .sType = VK_STRUCTURE_TYPE_IMPORT_SEMAPHORE_FD_INFO_KHR,
+        .semaphore = img->linear_source_wait,
+        .flags = VK_SEMAPHORE_IMPORT_TEMPORARY_BIT,
+        .handleType = VK_EXTERNAL_SEMAPHORE_HANDLE_TYPE_SYNC_FD_BIT,
+        .fd = sf.fd};
+    VkResult r = g_import_sem_fd(g_dev, &imp);
+    if (r != VK_SUCCESS) {
+        close(sf.fd); /* the API takes ownership only on success */
+        static int warned;
+        if (!warned++) alroot_log("gpu", "LINEAR DMA-BUF sync-file import rejected (%d); "
+                                   "keeping producer glFinish fallback", (int)r);
+        return;
+    }
+    g_linear_gpu_waits[g_linear_gpu_wait_count++] = img->linear_source_wait;
+    static int logged;
+    if (!logged++) alroot_log("gpu", "LINEAR DMA-BUF EGL producer fence -> Vulkan GPU semaphore wait active "
+                               "(no separate CPU pixel copy or queue-idle wait)");
+}
 
 static struct vkp_perf g_perf;
 static int64_t perf_now(void) {
@@ -978,6 +1030,7 @@ static struct vkp_image *linear_vkbuffer_import(int fd, uint32_t drm_format,
     img->h = h;
     img->fmt = drm_to_vk(drm_format);
     img->sampled = 1;
+    img->linear_source_fd = -1;
     img->linear_stride = stride;
 
     VkExternalMemoryBufferCreateInfo ext = {
@@ -1064,6 +1117,12 @@ static struct vkp_image *linear_vkbuffer_import(int fd, uint32_t drm_format,
     if (r != VK_SUCCESS) goto fail;
 
     img->linear_copy = 1;
+    img->linear_source_fd = dup(fd);
+    if (g_import_sem_fd && img->linear_source_fd >= 0) {
+        VkSemaphoreCreateInfo sci = {.sType = VK_STRUCTURE_TYPE_SEMAPHORE_CREATE_INFO};
+        if (g_vk.CreateSemaphore(g_dev, &sci, NULL, &img->linear_source_wait) != VK_SUCCESS)
+            img->linear_source_wait = VK_NULL_HANDLE;
+    }
     /* The VkImage is ours; no foreign-image ownership barrier is valid. */
     img->dmabuf = 0;
     img->in_general = 0;
@@ -1086,6 +1145,7 @@ fail:
  * supplies Stage-1 correctness before submitting the Wayland wl_buffer. */
 static void record_linear_buffer_copy(VkCommandBuffer cmd, struct vkp_image *img) {
     if (!img || !img->linear_copy) return;
+    linear_gpu_wait_prepare(img);
     VkBufferMemoryBarrier src = {
         .sType = VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER,
         .srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
@@ -1139,6 +1199,7 @@ static void record_linear_buffer_copy(VkCommandBuffer cmd, struct vkp_image *img
 
 static void record_linear_sources(VkCommandBuffer cmd,
                                    const struct vkp_draw *draws, int n) {
+    linear_gpu_wait_reset();
     for (int i = 0; i < n; ++i) {
         struct vkp_image *img = draws[i].img;
         if (!img || !img->linear_copy) continue;
@@ -1364,9 +1425,11 @@ void vkp_image_destroy(struct vkp_image *img) {
         if (img->map) g_vk.UnmapMemory(g_dev, img->mem);
         if (img->image) g_vk.DestroyImage(g_dev, img->image, NULL);
         if (img->mem) g_vk.FreeMemory(g_dev, img->mem, NULL);
+        if (img->linear_source_wait) g_vk.DestroySemaphore(g_dev, img->linear_source_wait, NULL);
         if (img->linear_source) g_vk.DestroyBuffer(g_dev, img->linear_source, NULL);
         if (img->linear_source_mem) g_vk.FreeMemory(g_dev, img->linear_source_mem, NULL);
     }
+    if (img->linear_copy && img->linear_source_fd >= 0) close(img->linear_source_fd);
     free(img);
 }
 
@@ -1983,9 +2046,19 @@ static int render_impl(int scene_w, int scene_h, const struct vkp_draw *draws, i
             g_vk.EndCommandBuffer(ck);
         }
         const int last = (k + 1 == presents);
-        VkPipelineStageFlags wait = VK_PIPELINE_STAGE_TRANSFER_BIT;
-        VkSubmitInfo si = {.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO, .waitSemaphoreCount = 1,
-                           .pWaitSemaphores = &g_acqs[k], .pWaitDstStageMask = &wait, .commandBufferCount = 1,
+        VkSemaphore wait_sems[1 + VKP_MAX_LINEAR_GPU_WAITS];
+        VkPipelineStageFlags wait_stages[1 + VKP_MAX_LINEAR_GPU_WAITS];
+        uint32_t wait_count = 1;
+        wait_sems[0] = g_acqs[k];
+        wait_stages[0] = VK_PIPELINE_STAGE_TRANSFER_BIT;
+        if (k == 0) for (unsigned j = 0; j < g_linear_gpu_wait_count; ++j) {
+            wait_sems[wait_count] = g_linear_gpu_waits[j];
+            wait_stages[wait_count++] = VK_PIPELINE_STAGE_TRANSFER_BIT;
+        }
+        VkSubmitInfo si = {.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO,
+                           .waitSemaphoreCount = wait_count,
+                           .pWaitSemaphores = wait_sems, .pWaitDstStageMask = wait_stages,
+                           .commandBufferCount = 1,
                            .pCommandBuffers = &g_cmds[k], .signalSemaphoreCount = 1, .pSignalSemaphores = &g_rnds[k]};
         VkResult qr = g_vk.QueueSubmit(g_queue, 1, &si, last ? g_fence : VK_NULL_HANDLE);
         if (qr != VK_SUCCESS) {
@@ -2133,6 +2206,7 @@ int vkp_blit_image(struct vkp_image *src, struct vkp_image *dst, int wait_fd) {
     VkCommandBufferBeginInfo bi = {.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO,
                                    .flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT};
     g_vk.BeginCommandBuffer(g_cmd, &bi);
+    linear_gpu_wait_reset();
     record_linear_buffer_copy(g_cmd, src);
     VkImageMemoryBarrier acq[2] = {
         {.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER, .oldLayout = VK_IMAGE_LAYOUT_UNDEFINED,
@@ -2169,10 +2243,22 @@ int vkp_blit_image(struct vkp_image *src, struct vkp_image *dst, int wait_fd) {
                             0, 0, NULL, 0, NULL, 1, &rel);
     g_vk.EndCommandBuffer(g_cmd);
 
-    VkPipelineStageFlags wait_stage = VK_PIPELINE_STAGE_TRANSFER_BIT;
-    VkSubmitInfo si = {.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO, .commandBufferCount = 1, .pCommandBuffers = &g_cmd,
-                       .waitSemaphoreCount = gpu_wait ? 1u : 0u, .pWaitSemaphores = gpu_wait ? &g_wait_sem : NULL,
-                       .pWaitDstStageMask = gpu_wait ? &wait_stage : NULL};
+    VkSemaphore wait_sems[1 + VKP_MAX_LINEAR_GPU_WAITS];
+    VkPipelineStageFlags wait_stages[1 + VKP_MAX_LINEAR_GPU_WAITS];
+    uint32_t wait_count = 0;
+    if (gpu_wait) {
+        wait_sems[wait_count] = g_wait_sem;
+        wait_stages[wait_count++] = VK_PIPELINE_STAGE_TRANSFER_BIT;
+    }
+    for (unsigned j = 0; j < g_linear_gpu_wait_count; ++j) {
+        wait_sems[wait_count] = g_linear_gpu_waits[j];
+        wait_stages[wait_count++] = VK_PIPELINE_STAGE_TRANSFER_BIT;
+    }
+    VkSubmitInfo si = {.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO,
+                       .commandBufferCount = 1, .pCommandBuffers = &g_cmd,
+                       .waitSemaphoreCount = wait_count,
+                       .pWaitSemaphores = wait_count ? wait_sems : NULL,
+                       .pWaitDstStageMask = wait_count ? wait_stages : NULL};
     g_vk.ResetFences(g_dev, 1, &g_fence);
     VkResult qr = g_vk.QueueSubmit(g_queue, 1, &si, g_fence);
     if (qr != VK_SUCCESS) {
@@ -2235,6 +2321,7 @@ int vkp_image_readback(struct vkp_image *src, uint32_t *out, int max_px) {
     VkCommandBufferBeginInfo bi = {.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO,
                                    .flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT};
     g_vk.BeginCommandBuffer(cmd, &bi);
+    linear_gpu_wait_reset();
     record_linear_buffer_copy(cmd, src);
     VkImageMemoryBarrier acq[2] = {
         {.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER, .oldLayout = VK_IMAGE_LAYOUT_UNDEFINED,
@@ -2268,7 +2355,14 @@ int vkp_image_readback(struct vkp_image *src, uint32_t *out, int max_px) {
                             VK_PIPELINE_STAGE_HOST_BIT | VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT,
                             0, 0, NULL, 0, NULL, 2, done);
     g_vk.EndCommandBuffer(cmd);
-    VkSubmitInfo si = {.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO, .commandBufferCount = 1, .pCommandBuffers = &cmd};
+    VkPipelineStageFlags sync_stages[VKP_MAX_LINEAR_GPU_WAITS];
+    for (unsigned j = 0; j < g_linear_gpu_wait_count; ++j)
+        sync_stages[j] = VK_PIPELINE_STAGE_TRANSFER_BIT;
+    VkSubmitInfo si = {.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO,
+        .commandBufferCount = 1, .pCommandBuffers = &cmd,
+        .waitSemaphoreCount = g_linear_gpu_wait_count,
+        .pWaitSemaphores = g_linear_gpu_wait_count ? g_linear_gpu_waits : NULL,
+        .pWaitDstStageMask = g_linear_gpu_wait_count ? sync_stages : NULL};
     g_vk.ResetFences(g_dev, 1, &g_fence);
     VkResult qr = g_vk.QueueSubmit(g_queue, 1, &si, g_fence);
     if (qr != VK_SUCCESS) {
@@ -2430,10 +2524,22 @@ int vkp_pass_copy_to(struct vkp_image *dst, int wait_fd) {
                             0, 0, NULL, 0, NULL, 1, &rel);
     g_vk.EndCommandBuffer(cmd);
 
-    VkPipelineStageFlags wait_stage = VK_PIPELINE_STAGE_TRANSFER_BIT;
-    VkSubmitInfo si = {.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO, .commandBufferCount = 1, .pCommandBuffers = &cmd,
-                       .waitSemaphoreCount = gpu_wait ? 1u : 0u, .pWaitSemaphores = gpu_wait ? &g_wait_sem : NULL,
-                       .pWaitDstStageMask = gpu_wait ? &wait_stage : NULL};
+    VkSemaphore wait_sems[1 + VKP_MAX_LINEAR_GPU_WAITS];
+    VkPipelineStageFlags wait_stages[1 + VKP_MAX_LINEAR_GPU_WAITS];
+    uint32_t wait_count = 0;
+    if (gpu_wait) {
+        wait_sems[wait_count] = g_wait_sem;
+        wait_stages[wait_count++] = VK_PIPELINE_STAGE_TRANSFER_BIT;
+    }
+    for (unsigned j = 0; j < g_linear_gpu_wait_count; ++j) {
+        wait_sems[wait_count] = g_linear_gpu_waits[j];
+        wait_stages[wait_count++] = VK_PIPELINE_STAGE_TRANSFER_BIT;
+    }
+    VkSubmitInfo si = {.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO,
+                       .commandBufferCount = 1, .pCommandBuffers = &cmd,
+                       .waitSemaphoreCount = wait_count,
+                       .pWaitSemaphores = wait_count ? wait_sems : NULL,
+                       .pWaitDstStageMask = wait_count ? wait_stages : NULL};
     g_vk.ResetFences(g_dev, 1, &g_fence);
     VkResult qr = g_vk.QueueSubmit(g_queue, 1, &si, g_fence);
     if (qr != VK_SUCCESS) {

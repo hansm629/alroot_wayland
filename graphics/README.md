@@ -559,3 +559,17 @@ private GLAMOR/DRI3 server and a fresh Android VkBuffer GPU-copy host log
 without stopping the active XFCE or replacing the installed APK. Full
 user-visible desktop pixels/input and long-running frame pacing remain
 unverified. See `graphics/patches/xwayland/README.md`.
+
+
+## GPU-S1.6 live XFCE regression diagnostics (candidate fixes)
+
+See `graphics/docs/gpu-s16-live-regression-fixes.md`. On S26U the default
+GLX loader can select an unusable backend even while private KGSL GLAMOR
+works; live test clients use explicit child-scoped KGSL or Turnip ICD via
+`graphics/tools/run-s16-x11-client.sh`, not system-wide driver overrides.
+XCB vkcube produces mapped, readable X11 pixels, but Android visible pixels
+remain unverified. The experimental host attaches the EGL DMA-BUF producer's
+sync_file to the Vulkan buffer-copy submission and the Android input view
+handles hardware mouse positions before sending buttons. Neither real
+on-screen shimmer reduction nor hardware click positioning is a PASS until
+the new Android APK is explicitly installed and visually tested.

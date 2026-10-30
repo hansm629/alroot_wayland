@@ -14,6 +14,9 @@
 #include <string.h>
 #include <dlfcn.h>
 #include <sys/stat.h>
+#include <sys/ioctl.h>
+#include <linux/dma-buf.h>
+#include <errno.h>
 struct header {uint32_t magic,width,height,stride,format,tiling,backing_height;uint64_t allocation_size;};
 #define MAGIC 0x53f80017u
 static int choose_memory(const VkPhysicalDeviceMemoryProperties *mem,uint32_t bits,VkMemoryPropertyFlags flags){

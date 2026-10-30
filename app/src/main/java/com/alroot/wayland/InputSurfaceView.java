@@ -57,6 +57,10 @@ public final class InputSurfaceView extends SurfaceView {
         }
     };
     private boolean captured;
+    // Android can dispatch a physical mouse click as BOTH ACTION_BUTTON_PRESS
+    // (generic motion) and ACTION_DOWN (touch), or without a preceding hover.
+    // Track forwarded buttons to prevent duplicate X11 clicks/drag state.
+    private int mouseButtonMask;
     private float lastX, lastY;
     private boolean pointerInitialized;
     private boolean pointerViewSized;
@@ -147,8 +151,21 @@ public final class InputSurfaceView extends SurfaceView {
     private void sendButton(int evdev, boolean down) {
         WaylandCompositor.nativeSendSceneInput(3, evdev, down ? 1 : 0);
     }
+    private void sendHardwareMouseButton(int evdev, boolean down) {
+        int bit = evdev == 272 ? 1 : evdev == 273 ? 2 : evdev == 274 ? 4 : 0;
+        if (bit == 0) return;
+        if (((mouseButtonMask & bit) != 0) == down) return;
+        if (down) mouseButtonMask |= bit;
+        else mouseButtonMask &= ~bit;
+        sendButton(evdev, down);
+    }
+    private void releaseHardwareMouseButtons() {
+        for (int evdev : new int[] {272, 273, 274})
+            sendHardwareMouseButton(evdev, false);
+    }
     private void cancelGesture() {
         gestures.removeCallbacks(longPress);
+        releaseHardwareMouseButtons();
         if (pressed) sendButton(272, false);
         if (inputMode == MODE_DIRECT_TOUCH)
             WaylandCompositor.nativeSendTouch(3, -1, 0, 0);
@@ -216,6 +233,7 @@ public final class InputSurfaceView extends SurfaceView {
         keys.clear();
         syntheticShiftKeyUps.clear();
         for (int btn : new int[] {272, 273, 274}) WaylandCompositor.nativeSendSceneInput(3, btn, 0);
+        mouseButtonMask = 0;
     }
 
     @Override public boolean onKeyDown(int keyCode, KeyEvent event) {
@@ -442,9 +460,10 @@ public final class InputSurfaceView extends SurfaceView {
             return true;
         }
         if (action == MotionEvent.ACTION_BUTTON_PRESS || action == MotionEvent.ACTION_BUTTON_RELEASE) {
-            int button = evdevButton(event.getActionButton());
-            if (button != 0) WaylandCompositor.nativeSendSceneInput(
-                    3, button, action == MotionEvent.ACTION_BUTTON_PRESS ? 1 : 0);
+            // Captured pointer events provide relative deltas only, never
+            // treat their x/y as physical screen coordinates.
+            sendHardwareMouseButton(evdevButton(event.getActionButton()),
+                    action == MotionEvent.ACTION_BUTTON_PRESS);
             return true;
         }
         return true;
@@ -471,9 +490,13 @@ public final class InputSurfaceView extends SurfaceView {
             }
             if (event.getActionMasked() == MotionEvent.ACTION_BUTTON_PRESS ||
                     event.getActionMasked() == MotionEvent.ACTION_BUTTON_RELEASE) {
-                int btn = evdevButton(event.getActionButton());
-                if (btn != 0) WaylandCompositor.nativeSendSceneInput(3, btn,
-                        event.getActionMasked() == MotionEvent.ACTION_BUTTON_PRESS ? 1 : 0);
+                // Hardware mouse buttons may arrive without HOVER_MOVE.
+                // Sync the guest coordinate at the *button's* location before
+                // sending Wayland wl_pointer.button, so cursor and hit-test
+                // cannot refer to a stale previous guest coordinate.
+                absolute(event.getX(), event.getY());
+                sendHardwareMouseButton(evdevButton(event.getActionButton()),
+                        event.getActionMasked() == MotionEvent.ACTION_BUTTON_PRESS);
                 return true;
             }
         }
@@ -483,6 +506,29 @@ public final class InputSurfaceView extends SurfaceView {
     @Override public boolean onTouchEvent(MotionEvent event) {
         int a = event.getActionMasked();
         int index = event.getActionIndex();
+        if (event.isFromSource(android.view.InputDevice.SOURCE_MOUSE)) {
+            // Android's physical mouse ACTION_DOWN/UP is not a finger gesture.
+            // Feeding it through MODE_TOUCHPAD would hide the real pointer,
+            // then tap an unrelated cached guest cursor position. Generic
+            // ACTION_BUTTON_PRESS may also arrive; deduplicate both routes.
+            if (touchpadCursorActive) {
+                touchpadCursorActive = false;
+                refreshPointerOwnership();
+                if (onCursorMove != null) onCursorMove.run();
+            }
+            if (a == MotionEvent.ACTION_DOWN || a == MotionEvent.ACTION_UP ||
+                    a == MotionEvent.ACTION_MOVE) {
+                absolute(event.getX(), event.getY());
+                if (a == MotionEvent.ACTION_DOWN &&
+                        (event.getButtonState() & MotionEvent.BUTTON_PRIMARY) != 0)
+                    sendHardwareMouseButton(272, true);
+                else if (a == MotionEvent.ACTION_UP)
+                    sendHardwareMouseButton(272, false);
+            } else if (a == MotionEvent.ACTION_CANCEL) {
+                releaseHardwareMouseButtons();
+            }
+            return true;
+        }
         if (a == MotionEvent.ACTION_DOWN)
             ImeBridge.newEditorContext();
         if (!overlayGesture && event.getPointerCount() >= 3 &&
