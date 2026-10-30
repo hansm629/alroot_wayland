@@ -166,3 +166,32 @@ resizes, and 12/12 logical-last-row pixel samples PASS. This does **not**
 replace the system Wrapper, prove physical Android screenshot correctness,
 or authorize default `awstart` promotion. See
 `graphics/docs/gpu-s24-wrapper-xcb-resize.md`.
+
+## 2026-10-30 GPU-S26 — bounded private XCB AHB pixmap import recovery
+
+`0004-s26-xcb-dri3-transient-retry.patch` builds **after** the S24 XCB
+AHB-height alignment fix, with `build-s26-wrapper-xcb-retry.sh`. Opt-in
+`S26_WRAPPER_XCB_RETRY_TRANSIENT=1` (together with the existing S24 opt-in)
+retries only transient `BadAlloc`/`BadMatch` returned by an Android
+AHB-backed DRI3 pixmap creation, at most twice and only while the X11
+window still exists. It creates a new AHB, VkImage and pixmap rather than
+reusing destroyed resources. It does **not** ignore GLX errors.
+
+The S26U user reported `glxgears` exiting with `GLXBadCurrentWindow` after
+~44 seconds of manual resizing (Xwayland and XFCE **alive**). A synthetic
+BadAlloc on DRI3 import #10 reproduces the exact GLX error **without**
+S26 retry and remains alive **with** retry in both Mesa27 Zink and Vulkan
+`vkcube`. Full forced-failure and regular-resize tests passed, but do not
+assert that the original intermittent fault was definitely BadAlloc or
+that manual resizing is already visually accepted.
+
+```sh
+cd ~/alroot_wayland
+bash graphics/tools/build-s26-wrapper-xcb-retry.sh
+S26_RESIZE_STRESS=1 bash graphics/tools/test-s26-wrapper-xcb-resize.sh
+bash graphics/tools/test-s26-wrapper-xcb-resize.sh --visual zink
+```
+
+It stages a **separate** private ICD and leaves the S24 runtime binary,
+system Wrapper, Termux-X11, APK, and `awstart` default unchanged. See
+`graphics/docs/gpu-s26-wrapper-xcb-transient-resize-recovery.md`.

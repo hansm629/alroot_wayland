@@ -19,6 +19,7 @@ ROOT = HOME / 'alroot_wayland'
 PREFIX = pathlib.Path('/data/data/com.termux/files/usr')
 STATE = HOME / '.alroot-wayland'
 ICD = ROOT / '.source/gpu-stage1/s24-wrapper-xcb-resize/runtime/wrapper_icd.private.json'
+S26_ICD = ROOT / '.source/gpu-stage1/s26-wrapper-resize-retry/runtime/wrapper_icd.private.json'
 GLX27 = ROOT / '.source/gpu-stage27-pr25/mesa-private/glx-runtime/lib'
 
 
@@ -50,20 +51,26 @@ def require_session():
 def run():
     parser = argparse.ArgumentParser(description='Open a persistent S24 demo on Alroot Helper XFCE, not Termux-X11.')
     parser.add_argument('demo', nargs='?', default='vulkan', choices=('vulkan', 'zink'))
+    parser.add_argument('--s26', action='store_true',
+                        help='Opt-in S26 private XCB transient-import retry (default retains S24 binary)')
     parser.add_argument('--auto-resize', action='store_true',
                         help='move and resize only this demo, then leave it open for manual testing')
     args = parser.parse_args()
-    if not ICD.is_file() or not (ICD.parent / 'libvulkan_wrapper.so').is_file():
-        raise RuntimeError('missing S24 private wrapper ICD; build privately first')
+    icd = S26_ICD if args.s26 else ICD
+    if not icd.is_file() or not (icd.parent / 'libvulkan_wrapper.so').is_file():
+        raise RuntimeError('missing private wrapper ICD; build the requested route first')
     pid, display = require_session()
     env = os.environ.copy()
     original_display = env.get('DISPLAY', 'unset')
     for key in ('WAYLAND_DISPLAY', 'LD_PRELOAD', 'LIBGL_ALWAYS_SOFTWARE',
-                'MESA_LOADER_DRIVER_OVERRIDE', 'GALLIUM_DRIVER', 'LIBGL_DRIVERS_PATH'):
+                'MESA_LOADER_DRIVER_OVERRIDE', 'GALLIUM_DRIVER', 'LIBGL_DRIVERS_PATH',
+                'S26_WRAPPER_TEST_FAIL_PIXMAP_ONCE', 'S26_WRAPPER_XCB_RETRY_TRANSIENT'):
         env.pop(key, None)
     env.update(DISPLAY=display, XAUTHORITY=str(STATE / 'Xauthority'),
-               VK_DRIVER_FILES=str(ICD), VK_ICD_FILENAMES=str(ICD),
+               VK_DRIVER_FILES=str(icd), VK_ICD_FILENAMES=str(icd),
                S24_WRAPPER_XCB_AHB_PAD_HEIGHT='1')
+    if args.s26:
+        env['S26_WRAPPER_XCB_RETRY_TRANSIENT'] = '1'
     if args.demo == 'vulkan':
         command = [str(PREFIX / 'bin/vkcube'), '--wsi', 'xcb']
     else:
@@ -77,6 +84,7 @@ def run():
         command = [str(PREFIX / 'bin/glxgears')]
 
     baseline = x11_windows(env)
+    print('S24_VISUAL_PRIVATE_WRAPPER=' + ('S26_TRANSIENT_RETRY' if args.s26 else 'S24_BASELINE'), flush=True)
     print('S24_VISUAL_TARGET=ALROOT_WAYLAND_HELPER_XFCE_' + display, flush=True)
     print('S24_VISUAL_CALLER_DISPLAY=' + original_display, flush=True)
     print('S24_VISUAL_NOT_ON_TERMUX_X11_DISPLAY_0=TRUE', flush=True)

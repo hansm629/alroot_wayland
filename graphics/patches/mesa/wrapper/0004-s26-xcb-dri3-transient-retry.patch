@@ -1,0 +1,118 @@
+--- a/src/vulkan/wsi/wsi_common_x11.c
++++ b/src/vulkan/wsi/wsi_common_x11.c
+@@ -2648,6 +2648,22 @@
+ #endif
+ }
+ 
++#ifdef __TERMUX__
++/* Only the thread creating this XCB image may decide whether retrying its
++ * failed *DRI3 pixmap import* is safe. Other failures (lost window, vendor
++ * memory allocation, missing Vulkan callbacks) must remain fatal. */
++static _Thread_local bool s26_retryable_dri3_pixmap_error;
++static atomic_bool s26_injected_pixmap_error = ATOMIC_VAR_INIT(false);
++static atomic_uint s26_test_pixmap_import_count = ATOMIC_VAR_INIT(0);
++
++static bool
++s26_exact_optin(const char *name)
++{
++   const char *value = getenv(name);
++   return value && value[0] == '1' && value[1] == '\0';
++}
++#endif
++
+ static VkResult
+ x11_image_init(VkDevice device_h, struct x11_swapchain *chain,
+                const VkSwapchainCreateInfoKHR *pCreateInfo,
+@@ -2655,6 +2671,9 @@
+                struct x11_image *image)
+ {
+    VkResult result;
++#ifdef __TERMUX__
++   s26_retryable_dri3_pixmap_error = false;
++#endif
+ 
+    if (getenv("S16_WRAPPER_X11_WSI_TRACE")) {
+       fprintf(stderr,"S16_WRAPPER_X11_WSI_BEGIN_CREATE_IMAGE\n");fflush(stderr);
+@@ -2808,7 +2827,39 @@
+    }
+ 
+    error = xcb_request_check(chain->conn, cookie);
++#ifdef __TERMUX__
++   /* Opt-in fault injection for the project-private wrapper only. The
++    * successfully-created test pixmap is explicitly freed first; retry
++    * must allocate a new AHB and a NEW XID rather than reusing it. */
++   bool s26_forced_error = false;
++   const char *s26_fault_at = getenv("S26_WRAPPER_TEST_FAIL_PIXMAP_ONCE");
++   if (image->base.ahardware_buffer && !error && s26_fault_at) {
++      char *end = NULL;
++      const unsigned long at = strtoul(s26_fault_at, &end, 10);
++      const unsigned number = atomic_fetch_add(&s26_test_pixmap_import_count, 1) + 1;
++      if (end && !*end && at >= 1 && at <= 10000 && number == at &&
++          !atomic_exchange(&s26_injected_pixmap_error, true)) {
++      xcb_void_cookie_t free_cookie = xcb_free_pixmap(chain->conn, image->pixmap);
++      xcb_discard_reply(chain->conn, free_cookie.sequence);
++      xcb_flush(chain->conn);
++      s26_forced_error = true;
++      fprintf(stderr, "S26_XCB_DRI3_INJECTED_TRANSIENT_BADALLOC_ONCE=%u\n", number);
++      }
++   }
++   if ((error && image->base.ahardware_buffer &&
++        (error->error_code == XCB_ALLOC || error->error_code == XCB_MATCH)) ||
++       s26_forced_error) {
++      s26_retryable_dri3_pixmap_error = true;
++      fprintf(stderr, "S26_XCB_DRI3_AHB_IMPORT_FAILURE code=%u forced=%d "
++              "extent=%ux%u pixmap=0x%x\n",
++              error ? error->error_code : (unsigned)XCB_ALLOC,
++              s26_forced_error, pCreateInfo->imageExtent.width,
++              pCreateInfo->imageExtent.height, image->pixmap);
++   }
++   if (error || s26_forced_error) {
++#else
+    if (error != NULL) {
++#endif
+       free(error);
+       goto fail_image;
+    }
+@@ -3434,8 +3485,40 @@
+       if (getenv("S16_WRAPPER_X11_WSI_TRACE")) {
+          fprintf(stderr,"S16_WRAPPER_X11_WSI_IMAGE_INIT_BEGIN=%u\n",image);fflush(stderr);
+       }
+-      result = x11_image_init(device, chain, pCreateInfo, pAllocator,
+-                              &chain->images[image]);
++      /* S26: a transient BadAlloc/BadMatch returned by the private KGSL
++       * AHB-to-DRI3 importer must not permanently kill a still-valid XCB
++       * window. Recreate just the failed image; never reuse its retired AHB,
++       * pixmap or VkImage. Reject real BadWindow and non-DRI3 failures. */
++      unsigned s26_attempt = 0;
++      for (;;) {
++         result = x11_image_init(device, chain, pCreateInfo, pAllocator,
++                                 &chain->images[image]);
++#ifdef __TERMUX__
++         if (result == VK_ERROR_INITIALIZATION_FAILED &&
++             s26_retryable_dri3_pixmap_error &&
++             s26_exact_optin("S24_WRAPPER_XCB_AHB_PAD_HEIGHT") &&
++             s26_exact_optin("S26_WRAPPER_XCB_RETRY_TRANSIENT") &&
++             s26_attempt < 2) {
++            xcb_get_geometry_reply_t *still_window = xcb_get_geometry_reply(
++                  conn, xcb_get_geometry(conn, window), NULL);
++            if (!still_window) {
++               result = VK_ERROR_SURFACE_LOST_KHR;
++               break;
++            }
++            free(still_window);
++            s26_attempt++;
++            fprintf(stderr, "S26_XCB_DRI3_AHB_RETRY attempt=%u image=%u "
++                    "extent=%ux%u\n", s26_attempt, image,
++                    pCreateInfo->imageExtent.width,
++                    pCreateInfo->imageExtent.height);
++            memset(&chain->images[image], 0, sizeof(chain->images[image]));
++            const struct timespec pause = { .tv_sec = 0, .tv_nsec = 2000000 };
++            thrd_sleep(&pause, NULL);
++            continue;
++         }
++#endif
++         break;
++      }
+       if (getenv("S16_WRAPPER_X11_WSI_TRACE")) {
+          fprintf(stderr,"S16_WRAPPER_X11_WSI_IMAGE_INIT_END=%u result:%d\n",image,result);fflush(stderr);
+       }

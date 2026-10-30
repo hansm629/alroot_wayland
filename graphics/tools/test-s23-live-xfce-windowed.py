@@ -100,12 +100,18 @@ def client_command(route, scene, display, auth):
     env['GALLIUM_DRIVER'] = 'zink'
     env['MESA_LOADER_DRIVER_OVERRIDE'] = 'zink'
     env['VK_DRIVER_FILES'] = (
+        str(ROOT / '.source/gpu-stage1/s26-wrapper-resize-retry/runtime/wrapper_icd.private.json')
+        if route == 'wrapper-s26' else
         str(ROOT / '.source/gpu-stage1/s24-wrapper-xcb-resize/runtime/wrapper_icd.private.json')
         if route == 'wrapper-s24' else
         str(ROOT / '.source/gpu-stage1/wrapper-private-runtime/wrapper_icd.private.json')
         if route == 'wrapper-private' else
         str(PREFIX / 'share/vulkan/icd.d/wrapper_icd.aarch64.json')
         if route == 'wrapper' else str(TURNIP))
+    if route == 'wrapper-s26':
+        env['S24_WRAPPER_XCB_AHB_PAD_HEIGHT'] = '1'
+        env['S26_WRAPPER_XCB_RETRY_TRANSIENT'] = '1'
+        env.pop('S26_WRAPPER_TEST_FAIL_PIXMAP_ONCE', None)
     return env, args
 
 
@@ -279,7 +285,7 @@ def test_one(route, scene, pid, display, sampler, resize_own_window=False,
 
 def main():
     parser = argparse.ArgumentParser()
-    parser.add_argument('--route', choices=('wrapper', 'wrapper-private', 'wrapper-s24', 'wrapper-system26',
+    parser.add_argument('--route', choices=('wrapper', 'wrapper-private', 'wrapper-s24', 'wrapper-s26', 'wrapper-system26',
                                             'turnip', 'debian', 'all'), default='all')
     parser.add_argument('--vulkan', action='store_true')
     parser.add_argument('--only-vulkan', action='store_true')

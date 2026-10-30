@@ -700,3 +700,21 @@ windows and now print live progress instead of hiding it in logs. For a
 `bash graphics/tools/test-s24-wrapper-xcb-resize.sh --visual vulkan`
 or `--visual zink`, then bring the **Alroot Wayland Android helper APK**
 foreground. The test window will not appear in Termux-X11 `:0`.
+
+**GPU-S26 Wrapper/XCB manual resizing recovery candidate:** The user
+reported the **GLX client** (`glxgears`) exiting after 44.3 seconds of
+manual window resizing, with `GLXBadCurrentWindow` and `X_GLXSwapBuffers`,
+**not** a contemporaneous Xwayland/XFCE death. A transient failure of the
+private AHB DRI3 pixmap import causes `VK_ERROR_INITIALIZATION_FAILED`,
+Zink Kopper swapchain invalidation, and that same GLX error. S26 implements
+**only** a bounded, opt-in two-retry recovery for BadAlloc/BadMatch while
+the XCB window exists; never swallow unrelated Vulkan errors. An injected
+10th pixmap BadAlloc reproduces the exact GLX error with retry disabled,
+then Zink and `vkcube` survive it with retry enabled. S26U live window
+resizes and logical-pixel checks PASS, but the cause of the *original*
+untraced failure is not yet proven, and repeated human drag remains
+test-pending. No default promotion and no FPS optimization claims.
+See `graphics/docs/gpu-s26-wrapper-xcb-transient-resize-recovery.md` and
+`S26_RESIZE_STRESS=1 bash graphics/tools/test-s26-wrapper-xcb-resize.sh`;
+visual candidate: `bash graphics/tools/test-s26-wrapper-xcb-resize.sh
+--visual zink` (open the Alroot Wayland Android helper app).

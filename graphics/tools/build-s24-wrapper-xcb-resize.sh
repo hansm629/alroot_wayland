@@ -29,6 +29,13 @@ rg -q 'S16_WRAPPER_X11_WSI_AHB_SEND_HANDLE_RC' \
     echo S24_WRAPPER=BLOCKED_PRIVATE_AHB_XCB_SOCKET_WSI_NOT_PREPARED >&2;exit 2;
 }
 
+# S26 has a separate staged binary. Prevent an unsuspecting S24 rebuild
+# from silently publishing the S26 candidate under the older S24 ICD path.
+if rg -q 'S26_XCB_DRI3_AHB_RETRY' "$SRC/src/vulkan/wsi/wsi_common_x11.c"; then
+    echo S24_WRAPPER=BLOCKED_S26_PRIVATE_OVERLAY_ACTIVE_USE_S26_BUILDER >&2
+    exit 2
+fi
+
 mkdir -p "$OUT/runtime" "$OUT/logs"
 installed_before="$(sha256sum "$PREFIX/lib/libvulkan_wrapper.so" | cut -d' ' -f1)"
 
