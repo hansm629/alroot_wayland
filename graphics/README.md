@@ -735,3 +735,19 @@ survived 36s with new private KGSL Xwayland + XFCE READY, CPU affinity
 `0–5` under `/foreground` in fallback. **Not proof of top-app CPU mode**.
 Don't stop a working desktop just for client testing. See
 `graphics/docs/gpu-s27-xfce-launch-recovery.md`.
+
+**GPU-S28 KGSL XCB resize flicker candidate (2026-10-30):** Actual S26U
+XGetImage readback from `vkcube` proves intermittent **black client-window
+pixels during resizing**, with no black samples when stationary. The
+same issue was reproduced with private Wrapper and Turnip, narrowing the
+common culprit to Xwayland rather than one Vulkan ICD. An S28 opt-in
+KGSL-only private Xwayland patch preserves the preceding GPU window
+image and scales it through XRender as the XCB window is resized;
+XComposite shared pixmap changes are also guarded by the Mesa Vulkan
+window marker `_MESA_DRV`. On disposable private Xwayland, 34 resize
+events changed X11 black-pixel sample events from **27 to 0**; under
+separate xfwm4 the same test class changed **21 to 11**. Thus it is
+**improved, not yet a complete xfwm4/Android visual PASS**. Dedicated
+build, source-replay, isolated X11 tests and manual opt-in/rollback:
+`graphics/docs/gpu-s28-kgsl-xcb-resize-flicker.md`. No default change,
+system driver update or automatic XFCE restart.

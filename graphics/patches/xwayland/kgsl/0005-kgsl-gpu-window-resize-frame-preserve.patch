@@ -1,0 +1,219 @@
+--- a/hw/xwayland/xwayland-window.c
++++ b/hw/xwayland/xwayland-window.c
+@@ -36,6 +36,7 @@
+ 
+ #include "compositeext.h"
+ #include "compint.h"
++#include "picturestr.h"
+ #include "inputstr.h"
+ #include "propertyst.h"
+ 
+@@ -1778,6 +1779,76 @@
+     return ret;
+ }
+ 
++#ifdef XWL_HAS_GLAMOR
++static Bool
++s28_is_optin_xcb_gpu_window(WindowPtr window, struct xwl_screen *xwl_screen)
++{
++    const char *opt = getenv("S28_KGSL_RESIZE_PRESERVE");
++    if (!opt || opt[0] != '1' || opt[1] != '\0' ||
++        xwl_screen->rootless || !xwl_screen->glamor ||
++        !xwl_glamor_is_kgsl_surfaceless(xwl_screen) ||
++        window == window->drawable.pScreen->root)
++        return FALSE;
++
++    /* Standard Mesa Vulkan XCB WSI tags its swapchain window. The native
++     * XFCE WM's decorations, redirected desktop and regular GTK widgets
++     * must never acquire an artificial resized content frame. */
++    Atom atom = MakeAtom("_MESA_DRV", 9, FALSE);
++    PropertyPtr prop = NULL;
++    return atom != None &&
++           dixLookupProperty(&prop, window, atom, serverClient,
++                             DixReadAccess) == Success &&
++           prop && prop->format == 8 && prop->size > 0;
++}
++
++static Bool
++s28_scale_picture_pixmap(PixmapPtr old_pix, PixmapPtr new_pix)
++{
++    if (!old_pix || !new_pix || old_pix == new_pix ||
++        old_pix->drawable.depth != new_pix->drawable.depth ||
++        old_pix->drawable.width < 30 || old_pix->drawable.height < 30 ||
++        new_pix->drawable.width < 30 || new_pix->drawable.height < 30 ||
++        old_pix->drawable.width > 1920 || old_pix->drawable.height > 1080 ||
++        new_pix->drawable.width > 1920 || new_pix->drawable.height > 1080)
++        return FALSE;
++    ScreenPtr screen = old_pix->drawable.pScreen;
++    int depth = old_pix->drawable.depth;
++    if (depth != 24 && depth != 32) return FALSE;
++    PictFormatPtr f = PictureMatchFormat(screen, depth,
++                         depth == 32 ? PICT_a8r8g8b8 : PICT_x8r8g8b8);
++    if (!f) return FALSE;
++    int error = 0;
++    PicturePtr src = CreatePicture(0, &old_pix->drawable,
++                                   f, 0, NULL, serverClient, &error);
++    PicturePtr dst = CreatePicture(0, &new_pix->drawable,
++                                   f, 0, NULL, serverClient, &error);
++    Bool copied = FALSE;
++    if (src && dst) {
++        PictTransform xf = {{{
++            pixman_double_to_fixed((double)old_pix->drawable.width /
++                                   new_pix->drawable.width), 0, 0
++        }, {
++            0, pixman_double_to_fixed((double)old_pix->drawable.height /
++                                      new_pix->drawable.height), 0
++        }, {
++            0, 0, pixman_fixed_1
++        }}};
++        if (SetPictureTransform(src, &xf) == Success &&
++            SetPictureFilter(src, "bilinear", 8, NULL, 0) == Success) {
++            ValidatePicture(src);
++            ValidatePicture(dst);
++            CompositePicture(PictOpSrc, src, NULL, dst,
++                             0, 0, 0, 0, 0, 0,
++                             new_pix->drawable.width, new_pix->drawable.height);
++            copied = TRUE;
++        }
++    }
++    if (dst) FreePicture(dst, 0);
++    if (src) FreePicture(src, 0);
++    return copied;
++}
++#endif
++
+ void
+ xwl_window_set_window_pixmap(WindowPtr window,
+                              PixmapPtr pixmap)
+@@ -1795,6 +1866,18 @@
+     xwl_screen->SetWindowPixmap = screen->SetWindowPixmap;
+     screen->SetWindowPixmap = xwl_window_set_window_pixmap;
+ 
++#ifdef XWL_HAS_GLAMOR
++    /* XComposite/xfwm4 can reallocate a SHARED client/frame pixmap BEFORE
++     * the client ResizeWindow hook. Preserve the content here too: copying
++     * only in ResizeWindow is too late, when the original backing pixmap
++     * has already been discarded and can contain black areas. */
++    if (s28_is_optin_xcb_gpu_window(window, xwl_screen) &&
++        old_pixmap && pixmap &&
++        (old_pixmap->drawable.width != pixmap->drawable.width ||
++         old_pixmap->drawable.height != pixmap->drawable.height))
++        (void)s28_scale_picture_pixmap(old_pixmap, pixmap);
++#endif
++
+     if (!RegionNotEmpty(&window->winSize))
+         return;
+ 
+@@ -1916,15 +1999,111 @@
+     ScreenPtr screen = window->drawable.pScreen;
+     struct xwl_screen *xwl_screen;
+     struct xwl_window *xwl_window;
++#ifdef XWL_HAS_GLAMOR
++    PixmapPtr s28_prior_frame = NULL;
++    unsigned int s28_old_width = window->drawable.width;
++    unsigned int s28_old_height = window->drawable.height;
++    Bool s28_preserve = FALSE;
++#endif
+ 
+     xwl_screen = xwl_screen_get(screen);
+     xwl_window = xwl_window_from_window(window);
+-
++#ifdef XWL_HAS_GLAMOR
++    /* S28 private KGSL proof: preserve the last visible GPU contents while
++     * the X server reallocates/clears a resizable XCB Vulkan client's
++     * backing drawable. Without this the newly exposed window is black for
++     * a frame before the app creates/presents its new WSI swapchain.
++     * This is opt-in, GPU-only, and never applies to the screen root. */
++    const char *s28_optin = getenv("S28_KGSL_RESIZE_PRESERVE");
++    s28_preserve = s28_is_optin_xcb_gpu_window(window, xwl_screen) &&
++                   s28_optin && s28_optin[0] == '1' && !s28_optin[1] &&
++                   s28_old_width >= 30 && s28_old_height >= 30 &&
++                   width >= 30 && height >= 30 &&
++                   s28_old_width <= 1920 && s28_old_height <= 1080 &&
++                   width <= 1920 && height <= 1080 &&
++                   (s28_old_width != width || s28_old_height != height);
++    if (s28_preserve) {
++        s28_prior_frame = (*screen->CreatePixmap)(screen, s28_old_width,
++                                                   s28_old_height,
++                                                   window->drawable.depth,
++                                                   CREATE_PIXMAP_USAGE_SCRATCH);
++        if (s28_prior_frame) {
++            GCPtr gc = GetScratchGC(s28_prior_frame->drawable.depth, screen);
++            if (gc) {
++                ValidateGC(&s28_prior_frame->drawable, gc);
++                (void)(*gc->ops->CopyArea)(&window->drawable,
++                                          &s28_prior_frame->drawable, gc,
++                                          0, 0, s28_old_width, s28_old_height,
++                                          0, 0);
++                FreeScratchGC(gc);
++            } else {
++                screen->DestroyPixmap(s28_prior_frame);
++                s28_prior_frame = NULL;
++            }
++        }
++    }
++#endif
+     screen->ResizeWindow = xwl_screen->ResizeWindow;
+     screen->ResizeWindow(window, x, y, width, height, sib);
+     xwl_screen->ResizeWindow = screen->ResizeWindow;
+     screen->ResizeWindow = xwl_resize_window;
+ 
++#ifdef XWL_HAS_GLAMOR
++    if (s28_prior_frame) {
++        Bool s28_scaled = FALSE;
++        int error = 0;
++        PictFormatPtr pformat = PictureMatchFormat(screen,
++            window->drawable.depth,
++            window->drawable.depth == 32 ? PICT_a8r8g8b8 : PICT_x8r8g8b8);
++        if (pformat) {
++            PicturePtr src = CreatePicture(0, &s28_prior_frame->drawable,
++                                            pformat, 0, NULL, serverClient, &error);
++            PicturePtr dst = CreatePicture(0, &window->drawable,
++                                            pformat, 0, NULL, serverClient, &error);
++            if (src && dst) {
++                PictTransform xf = {{{
++                    pixman_double_to_fixed((double)s28_old_width / width), 0, 0
++                }, {
++                    0, pixman_double_to_fixed((double)s28_old_height / height), 0
++                }, {
++                    0, 0, pixman_fixed_1
++                }}};
++                if (SetPictureTransform(src, &xf) == Success &&
++                    SetPictureFilter(src, "bilinear", 8, NULL, 0) == Success) {
++                    ValidatePicture(src);
++                    ValidatePicture(dst);
++                    CompositePicture(PictOpSrc, src, NULL, dst,
++                                     0, 0, 0, 0, 0, 0, width, height);
++                    s28_scaled = TRUE;
++                }
++            }
++            if (dst) FreePicture(dst, 0);
++            if (src) FreePicture(src, 0);
++        }
++        if (!s28_scaled) {
++            /* Keep the all-GPU fallback if Render Picture allocation or
++             * scaling isn't advertised by this private Xwayland. */
++            GCPtr gc = GetScratchGC(window->drawable.depth, screen);
++            if (gc) {
++                ValidateGC(&window->drawable, gc);
++                for (unsigned int yy = 0; yy < height; yy += s28_old_height) {
++                    for (unsigned int xx = 0; xx < width; xx += s28_old_width) {
++                        unsigned int w = width - xx;
++                        unsigned int h = height - yy;
++                        if (w > s28_old_width) w = s28_old_width;
++                        if (h > s28_old_height) h = s28_old_height;
++                        (void)(*gc->ops->CopyArea)(&s28_prior_frame->drawable,
++                                                  &window->drawable, gc,
++                                                  0, 0, w, h, xx, yy);
++                    }
++                }
++                FreeScratchGC(gc);
++            }
++        }
++        screen->DestroyPixmap(s28_prior_frame);
++    }
++#endif
++
+     if (xwl_window) {
+         if (xwl_window_get(window) || xwl_window_is_toplevel(window))
+             xwl_window_check_resolution_change_emulation(xwl_window);

@@ -125,6 +125,35 @@ for the tested **Bionic 96-byte pthread vs Debian glibc 4-byte futex**
 Xshmfence incompatibility. The shim is only preloaded into the explicitly
 selected private KGSL Xwayland; it does not replace any system library.
 
+### S28 private resize-frame preservation (S26U, candidate only)
+
+`kgsl/0005-kgsl-gpu-window-resize-frame-preserve.patch` is **not** applied
+by the ordinary `build-xwayland-private.sh`. On the pinned KGSL private
+source it adds explicit `S28_KGSL_RESIZE_PRESERVE=1` handling for
+_Mesa Vulkan XCB WSI-tagged_ resizable windows only. X11 `vkcube`
+black-frame flicker during resizing was observed in both Vulkan Wrapper
+and Turnip; the existing GPU framebuffer is captured to a private pixmap
+before reallocating the X window, then scaled back to the new window
+through GLAMOR/XRender to reduce the black gap before new Vulkan Present.
+
+S28 is built into a **separate private Xwayland binary** rather than
+overwriting the running S16/S27 build. The regular builder refuses to
+rebuild the original binary while S28 source is active. The independent
+S28 test uses only disposable rootful Xwayland `:201..:240`.
+
+```sh
+bash graphics/tools/build-s28-kgsl-resize-preserve.sh
+bash graphics/tools/test-s28-build-and-scope.sh
+python3 graphics/tools/test-s28-kgsl-resize-preserve.py --wm
+```
+
+The private `start-s28-kgsl-resize-preserve.sh --restart` command performs
+an **explicit** user-initiated XFCE restart, and `--restore` returns to
+the original private Xwayland. Real-world flicker with XFWM4 and the
+Android screen is still **USER_VISUAL_TEST_REQUIRED**, as isolated XFWM4
+sampling showed improvement but **not zero black events**. See
+`graphics/docs/gpu-s28-kgsl-xcb-resize-flicker.md`.
+
 `S17_MATRIX_MODE=smoke bash graphics/tools/test-s17-zink-matrix.sh` checks
 Termux wrapper + Zink, Termux Turnip + Zink and Debian Turnip + Zink on
 isolated Xwayland, validating runtime execution, AHB/ABI branch, X11

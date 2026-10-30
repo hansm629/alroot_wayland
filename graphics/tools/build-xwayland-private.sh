@@ -52,6 +52,12 @@ done
 if [[ "${ALROOT_XWAYLAND_VARIANT:-generic}" == kgsl ]]; then
     # Optional Adreno adaptation. Never the default for Mali/PowerVR/Xclipse.
     for private in "$ROOT/graphics/patches/xwayland/kgsl"/000*.patch; do
+        # The S28 GPU resize-preservation experiment is separately linked,
+        # never part of the existing opt-in KGSL server build.
+        if [[ "$private" == *"0005-kgsl-gpu-window-resize-frame-preserve.patch" ]]; then
+            echo 'S28 GPU resize-preserve is a separate opt-in candidate.'
+            continue
+        fi
         # The private wrapper AHB import adapter is a zero-context patch
         # to preserve Git whitespace checks. Do not reapply its insertions
         # when rebuilding an already-patched Xwayland source.
@@ -70,6 +76,11 @@ if [[ "${ALROOT_XWAYLAND_VARIANT:-generic}" == kgsl ]]; then
             exit 2
         fi
     done
+fi
+if [[ "${ALROOT_XWAYLAND_VARIANT:-generic}" == kgsl ]] &&
+   grep -Fq 'S28_KGSL_RESIZE_PRESERVE' "$WORK/source/hw/xwayland/xwayland-window.c"; then
+    echo 'BLOCKED: S28 source overlay active; use build-s28-kgsl-resize-preserve.sh to avoid overwriting the S16/S27 binary.' >&2
+    exit 2
 fi
 export CFLAGS='-fcommon -fPIC -DFNDELAY=O_NDELAY -Wno-int-to-pointer-cast -Wno-implicit-function-declaration'
 export CPPFLAGS="-I$PREFIX/include/libdrm"
