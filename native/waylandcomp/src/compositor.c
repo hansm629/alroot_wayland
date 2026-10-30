@@ -37,6 +37,7 @@
 #include "alroot_color.h"
 #include "compositor_internal.h"
 #include "xdg_geometry_policy.h"
+#include "alroot_release_pacing.h"
 
 #define WLOGI(...) __android_log_print(ANDROID_LOG_INFO, "AlrootWayland", __VA_ARGS__)
 #define WLOGE(...) __android_log_print(ANDROID_LOG_ERROR, "AlrootWayland", __VA_ARGS__)
@@ -312,6 +313,7 @@ static struct {
     int64_t scene_ns, scene_max_ns;
     unsigned copy_scenes;
     unsigned releases, releases_held;
+    unsigned auto_release_capped, release_max_pending;
     int64_t release_ns, release_max_ns;
 } g_perf;
 
@@ -385,13 +387,21 @@ static int on_release_timer(int fd, uint32_t mask, void *data) {
 
 static void release_buffer(struct surface *s, struct wl_resource *buffer, int64_t since_ns) {
     const int limit = g_fps_limit;
-    const int64_t interval = limit > 0 ? 1000000000LL / limit : g_refresh_ns;
+    /* Automatic desktop pacing follows the advertised physical display
+     * rate. Measuring a heavily loaded compositor's event-loop wakeups
+     * instead can turn scheduling jitter into a fake display interval.
+     * Explicit user FPS caps retain their existing semantics. */
+    const int mhz = atomic_load(&g_output_refresh_mhz);
+    const int64_t display_interval = mhz >= 30000 && mhz <= 240000
+        ? 1000000000000LL / (int64_t)mhz : g_refresh_ns;
+    const int64_t interval = limit > 0 ? 1000000000LL / limit : display_interval;
     if (g_release_unpaced || interval <= 0 || g_release_timer_fd < 0) { wl_buffer_send_release(buffer); perf_note_release(since_ns); return; }
     int64_t now = now_ns();
-    int64_t at = s->next_release_ns + interval;
-    int64_t latest = now + interval * (int64_t)(s->releases_pending + 1);
-    if (at < now) at = now;
-    if (at > latest) at = latest;
+    int capped = 0;
+    const int64_t at = alroot_release_deadline_ns(now, s->next_release_ns,
+                            interval, (unsigned)s->releases_pending,
+                            limit == 0, &capped);
+    if (capped && limit == 0) g_perf.auto_release_capped++;
     s->next_release_ns = at;
     struct pending_release *pr = calloc(1, sizeof(*pr));
     if (!pr) { wl_buffer_send_release(buffer); perf_note_release(since_ns); return; }
@@ -403,6 +413,8 @@ static void release_buffer(struct surface *s, struct wl_resource *buffer, int64_
     wl_resource_add_destroy_listener(buffer, &pr->destroy);
     wl_list_insert(g_pending_releases.prev, &pr->link);
     s->releases_pending++;
+    if ((unsigned)s->releases_pending > g_perf.release_max_pending)
+        g_perf.release_max_pending = (unsigned)s->releases_pending;
     arm_release_timer();
 }
 
@@ -3601,7 +3613,8 @@ static int on_stats_timer(void *data) {
             alroot_log("perf", "last 10 s: %u ticks, %u scenes, %u on screen (copy %u, zero-copy %u, layer copy %u) | "
                        "render_scene %.2f/%.2f ms | base %u black kept, %u presented | acquire %.2f/%.2f ms | "
                        "present %.2f/%.2f ms (%u) | fence wait %.2f/%.2f ms (%u, %u GPU release waits) | "
-                       "release %.2f/%.2f ms (%u, %u held) | %u pool drops",
+                       "release %.2f/%.2f ms (%u, %u held) | %u pool drops | "
+                       "auto release caps %u, peak pending %u",
                        g_perf.ticks, g_perf.scenes, g_stat_frames, g_perf.copy_scenes, zero_copy, layer_frames,
                        PERF_MS(g_perf.scene_ns, g_perf.scenes), (double)g_perf.scene_max_ns / 1e6,
                        vp.base_kept, vp.base_presents,
@@ -3609,7 +3622,8 @@ static int on_stats_timer(void *data) {
                        PERF_MS(vp.present_ns, vp.presents), (double)vp.present_max_ns / 1e6, vp.presents,
                        PERF_MS(vp.wait_ns, vp.waits), (double)vp.wait_max_ns / 1e6, vp.waits, vp.gpu_release_waits,
                        PERF_MS(g_perf.release_ns, g_perf.releases), (double)g_perf.release_max_ns / 1e6,
-                       g_perf.releases, g_perf.releases_held, drops);
+                       g_perf.releases, g_perf.releases_held, drops,
+                       g_perf.auto_release_capped, g_perf.release_max_pending);
 #undef PERF_MS
         memset(&g_perf, 0, sizeof(g_perf));
     }

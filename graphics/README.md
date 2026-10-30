@@ -667,6 +667,23 @@ the private ICD and the XCB WSI. See
 **Do not promote awstart yet** without the user's physical display visual
 acceptance and device-vendor capability gates.
 
+**GPU-S25 host pacing / Zink session stability candidate (2026-10-30):**
+During real user visual testing of the S24 Wrapper, `vkcube`/Zink
+`glxgears` rotation was intermittently uneven, and the Xwayland/XFCE
+process group went DOWN while the Android Wayland host remained READY.
+Android host logs before the Xwayland disconnect showed **389.06/988.73 ms
+average/peak `wl_buffer.release` delay** while 1303 game GPU frames arrived
+and 1132 scenes were displayed per ten seconds on a 120 Hz panel. Host
+source inspection found an automatically paced release queue with a deadline
+that grew with pending buffers and per-import 1080p DMA-BUF GPU-copy log
+spam. A candidate fix bounds **automatic** release deadlines to one physical
+display interval, retains explicit FPS-limit and GPU-fence behavior, and
+throttles duplicate GPU-copy logging. Native C, modeled 130/120 and 150/60
+FPS release tests, and S20–S22 cursor regression tests PASS. **The fix is
+not yet validated on the user's physical Android screen**, and the exact
+Xwayland death mechanism remains uncertain. Full diagnostics and A/B gates:
+`graphics/docs/gpu-s25-host-release-pacing.md`.
+
 **S24 visual-test note:** The Termux shell defaults to `DISPLAY=:0` but
 Alroot Wayland helper XFCE uses a private display such as `:94`. Automated
 `test-s24-wrapper-xcb-resize.sh` cases intentionally close their own demo

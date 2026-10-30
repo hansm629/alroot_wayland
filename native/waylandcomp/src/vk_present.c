@@ -1126,8 +1126,26 @@ static struct vkp_image *linear_vkbuffer_import(int fd, uint32_t drm_format,
     /* The VkImage is ours; no foreign-image ownership barrier is valid. */
     img->dmabuf = 0;
     img->in_general = 0;
-    alroot_log("gpu", "LINEAR DMA-BUF -> Vulkan VkBuffer GPU-copy: %dx%d, pitch %u, fd %lld B; "
-               "no CPU pixels, VkImage import not used", w, h, stride, (long long)st.st_size);
+    /* At 120 Hz Xwayland exports a fresh 1080p DMA-BUF on almost every
+     * frame. Sending this same diagnostic to Android logcat AND the session
+     * file on every import incurs thousands of synchronous format/log calls.
+     * Keep the first/changed-size record and a 30-second heartbeat instead.
+     * No GPU allocation, fence, transfer, or release semantics are changed.
+     */
+    static int logged_w, logged_h;
+    static uint32_t logged_stride;
+    static int64_t last_log_ns;
+    const int64_t log_now = perf_now();
+    if (w != logged_w || h != logged_h || stride != logged_stride ||
+        log_now < last_log_ns || log_now - last_log_ns >= 30000000000LL) {
+        logged_w = w;
+        logged_h = h;
+        logged_stride = stride;
+        last_log_ns = log_now;
+        alroot_log("gpu", "LINEAR DMA-BUF -> Vulkan VkBuffer GPU-copy: %dx%d, pitch %u, fd %lld B; "
+                   "no CPU pixels, VkImage import not used", w, h, stride,
+                   (long long)st.st_size);
+    }
     return img;
 fail:
     if (img->image) g_vk.DestroyImage(g_dev, img->image, NULL);
