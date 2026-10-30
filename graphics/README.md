@@ -585,3 +585,12 @@ Vulkan output transform. Requires the updated Android host APK for the
 pointer change; KGSL Xwayland alone is rebuilt locally. Real visual UX
 regression pass still requires the user to inspect XFCE title buttons,
 text and moving/scrolling windows.
+
+**GPU-S1.6.3: 1920×1080 desktop right-half text corruption root-caused.**
+The private KGSL GLAMOR uses GLES fragment `mediump` 10-bit texcoords.
+Reproduced 0 wrong left / **28,672 wrong right** XRender pixels; the private
+KGSL-only `highp` precision patch gives **0/0** wrong with identical code
+otherwise. `bash graphics/tools/test-s16-kgsl-highp.sh` reproduces the
+Adreno GPU and real Xwayland XRender A/B and confirms Android host DMA-BUF
+VkBuffer GPU-copy. See `graphics/docs/gpu-s16-glamor-right-half-highp.md`.
+An on-device XFCE restart/visual comparison remains the last acceptance gate.

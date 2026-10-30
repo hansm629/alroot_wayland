@@ -137,6 +137,25 @@ static int s16_gpu_copy_probe(int fd,const struct header*h){
  void *mapped=NULL;r=MapMemory_fn(dev,backMem,0,VK_WHOLE_SIZE,0,&mapped);if(r)goto finish;
  VkMappedMemoryRange mr={.sType=VK_STRUCTURE_TYPE_MAPPED_MEMORY_RANGE,.memory=backMem,.offset=0,.size=VK_WHOLE_SIZE};
  InvalidateMappedMemoryRanges_fn(dev,1,&mr);
+ if(getenv("S16_GRADIENT_TEST")){
+  unsigned long long bad0=0,bad1=0,checked=0;
+  const unsigned char *pixel=(const unsigned char*)mapped;
+  for(unsigned yy=0;yy<h->height;yy++)for(unsigned xx=0;xx<h->width;xx++){
+   const unsigned char *p=pixel+((size_t)yy*h->width+xx)*4;
+   int r0=xx%251,g0=yy%241,b0=(3*xx+5*yy)%251;
+   unsigned y1=h->height-1-yy;
+   int r1=r0,g1=y1%241,b1=(3*xx+5*y1)%251;
+   int d0=abs((int)p[0]-r0)+abs((int)p[1]-g0)+abs((int)p[2]-b0)+abs((int)p[3]-255);
+   int d1=abs((int)p[0]-r1)+abs((int)p[1]-g1)+abs((int)p[2]-b1)+abs((int)p[3]-255);
+   if(d0>5)bad0++;
+   if(d1>5)bad1++;
+   checked++;
+  }
+  printf("S16_SPATIAL_GRADIENT_GPU_COPY=checked:%llu top_mismatch:%llu bottom_mismatch:%llu\n",checked,bad0,bad1);
+  result=(bad0==0)?0:-1; /* Orientation is intentionally not silently flipped. */
+  UnmapMemory_fn(dev,backMem);
+  goto finish;
+ }
  int matched=0;unsigned x[5]={8u,h->width/2u,h->width-8u,h->width/3u,h->width/2u};unsigned y[5]={8u,h->height/2u,h->height-8u,h->height/3u,h->height-8u};
  for(int i=0;i<5;i++){
   const unsigned char *pixel=(const unsigned char*)mapped+((size_t)y[i]*h->width+x[i])*4u;

@@ -20,7 +20,12 @@ HOME = pathlib.Path('/data/data/com.termux/files/home')
 PREFIX = pathlib.Path(os.environ.get('PREFIX', '/data/data/com.termux/files/usr'))
 PROJECT = HOME / 'alroot_wayland'
 RUNTIME = HOME / '.alroot-wayland/runtime'
-BINARY = PROJECT / '.source/gpu-stage1/xwayland-kgsl/build/hw/xwayland/Xwayland'
+BINARY = pathlib.Path(os.environ.get('S16_PRIVATE_TEST_XWAYLAND_BINARY',
+    str(PROJECT / '.source/gpu-stage1/xwayland-kgsl/build/hw/xwayland/Xwayland'))).resolve()
+# Only a local, private diagnostic binary under this project may be selected;
+# never accidentally launch the installed global Termux Xwayland.
+if PROJECT.resolve() not in BINARY.parents:
+    raise SystemExit('S16_PRIVATE_XWAYLAND_BINARY=UNSAFE_OUTSIDE_PROJECT')
 LOG_DIR = PROJECT / '.source/gpu-stage27-pr25/s16-xwayland-gpu'
 
 
@@ -73,9 +78,16 @@ def main():
         client_env.update(DISPLAY=disp, XAUTHORITY=str(auth),
                           MESA_LOADER_DRIVER_OVERRIDE='kgsl',
                           GALLIUM_DRIVER='freedreno', FD_KGSL_ENABLE_DMABUF='1')
-        args = [str(BINARY), disp, '-geometry', '640x360', '-dpi', '96',
+        # S1.6.3: opt-in wide diagnostic exercises the real 1920-pixel
+        # GLAMOR fragment-shader precision boundary. Never resize live :90.
+        geometry = os.environ.get('S16_TEST_GEOMETRY', '640x360')
+        if geometry not in ('640x360', '1920x1080'):
+            raise ValueError('S16_TEST_GEOMETRY must be 640x360 or 1920x1080')
+        args = [str(BINARY), disp, '-geometry', geometry, '-dpi', '96',
                 '-auth', str(auth), '-nolisten', 'tcp', '-glamor', 'es', '-verbose', '2']
+        print(f'S16_PRIVATE_XWAYLAND_BINARY={BINARY}', flush=True)
         print(f'S16_ISOLATED_ROOTFUL_X_DISPLAY={disp}', flush=True)
+        print(f'S16_ISOLATED_ROOTFUL_GEOMETRY={geometry}', flush=True)
         print('S16_ROOTFUL_INVOCATION=NO_LISTENFD', flush=True)
         print(f'S16_ROOTFUL_XWAYLAND_LOG={log}', flush=True)
         # Do not clear the Android logcat ring. Capture a baseline and
@@ -144,6 +156,19 @@ def main():
             print(f'S16_ROOTFUL_GLX_RENDERER={renderer}', flush=True)
             if info.returncode != 0 or 'Adreno (TM) 840' not in renderer:
                 return 6
+            if os.environ.get('S16_XRENDER_WIDE_TEST') == '1':
+                proof = LOG_DIR / 'precision-half/s16-glamor-xrender-wide'
+                if not proof.is_file():
+                    print('S16_XRENDER_WIDE=BLOCKED_MISSING_BINARY', flush=True)
+                    return 7
+                xrender = subprocess.run([str(proof)], env=client_env,
+                                         capture_output=True, text=True, timeout=9)
+                print(f'S16_XRENDER_WIDE_RC={xrender.returncode}', flush=True)
+                for line in (xrender.stdout + xrender.stderr).splitlines():
+                    if line.startswith('S16_'):
+                        print(line, flush=True)
+                if xrender.returncode != 0:
+                    return 7
             try:
                 subprocess.run(['timeout', '3s', 'glxgears', '-info'],
                                env=client_env, capture_output=True,

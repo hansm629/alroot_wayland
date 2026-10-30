@@ -65,7 +65,35 @@ int main(void){
  glGenFramebuffers(1,&fbo);glBindFramebuffer(GL_FRAMEBUFFER,fbo);
  glFramebufferTexture2D(GL_FRAMEBUFFER,GL_COLOR_ATTACHMENT0,GL_TEXTURE_2D,tex,0);
  if(glCheckFramebufferStatus(GL_FRAMEBUFFER)!=GL_FRAMEBUFFER_COMPLETE){puts("S16_KGSL_FBO=FAIL");return 4;}
- glClearColor(.1f,.7f,.9f,1.f);glClear(GL_COLOR_BUFFER_BIT);glFinish();
+ if(getenv("S16_GRADIENT_TEST")) {
+  /* A solid-color surface cannot detect row/tile swizzle corruption.
+   * Draw a high-frequency coordinate-dependent RGB pattern with GPU GL.
+   * The Vulkan consumer must recover each logical pixel unchanged. */
+  const char *vs="attribute vec2 position;void main(){gl_Position=vec4(position,0.0,1.0);}";
+  const char *fs="precision highp float;void main(){vec2 p=floor(gl_FragCoord.xy);gl_FragColor=vec4(mod(p.x,251.0)/255.0,mod(p.y,241.0)/255.0,mod(3.0*p.x+5.0*p.y,251.0)/255.0,1.0);}";
+  GLuint shv=glCreateShader(GL_VERTEX_SHADER),shf=glCreateShader(GL_FRAGMENT_SHADER);
+  glShaderSource(shv,1,&vs,NULL);glCompileShader(shv);
+  glShaderSource(shf,1,&fs,NULL);glCompileShader(shf);
+  GLint v_ok=0,f_ok=0;
+  glGetShaderiv(shv,GL_COMPILE_STATUS,&v_ok);glGetShaderiv(shf,GL_COMPILE_STATUS,&f_ok);
+  if(!v_ok||!f_ok){puts("S16_SPATIAL_GLSL_COMPILE=FAIL");return 9;}
+  GLuint program=glCreateProgram();glAttachShader(program,shv);glAttachShader(program,shf);glLinkProgram(program);
+  GLint linked=0;glGetProgramiv(program,GL_LINK_STATUS,&linked);
+  if(!linked){puts("S16_SPATIAL_GLSL_LINK=FAIL");return 9;}
+  glUseProgram(program);
+  glViewport(0,0,w,h);
+  static const GLfloat vertices[]={-1.f,-1.f,1.f,-1.f,-1.f,1.f,1.f,1.f};
+  GLint attr=glGetAttribLocation(program,"position");
+  glVertexAttribPointer((GLuint)attr,2,GL_FLOAT,GL_FALSE,0,vertices);
+  glEnableVertexAttribArray((GLuint)attr);
+  glDrawArrays(GL_TRIANGLE_STRIP,0,4);
+  glFinish();
+  printf("S16_SPATIAL_GL_DRAW_ERROR=0x%x\n",glGetError());
+ } else {
+  glClearColor(.1f,.7f,.9f,1.f);
+  glClear(GL_COLOR_BUFFER_BIT);
+  glFinish();
+ }
  EGLint ia[]={EGL_GL_TEXTURE_LEVEL_KHR,0,EGL_IMAGE_PRESERVED_KHR,EGL_TRUE,EGL_NONE};
  EGLImageKHR image=create(d,ctx,EGL_GL_TEXTURE_2D_KHR,(EGLClientBuffer)(uintptr_t)tex,ia);
  if(image==EGL_NO_IMAGE_KHR){printf("S16_KGSL_EGL_IMAGE=FAIL 0x%x\n",eglGetError());return 4;}

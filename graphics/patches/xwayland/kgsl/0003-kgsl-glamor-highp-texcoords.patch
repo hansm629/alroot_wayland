@@ -1,0 +1,6 @@
+diff --git a/glamor/glamor_priv.h b/glamor/glamor_priv.h
+--- a/glamor/glamor_priv.h
++++ b/glamor/glamor_priv.h
+@@ -49 +49 @@
+-    "precision mediump float;\n"  \
++    "precision highp float;\n"   \

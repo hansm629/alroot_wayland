@@ -244,3 +244,21 @@ transition, the ordinary touchpad `sendButton()` now reanchors the actual
 Wayland pointer to the displayed `lastX,lastY` **immediately before** the
 button press. Hardware mouse clicks retain their own event coordinates and
 are excluded from that touchpad-specific reanchoring.
+
+## Later confirmed GPU corruption root cause — S1.6.3 (2026-10-30)
+
+**Supersedes the earlier tentative attribution of right-half text corruption to
+sync-file timing, DMA-BUF tiling or partial damage.** User isolated the damage
+to **only the right half** of the 1920×1080 GLAMOR desktop. The real
+`GLAMOR_DEFAULT_PRECISION` in private Xwayland 24.1.14 is `mediump float`.
+On S26U, mediump normalized texcoords lose one-pixel sampling accuracy above
+x≈960. *Same-phone, identical XRender pipeline, only one-line shader change:*
+mediump **left 0 errors/right 28,672 errors**, first bad pixel x=961;
+highp **left 0/right 0** over a 1920×64 live GLAMOR test image. Independent
+EGL→DMA-BUF→Android Vulkan spatial gradient: **1920×1080, 0 wrong pixels**.
+This is the verified screen-half-specific root cause, distinct from mouse
+drift. The private KGSL-only `0003-kgsl-glamor-highp-texcoords.patch` changes
+precision to highp (Adreno confirms 23-bit fragment precision). No Android
+APK change is required for this shader fix; restart the private Xwayland when
+the user is ready. See `graphics/docs/gpu-s16-glamor-right-half-highp.md`
+for real GPU and XRender A/B evidence and repeatable tests.
