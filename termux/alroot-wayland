@@ -192,7 +192,7 @@ xfce_start() {
         # descendants without signalling any pre-existing desktop session.
         exec setsid dbus-run-session -- "$PREFIX/bin/bash" \
             "$HOME/alroot_wayland/termux/alroot-xfce-session.sh"
-    ) > "$LOGS/xfce.log" 2>&1 &
+    ) > "$LOGS/xfce.log" 2>&1 8>&- &
     record_pid xfce "$!"
 }
 
@@ -205,7 +205,7 @@ clipboard_start() {
         export HOME PREFIX PATH="$PREFIX/bin:$PREFIX/bin/applets"
         export XDG_RUNTIME_DIR="$RUNTIME"
         exec "$PREFIX/bin/bash" "$HOME/alroot_wayland/termux/clipboard-broker.sh" "$STATE" "$1"
-    ) > "$LOGS/clipboard.log" 2>&1 &
+    ) > "$LOGS/clipboard.log" 2>&1 8>&- &
     record_pid clipboard "$!"
 }
 
@@ -223,7 +223,7 @@ ime_start() {
             export ALROOT_FCITX_BRIDGE_SOCKET="$STATE/ipc/ime-fcitx.sock"
         fi
         exec "$binary" "$STATE/ipc/ime.sock"
-    ) > "$LOGS/ime-server.log" 2>&1 &
+    ) > "$LOGS/ime-server.log" 2>&1 8>&- &
     record_pid ime "$!"
 }
 
@@ -299,11 +299,11 @@ start_xwayland() {
             S16_XSHMFENCE_TRACE="${S16_XSHMFENCE_TRACE:-1}" \
             "$xwayland_binary" ":$n" "${xwayland_gpu_args[@]}" -geometry "${guest_w}x${guest_h}" -dpi 96 \
             -auth "$XAUTHORITY" -nolisten tcp \
-            > "$LOGS/xwayland.log" 2>&1 &
+            > "$LOGS/xwayland.log" 2>&1 8>&- &
     else
         "$xwayland_binary" ":$n" "${xwayland_gpu_args[@]}" -geometry "${guest_w}x${guest_h}" -dpi 96 \
             -auth "$XAUTHORITY" -nolisten tcp \
-            > "$LOGS/xwayland.log" 2>&1 &
+            > "$LOGS/xwayland.log" 2>&1 8>&- &
     fi
     record_pid xwayland "$!"
     local i
@@ -333,8 +333,14 @@ start_session() {
     [[ "$profile" == xfce-labwc || "$profile" == xfce-shm-direct ]] || {
         echo "Unsupported profile: $profile" >&2; return 2;
     }
+    # S1.7: this lock is startup-only. Before the fix, background Xwayland,
+    # the clipboard broker and the IME process INHERITED fd 8 across exec.
+    # If a deadlocked X server survived --stop, it kept the flock on this
+    # inode for hours and blocked all new sessions with a black helper view.
+    # Every long-running child closes fd 8 at spawn; the parent retains it
+    # only while installing one startup state and explicitly unlocks below.
     exec 8>"$STATE/start.lock"
-    flock -n 8 || { echo 'another Alroot startup is active' >&2; return 1; }
+    flock -n 8 || { echo 'another Alroot startup is active' >&2; exec 8>&-; return 1; }
     if alive xwayland || alive xfce || alive labwc || alive clipboard || alive ime; then
         echo 'Existing Alroot session found; run status or stop first' >&2; return 1
     fi
@@ -377,7 +383,7 @@ start_session() {
             fi
             unset DISPLAY DBUS_SESSION_BUS_ADDRESS
             exec labwc -C "$STATE/labwc-config"
-        ) > "$LOGS/labwc.log" 2>&1 &
+        ) > "$LOGS/labwc.log" 2>&1 8>&- &
         record_pid labwc "$!"
         if ! parent="$(wait_nested_socket)"; then
             echo 'BLOCKED: Labwc Wayland backend did not start (nested socket missing)' >&2
@@ -465,6 +471,10 @@ start_session() {
             echo 'WARNING: XRandR refresh sync failed; see refresh.log' >&2
     fi
     echo "Alroot $profile started on $(cat "$STATE/display")"
+    # A successful startup must NEVER retain the flock in child processes.
+    # In particular, a subsequently hung Xwayland must not block recovery.
+    flock -u 8
+    exec 8>&-
     trap - EXIT
 }
 

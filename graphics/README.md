@@ -605,3 +605,15 @@ Debian Turnip+Zink. Existing live `:92` must be restarted with
 changed executable cannot unblock a previously deadlocked process. No
 universal awstart default promotion yet; see
 `graphics/docs/gpu-s17-zink-three-backend.md`.
+
+**GPU-S1.7 startup-lock black-screen recovery (S26U):** after a prior
+unresponsive `:92` Xwayland, background children inherited the
+`$STATE/start.lock` descriptor and blocked every subsequent `awstart`
+startup. This is a **launcher FD lifetime bug**, not Vulkan GPU-copy.
+The launcher now closes fd 8 for every long-running child and releases its
+startup flock explicitly; `awstart --restart` refuses to terminate its
+own calling XFCE terminal. The project-only deadlocked orphan processes
+were verified and cleaned, and the recovered S26U `:92` reached XFCE READY
+with fresh Android GPU-copy and non-black frame logs. Repeatable read-only
+check: `bash graphics/tools/test-s17-start-lock-lifetime.sh`. See
+`graphics/docs/gpu-s17-black-screen-start-lock-recovery.md`.

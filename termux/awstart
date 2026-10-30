@@ -181,6 +181,15 @@ case "$action" in
         msg 'Helper Activity open requested; this does not prove XFCE pixels.'
         exit 0 ;;
     restart)
+        # A restart launched *inside its own XFCE4 terminal* would signal
+        # the caller's session group during --stop and never reach --start.
+        # Guard only this project's XFCE profile, not independent Termux
+        # shells which may legitimately have a DISPLAY set for diagnostics.
+        if (( !dry_run )) && [[ "${XDG_CONFIG_HOME:-}" == "$STATE/xfce-config" ]] &&
+           [[ -n "${DISPLAY:-}" ]] && [[ -r "$STATE/display" ]] &&
+           [[ "${DISPLAY%%.*}" == "$(cat "$STATE/display")" ]];then
+            die 'Cannot restart from inside the Alroot XFCE session being stopped. Run awstart --restart from a separate native Termux shell.'
+        fi
         ((dry_run)) || "$CLI" stop ;;
     start) ;;
 esac
