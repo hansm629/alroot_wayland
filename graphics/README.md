@@ -684,6 +684,14 @@ not yet validated on the user's physical Android screen**, and the exact
 Xwayland death mechanism remains uncertain. Full diagnostics and A/B gates:
 `graphics/docs/gpu-s25-host-release-pacing.md`.
 
+**S25 foreground CPU test is opt-in:** `awstart --direct --topapp` alone
+does not transfer private GPU env from Termux into the Android helper's
+sanitized ProcessBuilder. After the S25 signed candidate is installed and
+the prior XFCE session has been stopped from native Termux, use
+`bash termux/start-s25-kgsl-topapp.sh` for the **S26U-only, one-shot**
+private KGSL top-app launch; it checks the selected Xwayland binary and
+reports actual CPU affinity. Does not change default awstart settings.
+
 **S24 visual-test note:** The Termux shell defaults to `DISPLAY=:0` but
 Alroot Wayland helper XFCE uses a private display such as `:94`. Automated
 `test-s24-wrapper-xcb-resize.sh` cases intentionally close their own demo

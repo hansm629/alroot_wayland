@@ -344,6 +344,51 @@ start_session() {
     if alive xwayland || alive xfce || alive labwc || alive clipboard || alive ime; then
         echo 'Existing Alroot session found; run status or stop first' >&2; return 1
     fi
+    # S25 S26U-only experimental CPU-scheduling/renderer A/B:
+    # The helper Activity clears caller environment variables before
+    # starting the Termux session. Consume a trusted, one-shot private
+    # marker to carry *only* our hard-coded, prevalidated KGSL Xwayland
+    # profile across the foreground Activity process boundary. Never
+    # enable a GPU backend from the ordinary/default awstart invocation.
+    local s25_marker="$STATE/control/s25-kgsl-topapp-once" s25_mode="" s25_age=0
+    if [[ -e "$s25_marker" || -L "$s25_marker" ]]; then
+        if [[ "$profile" != xfce-shm-direct || -L "$s25_marker" ||
+              ! -f "$s25_marker" ||
+              "$(stat -c '%u:%a' "$s25_marker" 2>/dev/null)" != "$(id -u):600" ||
+              "$(/system/bin/getprop ro.product.model)" != SM-S948* ]]; then
+            echo 'S25 KGSL top-app marker rejected: wrong profile/device or unsafe file' >&2
+            return 1
+        fi
+        IFS= read -r s25_mode < "$s25_marker" || true
+        s25_age=$(( $(date +%s) - $(stat -c %Y "$s25_marker") ))
+        if [[ "$s25_mode" != S25_KGSL_TOPAPP_ONCE ||
+              "$s25_age" -lt 0 || "$s25_age" -gt 90 ]]; then
+            echo 'S25 KGSL top-app marker invalid/expired; refusing fallback' >&2
+            return 1
+        fi
+        local s25_xwayland="$HOME/alroot_wayland/.source/gpu-stage1/xwayland-kgsl/build/hw/xwayland/Xwayland"
+        local s25_dualabi="$HOME/alroot_wayland/.source/gpu-stage27-pr25/s16-xwayland-gpu/xshmfence/libalroot_xshmfence_dualabi.so"
+        if [[ ! -x "$s25_xwayland" || ! -s "$s25_dualabi" ]]; then
+            echo 'S25 KGSL top-app marker missing private GPU binaries; refusing fallback' >&2
+            return 1
+        fi
+        # Already started from a launcher that supplied a different backend?
+        # Do not overwrite its environment or silently change the renderer.
+        if [[ -n "${ALROOT_XWAYLAND_BINARY:-}" ||
+              -n "${ALROOT_XWAYLAND_GLAMOR:-}" ]]; then
+            echo 'S25 KGSL top-app marker conflicts with custom GPU environment' >&2
+            return 1
+        fi
+        rm -f -- "$s25_marker"
+        export ALROOT_XWAYLAND_BINARY="$s25_xwayland"
+        export ALROOT_XWAYLAND_GLAMOR=es
+        export ALROOT_XWAYLAND_DUAL_ABI_FENCE=1
+        export XWAYLAND_FORCE_KGSL_SURFACELESS=1
+        export FD_KGSL_ENABLE_DMABUF=1
+        export MESA_LOADER_DRIVER_OVERRIDE=kgsl
+        export GALLIUM_DRIVER=freedreno
+        echo '[S25] ONE-SHOT private KGSL Xwayland selected from foreground helper; default path unchanged'
+    fi
     # Refuse to attach to an unexpected nested socket from a previous session.
     local path
     for path in "$RUNTIME"/wayland-*; do

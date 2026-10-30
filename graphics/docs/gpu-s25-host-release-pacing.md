@@ -110,6 +110,51 @@ against the above **389 ms release delay** and confirm Xwayland stays
 running. The real target is stable 120 Hz animation without intermittent
 halts, not merely high FPS or successful `vkcube` window creation.
 
+### Native Termux shell vs helper foreground Activity (One UI)
+
+After salvaging the original session we found that a `Termux`-shell-spawned
+Xwayland ran in Android `/foreground`, with CPU affinity `0-5` of `0-7`.
+This is a possible contributor to stutter, **not** proof that the previous
+now-dead Xwayland had the same CPU policy. Avoid using a generic
+`awstart --direct --topapp` as an immediate substitute: the helper Activity's
+`ProcessBuilder` clears all caller environment variables, including the
+`ALROOT_XWAYLAND_BINARY` and private KGSL GLAMOR/dual-ABI fence settings.
+It would start an **unrelated default Xwayland** rather than the S24
+GPU-accelerated one, invalidating the A/B comparison.
+
+An opt-in, no-APK-change, same-UID launch helper now exists:
+
+```sh
+cd ~/alroot_wayland
+awstart --stop                           # only from native Termux; not XFCE
+awstart --install-apk                    # S25 signed candidate; Android approval
+awstart --status                         # check installed matches signed APK
+bash termux/start-s25-kgsl-topapp.sh     # one-time top-app GPU test
+```
+
+This shell helper validates the S26U model (`SM-S948*`), the newest signed
+APK installation, private Xwayland and 96/4-byte dual-ABI fence shim,
+and the absence of a running Xwayland/XFCE session. It creates a 0600
+marker in the existing 0700 project control directory. The foreground
+Android Activity launches the trusted `termux/alroot-wayland` CLI with its
+original sanitized environment; CLI consumes the **one-time**, at most
+90-second-old marker, exports only hard-coded prevalidated private KGSL
+settings, then removes the marker. The marker is rejected on other devices,
+profiles, or unsafe file paths. It does **not** change global drivers or
+the default `awstart` renderer and is not an implicit request to install
+an APK. On completion the script checks the actual running Xwayland binary
+and prints its CPU set and `Cpus_allowed_list`. This foreground launch route
+still requires physical testing: do not claim `top-app` affinity until the
+reported `/proc` result confirms it on device.
+
+For interactive GPU visual diagnosis **after** the private XFCE session
+starts, use `bash graphics/tools/test-s24-wrapper-xcb-resize.sh --visual vulkan`
+or `--visual zink`, and switch to the Alroot Wayland helper Activity. The
+first step is to verify Xwayland stays running for an extended session,
+not to enable 3D games broadly. Once the user reports another crash or
+recovered session, collect its session PID, CPU affinity and the new
+`auto release caps`, `peak pending`, fence and release metrics.
+
 **Not yet verified:** new candidate APK on Android hardware, physical
 smoothness, sustained GPU/CPU clocks, long-duration Xwayland uptime, or
 zero-copy. Even when the tests improve, preserve the user's visual gate and
