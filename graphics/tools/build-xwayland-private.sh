@@ -52,6 +52,14 @@ done
 if [[ "${ALROOT_XWAYLAND_VARIANT:-generic}" == kgsl ]]; then
     # Optional Adreno adaptation. Never the default for Mali/PowerVR/Xclipse.
     for private in "$ROOT/graphics/patches/xwayland/kgsl"/000*.patch; do
+        # The private wrapper AHB import adapter is a zero-context patch
+        # to preserve Git whitespace checks. Do not reapply its insertions
+        # when rebuilding an already-patched Xwayland source.
+        if [[ "$private" == *"0004-kgsl-ahb-socket-dri3-24.1.14.patch" ]] &&
+           grep -Fq 'XWL_KGSL_AHB_SOCKET_MODIFIER 1255ULL'                "$WORK/source/hw/xwayland/xwayland-glamor-gbm.c"; then
+            echo 'Private KGSL AHB socket DRI3 adapter already applied (marker verified)'
+            continue
+        fi
         if (cd "$WORK/source" && patch -s --dry-run -p1 -i "$private" >/dev/null 2>&1); then
             (cd "$WORK/source" && patch -s -p1 -i "$private")
             echo "Applied optional private KGSL patch $(basename "$private")"

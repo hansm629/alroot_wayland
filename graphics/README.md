@@ -594,3 +594,14 @@ otherwise. `bash graphics/tools/test-s16-kgsl-highp.sh` reproduces the
 Adreno GPU and real Xwayland XRender A/B and confirms Android host DMA-BUF
 VkBuffer GPU-copy. See `graphics/docs/gpu-s16-glamor-right-half-highp.md`.
 An on-device XFCE restart/visual comparison remains the last acceptance gate.
+
+**GPU-S1.7 three Zink backends:** the private KGSL Xwayland now supports
+Termux Vulkan-wrapper DRI3's AHB socket modifier 1255 and optional,
+server-scoped 96-byte Bionic / 4-byte glibc Xshmfence compatibility.
+`S17_MATRIX_MODE=smoke bash graphics/tools/test-s17-zink-matrix.sh` passed
+windowed GLmark with all three: Termux wrapper+Zink, Termux Turnip+Zink,
+Debian Turnip+Zink. Existing live `:92` must be restarted with
+`ALROOT_XWAYLAND_DUAL_ABI_FENCE=1` **after saving desktop work**; the
+changed executable cannot unblock a previously deadlocked process. No
+universal awstart default promotion yet; see
+`graphics/docs/gpu-s17-zink-three-backend.md`.

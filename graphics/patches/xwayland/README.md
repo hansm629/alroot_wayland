@@ -108,3 +108,26 @@ Live **Android S1.6 host logs** freshly reported this private Xwayland's
 LINEAR DMA-BUF → VkBuffer → VkImage GPU-copy path as imported. User GUI
 visual/pixel correctness, resizing and full XFCE remain separate gates.
 Do not auto-enable KGSL surfaceless on Mali/PowerVR/Xclipse.
+
+## GPU-S1.7 — wrapper AHB DRI3 + cross-libc shared fences (S26U)
+
+The optional private KGSL patch `kgsl/0004-kgsl-ahb-socket-dri3-24.1.14.patch`
+accepts vendor Vulkan-wrapper X11 WSI's nonstandard DRI3 modifier **1255**,
+which represents an **AHardwareBuffer socket**, not a linear DMA-BUF. It
+acknowledges the socket transfer, receives the AHB via Android nativewindow,
+validates BGRA8/pitch and imports the actual gralloc DMA-BUF through KGSL
+EGL. On Adreno 840 the wrapper Zink GLX context, 800×600 GLmark rendering
+and Vulkan swapchain passed with this adapter. Standard LINEAR DMA-BUF DRI3
+and the generic/global Xwayland remain unchanged.
+
+The private launcher can additionally opt in to `ALROOT_XWAYLAND_DUAL_ABI_FENCE=1`
+for the tested **Bionic 96-byte pthread vs Debian glibc 4-byte futex**
+Xshmfence incompatibility. The shim is only preloaded into the explicitly
+selected private KGSL Xwayland; it does not replace any system library.
+
+`S17_MATRIX_MODE=smoke bash graphics/tools/test-s17-zink-matrix.sh` checks
+Termux wrapper + Zink, Termux Turnip + Zink and Debian Turnip + Zink on
+isolated Xwayland, validating runtime execution, AHB/ABI branch, X11
+responsiveness and cleanup. All three passed on S26U. See
+`graphics/docs/gpu-s17-zink-three-backend.md` for the exact validation,
+remaining full desktop acceptance gates and safe manual restart.

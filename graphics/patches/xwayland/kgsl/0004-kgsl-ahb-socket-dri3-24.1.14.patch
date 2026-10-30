@@ -1,0 +1,157 @@
+diff --git a/hw/xwayland/xwayland-glamor-gbm.c b/hw/xwayland/xwayland-glamor-gbm.c
+--- a/hw/xwayland/xwayland-glamor-gbm.c
++++ b/hw/xwayland/xwayland-glamor-gbm.c
+@@ -43,0 +44,5 @@
++#ifdef __ANDROID__
++#include <android/hardware_buffer.h>
++#include <dlfcn.h>
++#include <sys/socket.h>
++#endif
+@@ -1353,0 +1359,137 @@
++/* ALROOT GPU-S1.7 opt-in KGSL+AHB DRI3 compatibility.
++ * The Vulkan wrapper's Termux XCB WSI sends an AHardwareBuffer over a
++ * *socket fd*, tagged as DRI3 modifier 1255. It then waits for an ACK on
++ * its socket before vkCreateSwapchainKHR can finish. This is NOT a DMA-BUF
++ * FD and must not be handed directly to Mesa EGL_LINUX_DMA_BUF_EXT.
++ *
++ * Receive the AHB using Android's native protocol, obtain its actual
++ * gralloc DMA-BUF FD, then import that *linear* FD through KGSL EGL.
++ * Only the project-private KGSL Xwayland build has this adapter. Other
++ * GPU vendors and the default Termux Xwayland are unchanged. */
++#ifdef __ANDROID__
++#define XWL_KGSL_AHB_SOCKET_MODIFIER 1255ULL
++struct xwl_ahb_native_handle {
++    int version;
++    int numFds;
++    int numInts;
++    int data[];
++};
++static PixmapPtr
++xwl_glamor_kgsl_ahb_socket_pixmap(ScreenPtr screen, CARD8 num_fds,
++                                   const int *fds, CARD16 width,
++                                   CARD16 height, CARD8 depth, CARD8 bpp)
++{
++    void *lib = NULL;
++    AHardwareBuffer *buffer = NULL;
++    PixmapPtr pixmap = NULL;
++    int linear_fd = -1;
++    struct stat statbuf = {0};
++    const struct xwl_ahb_native_handle *handle = NULL;
++    AHardwareBuffer_Desc desc = {0};
++    int (*recv_ahb)(int, AHardwareBuffer **) = NULL;
++    void (*release_ahb)(AHardwareBuffer *) = NULL;
++    void (*describe_ahb)(const AHardwareBuffer *, AHardwareBuffer_Desc *) = NULL;
++    const struct xwl_ahb_native_handle *(*get_handle)(const AHardwareBuffer *) = NULL;
++    int selected = -1;
++    uint64_t nearest = UINT64_MAX;
++    uint64_t expected, tolerance;
++    CARD32 linear_pitch, linear_offset = 0;
++
++    if (num_fds != 1 || !fds || fds[0] < 0 || width == 0 || height == 0 ||
++        bpp != 32 || (depth != 24 && depth != 32))
++        return NULL;
++    if (fstat(fds[0], &statbuf) || !S_ISSOCK(statbuf.st_mode)) {
++        ErrorF("S16 AHB DRI3 rejected non-socket FD\n");
++        return NULL;
++    }
++    lib = dlopen("/system/lib64/libnativewindow.so", RTLD_NOW | RTLD_LOCAL);
++    if (!lib) {
++        ErrorF("S16 AHB DRI3 libnativewindow not available\n");
++        return NULL;
++    }
++    recv_ahb = (void *)dlsym(lib, "AHardwareBuffer_recvHandleFromUnixSocket");
++    release_ahb = (void *)dlsym(lib, "AHardwareBuffer_release");
++    describe_ahb = (void *)dlsym(lib, "AHardwareBuffer_describe");
++    get_handle = (void *)dlsym(lib, "AHardwareBuffer_getNativeHandle");
++    if (!recv_ahb || !release_ahb || !describe_ahb || !get_handle)
++        goto done;
++
++    /* Termux Vulkan-wrapper uses this exact acknowledgement handshake.
++     * Send the ACK only for explicitly tagged, validated local sockets.
++     * SO_RCVTIMEO bounds a malformed sender's subsequent AHB receive. */
++    struct timeval timeout = {.tv_sec = 1};
++    setsockopt(fds[0], SOL_SOCKET, SO_RCVTIMEO, &timeout, sizeof(timeout));
++    unsigned char ack = 1;
++    if (send(fds[0], &ack, 1, MSG_NOSIGNAL) != 1) {
++        ErrorF("S16 AHB DRI3 ACK failed errno:%d\n", errno);
++        goto done;
++    }
++    int rc = recv_ahb(fds[0], &buffer);
++    if (rc != 0 || !buffer) {
++        ErrorF("S16 AHB DRI3 native buffer receive failed rc:%d\n", rc);
++        goto done;
++    }
++    describe_ahb(buffer, &desc);
++    /* BGRA8 is what vendor wrapper WSI allocates on S26U. No pretending
++     * compressed/unknown layouts are LINEAR. */
++    if (desc.width != width || desc.height != height || desc.layers != 1 ||
++        desc.format != 5 || desc.stride < width || desc.stride > 16384 ||
++        desc.stride > UINT32_MAX / 4u) {
++        ErrorF("S16 AHB DRI3 rejected desc: %ux%u pitch:%u format:%u\n",
++               desc.width, desc.height, desc.stride, desc.format);
++        goto done;
++    }
++    handle = get_handle(buffer);
++    if (!handle || handle->version < 12 || handle->numFds < 1 ||
++        handle->numFds > 12 || handle->numInts < 0 || handle->numInts > 1024)
++        goto done;
++
++    expected = (uint64_t)desc.stride * desc.height * 4;
++    tolerance = expected / 2 > 65536 ? expected / 2 : 65536;
++    for (int i = 0; i < handle->numFds; ++i) {
++        struct stat st = {0};
++        if (handle->data[i] < 0 || fstat(handle->data[i], &st) || st.st_size <= 0)
++            continue;
++        uint64_t bytes = (uint64_t)st.st_size;
++        if (bytes < expected || bytes - expected > tolerance)
++            continue;
++        if (bytes - expected < nearest) {
++            selected = i;
++            nearest = bytes - expected;
++        } else if (bytes - expected == nearest) {
++            /* Ambiguous allocation, never pick a random native fd. */
++            selected = -1;
++        }
++    }
++    if (selected < 0) {
++        ErrorF("S16 AHB DRI3 no unambiguous linear-sized DMA-BUF fd\n");
++        goto done;
++    }
++    linear_fd = fcntl(handle->data[selected], F_DUPFD_CLOEXEC, 3);
++    if (linear_fd < 0)
++        goto done;
++    linear_pitch = desc.stride * 4u;
++    pixmap = xwl_glamor_kgsl_create_pixmap_from_fds(screen, 1, &linear_fd,
++                                                    width, height, &linear_pitch,
++                                                    &linear_offset, depth,
++                                                    DRM_FORMAT_MOD_LINEAR);
++    if (pixmap) {
++        static Bool once;
++        if (!once) {
++            once = TRUE;
++            ErrorF("S16 AHB DRI3 socket->native DMA-BUF->KGSL EGL import PASS: %ux%u pitch:%u\n",
++                   width, height, linear_pitch);
++        }
++    } else {
++        ErrorF("S16 AHB DRI3 native DMA-BUF EGL pixmap import FAILED\n");
++    }
++done:
++    if (linear_fd >= 0)
++        close(linear_fd);
++    if (buffer && release_ahb)
++        release_ahb(buffer);
++    dlclose(lib);
++    return pixmap;
++}
++#endif /* __ANDROID__ */
++
+@@ -1366,0 +1509,9 @@
++#ifdef __ANDROID__
++    /* Wrapper X11 WSI's AHB socket (modifier 1255) has ZERO row pitch in
++     * the DRI3 request. Receive and validate its true gralloc stride
++     * BEFORE generic LINEAR DMA-BUF stride validation rejects it. */
++    if (xwl_glamor_is_kgsl_surfaceless(xwl_screen) &&
++        modifier == XWL_KGSL_AHB_SOCKET_MODIFIER)
++        return xwl_glamor_kgsl_ahb_socket_pixmap(screen, num_fds, fds,
++                                                  width, height, depth, bpp);
++#endif
