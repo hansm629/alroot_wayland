@@ -1,0 +1,363 @@
+--- a/src/vulkan/wsi/wsi_common.c
++++ b/src/vulkan/wsi/wsi_common.c
+@@ -42,6 +42,7 @@
+ #include "../wrapper/wrapper_log.h"
+
+ #include <assert.h>
++#include <inttypes.h>
+ #include <time.h>
+ #include <stdlib.h>
+ #include <stdio.h>
+@@ -538,6 +539,13 @@
+    chain->wsi = wsi;
+    chain->device = _device;
+    chain->alloc = *pAllocator;
++   const char *s44_profile = getenv("S44_WSI_PROFILE");
++   chain->s44_profile.enabled = s44_profile && !strcmp(s44_profile, "1");
++   if (chain->s44_profile.enabled) {
++      ICD_FROM_HANDLE(VkIcdSurfaceBase, s44_surface, pCreateInfo->surface);
++      chain->s44_profile.backend = s44_surface->platform;
++      chain->s44_profile.requested_present_mode = pCreateInfo->presentMode;
++   }
+    chain->blit.type = get_blit_type(wsi, image_params, _device);
+ #ifdef __TERMUX__
+    /* S24 opt-in: Qualcomm KGSL EGL requires an AHB physical buffer height
+@@ -716,9 +724,67 @@
+    return wsi->override_present_mode;
+ }
+
++/* Backends call common finish after their worker lifetime has ended. X11
++ * joins both manager threads first; Wayland has no dedicated worker and its
++ * chain teardown asserts that present-ID dispatch is no longer in progress.
++ * Initialization failure can also report a chain with zero measured calls.
++ */
++static void
++wsi_s44_profile_finish(const struct wsi_swapchain *chain)
++{
++   const struct wsi_s44_profile *profile = &chain->s44_profile;
++   if (!profile->enabled)
++      return;
++   static const char *const names[WSI_S44_SITE_COUNT] = {
++      "acquire_backend", "throttle_reuse", "bridge_submit_inclusive",
++      "separate_blit_submit", "forced_ready", "backend_present_inclusive",
++      "wayland_ahb_ready", "x11_worker_ready",
++   };
++   const char *backend = "other";
++   switch (profile->backend) {
++   case VK_ICD_WSI_PLATFORM_XCB: backend = "xcb"; break;
++   case VK_ICD_WSI_PLATFORM_XLIB: backend = "xlib"; break;
++   case VK_ICD_WSI_PLATFORM_WAYLAND: backend = "wayland"; break;
++   }
++#ifndef _WIN32
++   int pid = (int)getpid();
++#else
++   int pid = 0;
++#endif
++   flockfile(stderr);
++   fprintf(stderr, "S44_WSI_PROFILE {\"event\":\"chain\",\"pid\":%d,\"chain\":\"%p\","
++           "\"backend\":\"%s\",\"requested_present_mode\":%u,\"present_mode\":%u,"
++           "\"image_count\":%u,\"forcesync\":%s,\"sw\":%s,\"blit_type\":%u,"
++           "\"explicit_sync\":%s,\"bridge_shared_calls\":%" PRIu64 "}\n",
++           pid, (const void *)chain, backend, profile->requested_present_mode,
++           (unsigned)chain->present_mode, chain->image_count,
++           chain->wsi->forcesync ? "true" : "false", chain->wsi->sw ? "true" : "false",
++           (unsigned)chain->blit.type, chain->image_info.explicit_sync ? "true" : "false",
++           wsi_s44_load(&profile->bridge_shared_calls));
++   for (unsigned i = 0; i < WSI_S44_SITE_COUNT; ++i) {
++      const struct wsi_s44_stat *stat = &profile->stats[i];
++      fprintf(stderr, "S44_WSI_PROFILE {\"event\":\"stat\",\"pid\":%d,\"chain\":\"%p\","
++              "\"site\":\"%s\",\"calls\":%" PRIu64 ",\"samples\":%" PRIu64 ","
++              "\"total_ns\":%" PRIu64 ",\"max_ns\":%" PRIu64 ",\"clock_errors\":%" PRIu64 ","
++              "\"success\":%" PRIu64 ",\"suboptimal\":%" PRIu64 ",\"timeout\":%" PRIu64 ","
++              "\"not_ready\":%" PRIu64 ",\"error\":%" PRIu64 ",\"other\":%" PRIu64 ",\"hist_log2_us\":[",
++              pid, (const void *)chain, names[i], wsi_s44_load(&stat->calls),
++              wsi_s44_load(&stat->samples), wsi_s44_load(&stat->total_ns),
++              wsi_s44_load(&stat->max_ns), wsi_s44_load(&stat->clock_errors),
++              wsi_s44_load(&stat->success), wsi_s44_load(&stat->suboptimal),
++              wsi_s44_load(&stat->timeout), wsi_s44_load(&stat->not_ready),
++              wsi_s44_load(&stat->error), wsi_s44_load(&stat->other));
++      for (unsigned b = 0; b < WSI_S44_HIST_BINS; ++b)
++         fprintf(stderr, "%s%" PRIu64, b ? "," : "", wsi_s44_load(&stat->hist[b]));
++      fprintf(stderr, "]}\n");
++   }
++   funlockfile(stderr);
++}
++
+ void
+ wsi_swapchain_finish(struct wsi_swapchain *chain)
+ {
++   wsi_s44_profile_finish(chain);
+    wsi_destroy_image_info(chain, &chain->image_info);
+
+    if (chain->fences) {
+@@ -2376,8 +2442,10 @@
+    VK_FROM_HANDLE(wsi_swapchain, swapchain, pAcquireInfo->swapchain);
+    VK_FROM_HANDLE(vk_device, device, _device);
+
++   struct wsi_s44_stamp s44_acquire = wsi_s44_now(swapchain->s44_profile.enabled);
+    VkResult result = swapchain->acquire_next_image(swapchain, pAcquireInfo,
+                                                    pImageIndex);
++   wsi_s44_end(&swapchain->s44_profile, WSI_S44_ACQUIRE, s44_acquire, result);
+    if (result != VK_SUCCESS && result != VK_SUBOPTIMAL_KHR)
+       return result;
+    struct wsi_image *image =
+@@ -2544,9 +2612,11 @@
+       results[i] = VK_SUCCESS;
+
+    /* First, do the throttle waits, creating the throttle fences if needed */
++   bool s44_bridge_profile = false;
+    for (uint32_t i = 0; i < pPresentInfo->swapchainCount; i++) {
+       VK_FROM_HANDLE(wsi_swapchain, swapchain, pPresentInfo->pSwapchains[i]);
+       uint32_t image_index = pPresentInfo->pImageIndices[i];
++      s44_bridge_profile |= swapchain->s44_profile.enabled;
+
+       if (swapchain->fences[image_index] == VK_NULL_HANDLE) {
+          const VkFenceCreateInfo fence_info = {
+@@ -2560,9 +2630,11 @@
+             continue;
+       } else {
+          MESA_TRACE_SCOPE("throttle");
++         struct wsi_s44_stamp s44_throttle = wsi_s44_now(swapchain->s44_profile.enabled);
+          results[i] = wsi->WaitForFences(vk_device_to_handle(dev),
+                                          1, &swapchain->fences[image_index],
+                                          true, ~0ull);
++         wsi_s44_end(&swapchain->s44_profile, WSI_S44_THROTTLE, s44_throttle, results[i]);
+          if (results[i] != VK_SUCCESS)
+             continue;
+
+@@ -2869,8 +2941,23 @@
+          .signalSemaphoreInfoCount = signal_semaphore_count,
+          .pSignalSemaphoreInfos = signal_semaphore_infos,
+       };
++      struct wsi_s44_stamp s44_bridge = wsi_s44_now(s44_bridge_profile);
+       VkResult result = wsi_queue_submit2_unordered(wsi, queue, &submit_info,
+                                                     fence_count, fences);
++      if (s44_bridge_profile) {
++         struct wsi_s44_stamp span = wsi_s44_elapsed(s44_bridge, true);
++         /* One batch can serve several chains. Its inclusive time is copied
++          * to participating chains and must not be summed across them. */
++         for (uint32_t i = 0; i < pPresentInfo->swapchainCount; ++i) {
++            VK_FROM_HANDLE(wsi_swapchain, swapchain, pPresentInfo->pSwapchains[i]);
++            if (!swapchain->s44_profile.enabled ||
++                (results[i] != VK_SUCCESS && results[i] != VK_ERROR_PRESENT_TIMING_QUEUE_FULL_EXT))
++               continue;
++            if (pPresentInfo->swapchainCount > 1)
++               __atomic_fetch_add(&swapchain->s44_profile.bridge_shared_calls, 1, __ATOMIC_RELAXED);
++            wsi_s44_record(&swapchain->s44_profile, WSI_S44_BRIDGE_SUBMIT, span, result);
++         }
++      }
+       if (result != VK_SUCCESS) {
+          /* If this failed, everything failed */
+          for (uint32_t i = 0; i < pPresentInfo->swapchainCount; i++) {
+@@ -2930,10 +3017,12 @@
+          .signalSemaphoreInfoCount = image_signal_infos[i].semaphore_count,
+          .pSignalSemaphoreInfos = image_signal_infos[i].semaphore_infos,
+       };
++      struct wsi_s44_stamp s44_blit = wsi_s44_now(swapchain->s44_profile.enabled);
+       results[i] = wsi_queue_submit2_unordered(wsi, swapchain->blit.queue,
+                                                &submit_info,
+                                                image_signal_infos[i].fence_count,
+                                                image_signal_infos[i].fences);
++      wsi_s44_end(&swapchain->s44_profile, WSI_S44_BLIT_SUBMIT, s44_blit, results[i]);
+    }
+
+    /* Finally, we can present */
+@@ -2980,17 +3069,23 @@
+ #endif
+       }
+
+-      if (wsi->sw || wsi->forcesync)
+-         wsi->WaitForFences(vk_device_to_handle(dev),
++      if (wsi->sw || wsi->forcesync) {
++         struct wsi_s44_stamp s44_ready = wsi_s44_now(swapchain->s44_profile.enabled);
++         VkResult s44_ready_result = wsi->WaitForFences(vk_device_to_handle(dev),
+                             1, &swapchain->fences[image_index], true, ~0ull);
++         /* Preserve the existing result handling; diagnostics record it. */
++         wsi_s44_end(&swapchain->s44_profile, WSI_S44_FORCED_READY, s44_ready, s44_ready_result);
++      }
+
+       const VkPresentRegionKHR *region = NULL;
+       if (regions && regions->pRegions)
+          region = &regions->pRegions[i];
+
++      struct wsi_s44_stamp s44_present = wsi_s44_now(swapchain->s44_profile.enabled);
+       results[i] = swapchain->queue_present(swapchain, image_index,
+                                             image_signal_infos[i].present_id,
+                                             region);
++      wsi_s44_end(&swapchain->s44_profile, WSI_S44_BACKEND_PRESENT, s44_present, results[i]);
+       if (results[i] != VK_SUCCESS && results[i] != VK_SUBOPTIMAL_KHR)
+          continue;
+
+--- a/src/vulkan/wsi/wsi_common_private.h
++++ b/src/vulkan/wsi/wsi_common_private.h
+@@ -24,6 +24,7 @@
+ #define WSI_COMMON_PRIVATE_H
+
+ #include "wsi_common.h"
++#include "wsi_s44_profile.h"
+ #include "util/perf/cpu_trace.h"
+ #include "vk_object.h"
+ #include "vk_sync.h"
+@@ -232,6 +233,8 @@
+
+ struct wsi_swapchain {
+    struct vk_object_base base;
++
++   struct wsi_s44_profile s44_profile;
+
+    const struct wsi_device *wsi;
+
+--- a/src/vulkan/wsi/wsi_common_wayland.c
++++ b/src/vulkan/wsi/wsi_common_wayland.c
+@@ -3353,9 +3353,11 @@
+     * confined to Alroot Wayland AHB WSI; Stage 2 will provide explicit
+     * GPU acquire/release fences without this blocking overhead. */
+    if (chain->buffer_type == WSI_WL_BUFFER_ALROOT_AHB) {
++      struct wsi_s44_stamp s44_ready = wsi_s44_now(chain->base.s44_profile.enabled);
+       VkResult complete = chain->base.wsi->WaitForFences(
+          chain->base.device, 1, &chain->base.fences[image_index],
+          VK_TRUE, UINT64_MAX);
++      wsi_s44_end(&chain->base.s44_profile, WSI_S44_WL_AHB_READY, s44_ready, complete);
+       if (complete != VK_SUCCESS)
+          return complete;
+    }
+--- a/src/vulkan/wsi/wsi_common_x11.c
++++ b/src/vulkan/wsi/wsi_common_x11.c
+@@ -2565,9 +2565,11 @@
+
+       if (need_fence_wait || need_timing_fence_wait) {
+          MESA_TRACE_SCOPE("wait fence");
++         struct wsi_s44_stamp s44_ready = wsi_s44_now(chain->base.s44_profile.enabled);
+          result = chain->base.wsi->WaitForFences(chain->base.device, 1,
+                                                  &chain->base.fences[image_index],
+                                                  true, UINT64_MAX);
++         wsi_s44_end(&chain->base.s44_profile, WSI_S44_X11_WORKER_READY, s44_ready, result);
+          if (result != VK_SUCCESS) {
+             result = VK_ERROR_OUT_OF_DATE_KHR;
+             break;
+--- /dev/null
++++ b/src/vulkan/wsi/wsi_s44_profile.h
+@@ -0,0 +1,123 @@
++/* SPDX-License-Identifier: MIT */
++/* Optional diagnostic counters only: no wait, result, or scheduling changes.
++ * Histogram bin 0 is [0,1) us; bin n is [2^(n-1),2^n) us, with the last
++ * bin also containing larger values. Timers are inclusive wall time, not GPU
++ * time. Nested sites and shared multi-swapchain bridge spans must not be added.
++ */
++#ifndef WSI_S44_PROFILE_H
++#define WSI_S44_PROFILE_H
++
++#include <stdbool.h>
++#include <stdint.h>
++#include <time.h>
++
++enum wsi_s44_site {
++   WSI_S44_ACQUIRE,
++   WSI_S44_THROTTLE,
++   WSI_S44_BRIDGE_SUBMIT,
++   WSI_S44_BLIT_SUBMIT,
++   WSI_S44_FORCED_READY,
++   WSI_S44_BACKEND_PRESENT,
++   WSI_S44_WL_AHB_READY,
++   WSI_S44_X11_WORKER_READY,
++   WSI_S44_SITE_COUNT,
++};
++
++#define WSI_S44_HIST_BINS 24
++
++struct wsi_s44_stat {
++   uint64_t calls, samples, total_ns, max_ns, clock_errors;
++   uint64_t success, suboptimal, timeout, not_ready, error, other;
++   uint64_t hist[WSI_S44_HIST_BINS];
++};
++
++struct wsi_s44_profile {
++   /* Immutable after swapchain initialization, before workers are started. */
++   bool enabled;
++   uint32_t backend, requested_present_mode;
++   uint64_t bridge_shared_calls;
++   struct wsi_s44_stat stats[WSI_S44_SITE_COUNT];
++};
++
++struct wsi_s44_stamp {
++   uint64_t ns;
++   bool valid;
++};
++
++static inline struct wsi_s44_stamp
++wsi_s44_now(bool enabled)
++{
++   struct wsi_s44_stamp stamp = {0, false};
++   if (enabled) {
++      struct timespec ts;
++      if (clock_gettime(CLOCK_MONOTONIC, &ts) == 0 &&
++          ts.tv_sec >= 0 && ts.tv_nsec >= 0 && ts.tv_nsec < 1000000000) {
++         stamp.ns = (uint64_t)ts.tv_sec * UINT64_C(1000000000) + ts.tv_nsec;
++         stamp.valid = true;
++      }
++   }
++   return stamp;
++}
++
++static inline struct wsi_s44_stamp
++wsi_s44_elapsed(struct wsi_s44_stamp start, bool enabled)
++{
++   struct wsi_s44_stamp span = {0, false};
++   if (enabled && start.valid) {
++      struct wsi_s44_stamp end = wsi_s44_now(true);
++      if (end.valid && end.ns >= start.ns) {
++         span.ns = end.ns - start.ns;
++         span.valid = true;
++      }
++   }
++   return span;
++}
++
++static inline uint64_t
++wsi_s44_load(const uint64_t *value)
++{
++   return __atomic_load_n(value, __ATOMIC_RELAXED);
++}
++
++static inline void
++wsi_s44_record(struct wsi_s44_profile *profile, enum wsi_s44_site site,
++               struct wsi_s44_stamp span, VkResult result)
++{
++   if (!profile->enabled)
++      return;
++   struct wsi_s44_stat *stat = &profile->stats[site];
++   __atomic_fetch_add(&stat->calls, 1, __ATOMIC_RELAXED);
++   uint64_t *outcome = result == VK_SUCCESS ? &stat->success :
++      result == VK_SUBOPTIMAL_KHR ? &stat->suboptimal :
++      result == VK_TIMEOUT ? &stat->timeout :
++      result == VK_NOT_READY ? &stat->not_ready :
++      result < 0 ? &stat->error : &stat->other;
++   __atomic_fetch_add(outcome, 1, __ATOMIC_RELAXED);
++   if (!span.valid) {
++      __atomic_fetch_add(&stat->clock_errors, 1, __ATOMIC_RELAXED);
++      return;
++   }
++   __atomic_fetch_add(&stat->samples, 1, __ATOMIC_RELAXED);
++   __atomic_fetch_add(&stat->total_ns, span.ns, __ATOMIC_RELAXED);
++   uint64_t maximum = wsi_s44_load(&stat->max_ns);
++   while (span.ns > maximum &&
++          !__atomic_compare_exchange_n(&stat->max_ns, &maximum, span.ns,
++                                       true, __ATOMIC_RELAXED, __ATOMIC_RELAXED)) {}
++   uint64_t us = span.ns / 1000;
++   unsigned bin = 0;
++   while (us && bin < WSI_S44_HIST_BINS - 1) {
++      ++bin;
++      us >>= 1;
++   }
++   __atomic_fetch_add(&stat->hist[bin], 1, __ATOMIC_RELAXED);
++}
++
++static inline void
++wsi_s44_end(struct wsi_s44_profile *profile, enum wsi_s44_site site,
++            struct wsi_s44_stamp start, VkResult result)
++{
++   if (profile->enabled)
++      wsi_s44_record(profile, site, wsi_s44_elapsed(start, true), result);
++}
++
++#endif

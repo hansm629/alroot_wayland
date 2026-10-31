@@ -1,0 +1,11 @@
+--- a/src/gallium/drivers/zink/zink_screen.c
++++ b/src/gallium/drivers/zink/zink_screen.c
+@@ -3706,7 +3706,7 @@
+    if (zink_descriptor_mode == ZINK_DESCRIPTOR_MODE_AUTO)
+       zink_descriptor_mode = debug_get_option_zink_descriptor_mode();
+
+-   screen->s44_compact_submits = debug_get_bool_option("S44_ZINK_COMPACT_SUBMITS", false);
++   screen->s44_compact_submits = debug_get_bool_option("S44_ZINK_COMPACT_SUBMITS", true);
+    screen->s44_submit_stats = debug_get_bool_option("S44_ZINK_SUBMIT_STATS", false);
+    screen->threaded = util_get_cpu_caps()->nr_cpus > 1 && debug_get_bool_option("GALLIUM_THREAD", util_get_cpu_caps()->nr_cpus > 1);
+    if (zink_debug & ZINK_DEBUG_FLUSHSYNC)

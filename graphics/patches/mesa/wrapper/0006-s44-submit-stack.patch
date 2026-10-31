@@ -1,0 +1,148 @@
+--- a/src/vulkan/wrapper/wrapper_device.c
++++ b/src/vulkan/wrapper/wrapper_device.c
+@@ -22,6 +22,59 @@
+ #include "vk_util.h"
+ #include "util/list.h"
+ #include "util/simple_mtx.h"
++#include <pthread.h>
++
++/* Candidate switch and opt-in aggregate accounting are read once per process. */
++static pthread_once_t s44_submit_once = PTHREAD_ONCE_INIT;
++static bool s44_submit_stack;
++static bool s44_submit_profile;
++static uint64_t s44_submit_calls[2];
++static uint64_t s44_submit_stack_calls[2];
++static uint64_t s44_submit_commands;
++static uint64_t s44_submit_heap_calls;
++static uint64_t s44_submit_null_fence_skips;
++
++static void
++s44_submit_init(void)
++{
++   const char *stack = getenv("S44_WRAPPER_SUBMIT_STACK");
++   const char *profile = getenv("S44_WRAPPER_PROFILE");
++   s44_submit_stack = stack && strcmp(stack, "1") == 0;
++   s44_submit_profile = profile && strcmp(profile, "1") == 0;
++}
++
++static bool
++s44_submit_stack_enabled(void)
++{
++   pthread_once(&s44_submit_once, s44_submit_init);
++   return s44_submit_stack;
++}
++
++static void
++s44_submit_count(uint64_t *counter, uint64_t amount)
++{
++   if (s44_submit_profile)
++      __atomic_fetch_add(counter, amount, __ATOMIC_RELAXED);
++}
++
++static void
++s44_submit_report(void)
++{
++   pthread_once(&s44_submit_once, s44_submit_init);
++   if (!s44_submit_profile)
++      return;
++
++#define S44_COUNT(counter) ((unsigned long long)__atomic_load_n(&(counter), __ATOMIC_RELAXED))
++   fprintf(stderr, "S44_WRAPPER_SUBMITS scope=process_cumulative enabled=%u "
++           "submit1=%llu submit2=%llu stack1=%llu stack2=%llu "
++           "commands=%llu heap_calls=%llu null_fence_skips=%llu\n",
++           s44_submit_stack, S44_COUNT(s44_submit_calls[0]),
++           S44_COUNT(s44_submit_calls[1]), S44_COUNT(s44_submit_stack_calls[0]),
++           S44_COUNT(s44_submit_stack_calls[1]), S44_COUNT(s44_submit_commands),
++           S44_COUNT(s44_submit_heap_calls), S44_COUNT(s44_submit_null_fence_skips));
++#undef S44_COUNT
++   fflush(stderr);
++}
+
+ const struct vk_device_extension_table wrapper_device_extensions =
+ {
+@@ -68,6 +121,12 @@
+
+ static struct wrapper_fence *
+ get_wrapper_fence_from_handle(struct wrapper_device *device, VkFence fence) {
++   /* A successful CreateFence never registers VK_NULL_HANDLE in the table. */
++   if (fence == VK_NULL_HANDLE && s44_submit_stack_enabled()) {
++      s44_submit_count(&s44_submit_null_fence_skips, 1);
++      return NULL;
++   }
++
+    struct wrapper_fence *wf = NULL;
+
+    simple_mtx_lock(&device->resource_mutex);
+@@ -684,10 +743,32 @@
+    VkCommandBuffer *command_buffers;
+    VkResult result;
+
++   const bool stack = s44_submit_stack_enabled();
++   s44_submit_count(&s44_submit_calls[0], 1);
+    struct wrapper_fence *wf = get_wrapper_fence_from_handle(queue->device, fence);
++
++   /* The vendor consumes these argument arrays before QueueSubmit returns.
++    * Copy the full submit and translate only the wrapped command-buffer handles.
++    */
++   if (stack && submitCount == 1 && pSubmits[0].commandBufferCount <= 8) {
++      VkCommandBuffer translated[8];
++      VkSubmitInfo submit = pSubmits[0];
++      for (uint32_t i = 0; i < submit.commandBufferCount; i++) {
++         VK_FROM_HANDLE(wrapper_command_buffer, wcb, submit.pCommandBuffers[i]);
++         wcb->fence = wf;
++         translated[i] = wcb->dispatch_handle;
++      }
++      submit.pCommandBuffers = translated;
++      s44_submit_count(&s44_submit_stack_calls[0], 1);
++      s44_submit_count(&s44_submit_commands, submit.commandBufferCount);
++      return queue->device->dispatch_table.QueueSubmit(
++         queue->dispatch_handle, 1, &submit, fence);
++   }
+
+    for (int i = 0; i < submitCount; i++) {
+       const VkSubmitInfo *submit_info = &pSubmits[i];
++      s44_submit_count(&s44_submit_heap_calls, 1);
++      s44_submit_count(&s44_submit_commands, submit_info->commandBufferCount);
+       command_buffers = malloc(sizeof(VkCommandBuffer) *
+          submit_info->commandBufferCount);
+       for (int j = 0; j < submit_info->commandBufferCount; j++) {
+@@ -719,10 +800,31 @@
+    VkCommandBufferSubmitInfo *command_buffers;
+    VkResult result;
+
++   const bool stack = s44_submit_stack_enabled();
++   s44_submit_count(&s44_submit_calls[1], 1);
+    struct wrapper_fence *wf = get_wrapper_fence_from_handle(queue->device, fence);
++
++   if (stack && submitCount == 1 && pSubmits[0].commandBufferInfoCount <= 8) {
++      VkCommandBufferSubmitInfo translated[8];
++      VkSubmitInfo2 submit = pSubmits[0];
++      for (uint32_t i = 0; i < submit.commandBufferInfoCount; i++) {
++         VK_FROM_HANDLE(wrapper_command_buffer, wcb,
++                        submit.pCommandBufferInfos[i].commandBuffer);
++         wcb->fence = wf;
++         translated[i] = submit.pCommandBufferInfos[i];
++         translated[i].commandBuffer = wcb->dispatch_handle;
++      }
++      submit.pCommandBufferInfos = translated;
++      s44_submit_count(&s44_submit_stack_calls[1], 1);
++      s44_submit_count(&s44_submit_commands, submit.commandBufferInfoCount);
++      return queue->device->dispatch_table.QueueSubmit2(
++         queue->dispatch_handle, 1, &submit, fence);
++   }
+
+    for (int i = 0; i < submitCount; i++) {
+       const VkSubmitInfo2 *submit_info = &pSubmits[i];
++      s44_submit_count(&s44_submit_heap_calls, 1);
++      s44_submit_count(&s44_submit_commands, submit_info->commandBufferInfoCount);
+       command_buffers = malloc(sizeof(VkCommandBufferSubmitInfo) *
+          submit_info->commandBufferInfoCount);
+       for (int j = 0; j < submit_info->commandBufferInfoCount; j++) {
+@@ -1181,6 +1283,7 @@
+       device->dispatch_table.DestroyDevice(device->
+          dispatch_handle, pAllocator);
+    }
++   s44_submit_report();
+    simple_mtx_destroy(&device->resource_mutex);
+    vk_device_finish(&device->vk);
+    vk_free2(&device->vk.alloc, pAllocator, device);

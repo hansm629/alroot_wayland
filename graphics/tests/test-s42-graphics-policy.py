@@ -61,12 +61,16 @@ def main():
     client = exported('alroot_s42_select_server /nonexistent/alroot-s42 xfce-shm-direct; '
                       'alroot_s42_apply_client /canonical/prefix',
                       {'LD_LIBRARY_PATH': '/old/private', 'LIBGL_ALWAYS_SOFTWARE': '1',
-                       'TU_DEBUG': 'noconform', 'VK_DRIVER_FILES': '/old/icd'})
+                       'TU_DEBUG': 'noconform', 'VK_DRIVER_FILES': '/old/icd',
+                       'S44_WRAPPER_PROFILE': '1', 'S44_WSI_PROFILE': '1', 'S44_ZINK_SUBMIT_STATS': '1',
+                       'S44_WRAPPER_SUBMIT_STACK': '1', 'S44_ZINK_COMPACT_SUBMITS': '1'})
     assert client['GALLIUM_DRIVER'] == client['MESA_LOADER_DRIVER_OVERRIDE'] == 'zink'
     assert client['VK_DRIVER_FILES'] == client['VK_ICD_FILENAMES'] == '/canonical/prefix/share/vulkan/icd.d/wrapper_icd.aarch64.json'
     assert client['S24_WRAPPER_XCB_AHB_PAD_HEIGHT'] == client['S26_WRAPPER_XCB_RETRY_TRANSIENT'] == client['LIBGL_KOPPER_DRI2'] == '1'
     for name in ('LD_LIBRARY_PATH', 'LD_PRELOAD', 'LIBGL_ALWAYS_SOFTWARE', 'TU_DEBUG',
-                 'ALROOT_XWAYLAND_BINARY', 'S39_KGSL_RESIZE_ORIGIN', 'XWAYLAND_FORCE_KGSL_SURFACELESS'):
+                 'ALROOT_XWAYLAND_BINARY', 'S39_KGSL_RESIZE_ORIGIN', 'XWAYLAND_FORCE_KGSL_SURFACELESS',
+                 'S44_WRAPPER_PROFILE', 'S44_WSI_PROFILE', 'S44_ZINK_SUBMIT_STATS',
+                 'S44_WRAPPER_SUBMIT_STACK', 'S44_ZINK_COMPACT_SUBMITS'):
         assert name not in client, name
     checks.append('desktop_uses_installed_wrapper_zink_without_server_or_private_ld_env')
     parent = exported('alroot_s42_select_server /nonexistent/alroot-s42 xfce-shm-direct; '
@@ -124,6 +128,65 @@ def main():
         result = shell(code, env)
         assert result.returncode == 0, result.stderr
         checks.append('matching_installed_package_manifest_accepts')
+        query_s42 = query.read_text()
+        query.write_text(query_s42.replace('+alroot.s42.1', '+alroot.s44.1'))
+        s44_policy = {'activation': 'compiled',
+                      'runtime_defaults': {'S44_WRAPPER_SUBMIT_STACK': '1', 'S44_ZINK_COMPACT_SUBMITS': '1'},
+                      'profiling': {'S44_WRAPPER_PROFILE': False, 'S44_WSI_PROFILE': False,
+                                    'S44_ZINK_SUBMIT_STATS': False}}
+        for document, flag in ((wrapper, 'S44_WRAPPER_SUBMIT_STACK'), (mesa, 'S44_ZINK_COMPACT_SUBMITS')):
+            document['runtime_defaults'] = {flag: '1'}
+            document['s44'] = {'default_policy': json.loads(json.dumps(s44_policy))}
+        wrapper['package_version'] = '26.3.0+alroot.s44.1'; wrapper_meta.write_text(json.dumps(wrapper))
+        mesa['package_version'] = '27.0.0~devel+alroot.s44.1'; mesa_meta.write_text(json.dumps(mesa))
+        result = shell(code, env)
+        assert result.returncode == 0, result.stderr
+        checks.append('coherent_s44_pair_with_matching_provenance_accepts')
+        s44_env = {**env, 'S44_WRAPPER_SUBMIT_STACK': '0', 'S44_ZINK_COMPACT_SUBMITS': '0',
+                   'S44_WRAPPER_PROFILE': '1', 'S44_WSI_PROFILE': '1', 'S44_ZINK_SUBMIT_STATS': '1'}
+        result = shell(code + '; alroot_s42_apply_client "$S42_PREFIX"; env', s44_env)
+        assert result.returncode == 0, result.stderr
+        received = dict(line.split('=', 1) for line in result.stdout.splitlines() if '=' in line)
+        assert received['VK_DRIVER_FILES'] == str(icd) and received['GALLIUM_DRIVER'] == 'zink'
+        assert not any(name in received for name in s44_env if name.startswith('S44_'))
+        checks.append('compiled_s44_defaults_need_no_enable_env_and_inherited_profiles_are_cleared')
+        result = shell('alroot_s42_apply_client "$S42_PREFIX"; '
+                       'S44_WRAPPER_SUBMIT_STACK=0 S44_ZINK_COMPACT_SUBMITS=0 env', env)
+        assert result.returncode == 0, result.stderr
+        received = dict(line.split('=', 1) for line in result.stdout.splitlines() if '=' in line)
+        assert received['S44_WRAPPER_SUBMIT_STACK'] == received['S44_ZINK_COMPACT_SUBMITS'] == '0'
+        checks.append('later_per_command_s44_kill_switches_remain_available')
+        for document, path, flag in ((wrapper, wrapper_meta, 'S44_WRAPPER_SUBMIT_STACK'),
+                                    (mesa, mesa_meta, 'S44_ZINK_COMPACT_SUBMITS')):
+            document['runtime_defaults'][flag] = '0'; path.write_text(json.dumps(document))
+            require_failure(shell(code, env), 'runtime defaults mismatch')
+            document['runtime_defaults'][flag] = '1'
+            document['s44']['default_policy']['activation'] = 'scoped-environment'
+            path.write_text(json.dumps(document))
+            require_failure(shell(code, env), 'compiled default policy mismatch')
+            document['s44']['default_policy']['activation'] = 'compiled'
+            document['s44']['default_policy']['profiling']['S44_WSI_PROFILE'] = True
+            path.write_text(json.dumps(document))
+            require_failure(shell(code, env), 'compiled default policy mismatch')
+            document['s44']['default_policy']['profiling']['S44_WSI_PROFILE'] = False
+            path.write_text(json.dumps(document))
+        checks.append('both_owner_default_activation_and_profile_tampering_reject')
+        for wrapper_version, mesa_version in (('s44', 's42'), ('s42', 's44')):
+            mixed = query_s42.replace('26.3.0+alroot.s42.1', '26.3.0+alroot.' + wrapper_version + '.1')
+            mixed = mixed.replace('27.0.0~devel+alroot.s42.1', '27.0.0~devel+alroot.' + mesa_version + '.1')
+            query.write_text(mixed)
+            require_failure(shell(code, env), 'coherent validated S42 or S44')
+        checks.append('both_mixed_s42_s44_pairs_reject')
+        query.write_text(query_s42)
+        for document in (wrapper, mesa):
+            document.pop('runtime_defaults'); document.pop('s44')
+        wrapper['package_version'] = '26.3.0+alroot.s42.1'; wrapper_meta.write_text(json.dumps(wrapper))
+        mesa['package_version'] = '27.0.0~devel+alroot.s42.1'; mesa_meta.write_text(json.dumps(mesa))
+        result = shell(code + '; alroot_s42_apply_client "$S42_PREFIX"; env', s44_env)
+        assert result.returncode == 0, result.stderr
+        received = dict(line.split('=', 1) for line in result.stdout.splitlines() if '=' in line)
+        assert not any(name in received for name in s44_env if name.startswith('S44_'))
+        checks.append('coherent_s42_rollback_preserves_clean_environment')
         library.write_bytes(b'wrong wrapper')
         require_failure(shell(code, env), 'wrapper hash mismatch')
         library.write_bytes(b'isolated wrapper fixture')
@@ -163,6 +226,13 @@ def main():
         require_failure(result, 'existing desktop was not stopped')
         assert not stop_record.exists(), 'invalid package preflight reached session CLI'
         checks.append('invalid_package_restart_rejected_before_stop')
+        query.write_text(query_s42.replace('26.3.0+alroot.s42.1', '26.3.0+alroot.s44.1'))
+        result = subprocess.run([BASH, str(awstart), '--restart', '--no-topapp'],
+            env={'PATH': os.environ['PATH'], 'S42_STOP_RECORD': str(stop_record)},
+            capture_output=True, text=True, timeout=10)
+        require_failure(result, 'coherent validated S42 or S44')
+        assert not stop_record.exists(), 'mixed S42/S44 preflight reached session CLI'
+        checks.append('mixed_pair_restart_rejected_before_stop')
 
         state = project.parent / '.alroot-wayland'
         state.mkdir()

@@ -1,5 +1,16 @@
 # Vulkan-wrapper-android: Alroot Wayland GPU-copy WSI
 
+## Current installed follow-up
+
+[S44](../../../docs/gpu-s44-submit-overhead.md) applies patches 0006, 0007 and
+0008 to the accepted S42 source. The final default uses fixed submit storage
+for at most five batches/eight command buffers and skips null-fence lookups;
+larger submissions retain the existing fallback. WSI profiling is opt-in and
+required synchronization remains. Package identity and runtime evidence are
+in the S44 report; the original 0001 candidate description below is historical.
+
+## Original 0001 candidate
+
 Candidate patch: 0001-alroot-ahb-wayland-wsi-vkimage.patch.
 
 Source: S26U local ~/alroot-vk-lab/vulkan-wrapper-android, pinned baseline

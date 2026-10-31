@@ -1,0 +1,213 @@
+--- a/src/gallium/drivers/zink/zink_batch.c
++++ b/src/gallium/drivers/zink/zink_batch.c
+@@ -1,5 +1,6 @@
+ #include "zink_batch.h"
+ #include "util/timespec.h"
++#include "util/os_time.h"
+ #include "zink_context.h"
+ #include "zink_descriptors.h"
+ #include "zink_kopper.h"
+@@ -662,6 +663,21 @@
+
+ #define ZINK_MAX_SIGNALS 3
+
++static inline VkResult
++zink_s44_queue_submit(struct zink_screen *screen, VkQueue queue,
++                      uint32_t count, const VkSubmitInfo *submits)
++{
++   if (!screen->s44_submit_stats)
++      return VKSCR(QueueSubmit)(queue, count, submits, VK_NULL_HANDLE);
++
++   const int64_t start_ns = os_time_get_nano();
++   VkResult result = VKSCR(QueueSubmit)(queue, count, submits, VK_NULL_HANDLE);
++   const uint64_t elapsed_ns = os_time_get_nano() - start_ns;
++   zink_s44_record_timing(&screen->s44_queue_submit, elapsed_ns, result);
++   p_atomic_add(&screen->s44_submit_info_count, count);
++   return result;
++}
++
+ static void
+ submit_queue(void *data, void *gdata, int thread_index)
+ {
+@@ -709,6 +725,24 @@
+       if (si[ZINK_SUBMIT_WAIT_FD].waitSemaphoreCount == 0) {
+          num_si--;
+          submit++;
++      }
++   } else if (si[ZINK_SUBMIT_WAIT_FD].waitSemaphoreCount == 0 &&
++              si[ZINK_SUBMIT_WAIT_FD].commandBufferCount == 0 &&
++              si[ZINK_SUBMIT_WAIT_FD].signalSemaphoreCount == 0 &&
++              si[ZINK_SUBMIT_WAIT_FD].pNext == NULL) {
++      if (screen->s44_submit_stats)
++         p_atomic_inc(&screen->s44_empty_fd_candidates);
++      if (screen->s44_compact_submits) {
++         /* Remove only the empty FD-wait batch. Copy the acquire header in
++          * full, keeping its waits/stages and every later batch in order.
++          * The command/signal headers and their timeline pNext chains stay
++          * at their original addresses and are not modified here.
++          */
++         si[ZINK_SUBMIT_WAIT_FD] = si[ZINK_SUBMIT_WAIT_ACQUIRE];
++         num_si--;
++         submit++;
++         if (screen->s44_submit_stats)
++            p_atomic_inc(&screen->s44_empty_fd_removed);
+       }
+    }
+
+@@ -855,7 +889,7 @@
+    screen->last_submit_id = batch_id;
+    screen->last_submit_is_video = bs->is_video;
+    VRAM_ALLOC_LOOP(result,
+-      VKSCR(QueueSubmit)(bs->is_video ? screen->queue_video_decode : screen->queue, num_si, submit, VK_NULL_HANDLE),
++      zink_s44_queue_submit(screen, bs->is_video ? screen->queue_video_decode : screen->queue, num_si, submit),
+       if (result != VK_SUCCESS) {
+          mesa_loge("ZINK: vkQueueSubmit failed (%s)", vk_Result_to_str(result));
+          bs->is_device_lost = true;
+--- a/src/gallium/drivers/zink/zink_screen.c
++++ b/src/gallium/drivers/zink/zink_screen.c
+@@ -22,6 +22,9 @@
+  */
+
+ #include "zink_screen.h"
++
++#include <inttypes.h>
++#include "util/os_time.h"
+
+ #include "zink_kopper.h"
+ #include "zink_compiler.h"
+@@ -1617,6 +1620,38 @@
+ }
+
+ static void
++zink_s44_print_submit_stats(struct zink_screen *screen)
++{
++   if (!screen->s44_submit_stats)
++      return;
++
++#define S44_TIMING_FORMAT "\"calls\":%" PRIu64 ",\"total_ns\":%" PRIu64 ",\"max_ns\":%" PRIu64 ",\"timeouts\":%" PRIu64 ",\"errors\":%" PRIu64
++#define S44_TIMING_VALUES(t) p_atomic_read(&(t).calls), p_atomic_read(&(t).total_ns), p_atomic_read(&(t).max_ns), p_atomic_read(&(t).timeouts), p_atomic_read(&(t).errors)
++   fprintf(stderr,
++           "S44_ZINK_STATS {\"compact_submits\":%u,\"driver_id\":%u,"
++           "\"throttle\":%u,\"implicit_sync\":%u,\"threaded_submit\":%u,"
++           "\"empty_fd_candidates\":%" PRIu64 ",\"empty_fd_removed\":%" PRIu64 ","
++           "\"submit_info_count\":%" PRIu64 ","
++           "\"queue_submit\":{" S44_TIMING_FORMAT "},"
++           "\"timeline_poll\":{" S44_TIMING_FORMAT "},"
++           "\"timeline_finite\":{" S44_TIMING_FORMAT "},"
++           "\"timeline_infinite\":{" S44_TIMING_FORMAT "}}\n",
++           (unsigned)screen->s44_compact_submits, (unsigned)zink_driverid(screen),
++           (unsigned)screen->base.caps.throttle,
++           (unsigned)screen->driver_workarounds.implicit_sync,
++           (unsigned)screen->threaded_submit,
++           p_atomic_read(&screen->s44_empty_fd_candidates),
++           p_atomic_read(&screen->s44_empty_fd_removed),
++           p_atomic_read(&screen->s44_submit_info_count),
++           S44_TIMING_VALUES(screen->s44_queue_submit),
++           S44_TIMING_VALUES(screen->s44_timeline_poll),
++           S44_TIMING_VALUES(screen->s44_timeline_finite),
++           S44_TIMING_VALUES(screen->s44_timeline_infinite));
++#undef S44_TIMING_VALUES
++#undef S44_TIMING_FORMAT
++}
++
++static void
+ zink_destroy_screen(struct pipe_screen *pscreen)
+ {
+    struct zink_screen *screen = zink_screen(pscreen);
+@@ -1706,6 +1741,8 @@
+
+    if (util_queue_is_initialized(&screen->flush_queue))
+       util_queue_destroy(&screen->flush_queue);
++
++   zink_s44_print_submit_stats(screen);
+
+    while (util_dynarray_contains(&screen->semaphores, VkSemaphore))
+       VKSCR(DestroySemaphore)(screen->dev, util_dynarray_pop(&screen->semaphores, VkSemaphore), NULL);
+@@ -2705,7 +2742,14 @@
+    bool success = false;
+    if (screen->device_lost)
+       return true;
++   const int64_t start_ns = screen->s44_submit_stats ? os_time_get_nano() : 0;
+    VkResult ret = VKSCR(WaitSemaphores)(screen->dev, &wi, timeout);
++   if (screen->s44_submit_stats) {
++      struct zink_s44_timing *stats = timeout == 0 ? &screen->s44_timeline_poll :
++                                    timeout == UINT64_MAX ? &screen->s44_timeline_infinite :
++                                                           &screen->s44_timeline_finite;
++      zink_s44_record_timing(stats, os_time_get_nano() - start_ns, ret);
++   }
+    success = zink_screen_handle_vkresult(screen, ret);
+
+    if (success)
+@@ -3662,6 +3706,8 @@
+    if (zink_descriptor_mode == ZINK_DESCRIPTOR_MODE_AUTO)
+       zink_descriptor_mode = debug_get_option_zink_descriptor_mode();
+
++   screen->s44_compact_submits = debug_get_bool_option("S44_ZINK_COMPACT_SUBMITS", false);
++   screen->s44_submit_stats = debug_get_bool_option("S44_ZINK_SUBMIT_STATS", false);
+    screen->threaded = util_get_cpu_caps()->nr_cpus > 1 && debug_get_bool_option("GALLIUM_THREAD", util_get_cpu_caps()->nr_cpus > 1);
+    if (zink_debug & ZINK_DEBUG_FLUSHSYNC)
+       screen->threaded_submit = false;
+--- a/src/gallium/drivers/zink/zink_screen.h
++++ b/src/gallium/drivers/zink/zink_screen.h
+@@ -37,6 +37,26 @@
+ zink_init_screen_pipeline_libs(struct zink_screen *screen);
+
+
++/* Only called under the opt-in S44 statistics flag. */
++static inline void
++zink_s44_record_timing(struct zink_s44_timing *stats, uint64_t elapsed_ns,
++                       VkResult result)
++{
++   p_atomic_inc(&stats->calls);
++   p_atomic_add(&stats->total_ns, elapsed_ns);
++   uint64_t previous = p_atomic_read(&stats->max_ns);
++   while (previous < elapsed_ns) {
++      uint64_t seen = p_atomic_cmpxchg(&stats->max_ns, previous, elapsed_ns);
++      if (seen == previous)
++         break;
++      previous = seen;
++   }
++   if (result == VK_TIMEOUT)
++      p_atomic_inc(&stats->timeouts);
++   else if (result != VK_SUCCESS)
++      p_atomic_inc(&stats->errors);
++}
++
+ /* update last_finished to account for batch_id wrapping */
+ static inline void
+ zink_screen_update_last_finished(struct zink_screen *screen, uint64_t batch_id)
+--- a/src/gallium/drivers/zink/zink_types.h
++++ b/src/gallium/drivers/zink/zink_types.h
+@@ -1442,6 +1442,15 @@
+    VkVideoFormatPropertiesKHR *pVideoFormatProperties;
+ };
+
++/* S44 opt-in submission diagnostics, reported once when the screen is destroyed. */
++struct zink_s44_timing {
++   uint64_t calls;
++   uint64_t total_ns;
++   uint64_t max_ns;
++   uint64_t timeouts;
++   uint64_t errors;
++};
++
+ struct zink_screen {
+    struct pipe_screen base;
+
+@@ -1454,6 +1463,16 @@
+
+    bool threaded;
+    bool threaded_submit;
++   /* Cached per screen; neither timing nor atomics run when statistics are off. */
++   bool s44_compact_submits;
++   bool s44_submit_stats;
++   uint64_t s44_empty_fd_candidates;
++   uint64_t s44_empty_fd_removed;
++   uint64_t s44_submit_info_count;
++   struct zink_s44_timing s44_queue_submit;
++   struct zink_s44_timing s44_timeline_poll;
++   struct zink_s44_timing s44_timeline_finite;
++   struct zink_s44_timing s44_timeline_infinite;
+    bool is_cpu;
+    bool abort_on_hang;
+    bool frame_marker_emitted;

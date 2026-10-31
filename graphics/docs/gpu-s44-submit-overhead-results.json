@@ -1,0 +1,1912 @@
+{
+  "schema": 1,
+  "stage": "S44",
+  "state": "ACTIVE_VERIFIED",
+  "date": "2026-11-01",
+  "date_timezone": "Asia/Seoul",
+  "project_source_before": "ea32d194d37da90911c53e5c9da9e2d3446a938f",
+  "packages": [
+    {
+      "architecture": "aarch64",
+      "changed_payload_paths": [
+        "data/data/com.termux/files/usr/lib/libvulkan_wrapper.so",
+        "data/data/com.termux/files/usr/share/doc/vulkan-wrapper-android/alroot-build.json"
+      ],
+      "package": "vulkan-wrapper-android",
+      "path": "/data/data/com.termux/files/home/alroot_wayland/.source/gpu-stage1/s44-sync-overhead/packages/vulkan-wrapper-android_26.3.0+alroot.s44.1_aarch64.deb",
+      "sha256": "93b1856f38c3a62aac3342a66a03a187b44ede0647fc8c8b90f7a9b31c7ea5c9",
+      "version": "26.3.0+alroot.s44.1"
+    },
+    {
+      "architecture": "aarch64",
+      "changed_payload_paths": [
+        "data/data/com.termux/files/usr/lib/dri/libdril_dri.so",
+        "data/data/com.termux/files/usr/lib/gbm/dri_gbm.so",
+        "data/data/com.termux/files/usr/lib/libEGL_mesa.so",
+        "data/data/com.termux/files/usr/lib/libGLX_mesa.so",
+        "data/data/com.termux/files/usr/lib/libgallium-27.0.0-devel.so",
+        "data/data/com.termux/files/usr/lib/libgbm.so",
+        "data/data/com.termux/files/usr/share/doc/mesa/alroot-s42-build.json"
+      ],
+      "package": "mesa",
+      "path": "/data/data/com.termux/files/home/alroot_wayland/.source/gpu-stage1/s44-sync-overhead/packages/mesa_27.0.0~devel+alroot.s44.1_aarch64.deb",
+      "sha256": "8c16c184483ffc15c6559861aa82d5341beffa9facfab0a7ccce1a837d46bc62",
+      "version": "27.0.0~devel+alroot.s44.1"
+    },
+    {
+      "architecture": "all",
+      "changed_payload_paths": [],
+      "package": "mesa-dev",
+      "path": "/data/data/com.termux/files/home/alroot_wayland/.source/gpu-stage1/s44-sync-overhead/packages/mesa-dev_27.0.0~devel+alroot.s44.1_all.deb",
+      "sha256": "aac672443800d5a0686023986f02c57306a43440a63730f220eff88d98792474",
+      "version": "27.0.0~devel+alroot.s44.1"
+    }
+  ],
+  "compiled_defaults": {
+    "activation": "compiled",
+    "profiling": {
+      "S44_WRAPPER_PROFILE": false,
+      "S44_WSI_PROFILE": false,
+      "S44_ZINK_SUBMIT_STATS": false
+    },
+    "runtime_defaults": {
+      "S44_WRAPPER_SUBMIT_STACK": "1",
+      "S44_ZINK_COMPACT_SUBMITS": "1"
+    }
+  },
+  "installed_wrapper_sha256": "021a695932c881f8def8b5aadc65771ca5f812e6d7caf7055dc9db828055a9c0",
+  "installation": {
+    "preflight": "PASS",
+    "dpkg_verify": "PASS",
+    "desktop_unchanged": true,
+    "session": {
+      "xfce": {
+        "pid": 21462,
+        "start_ticks": "19403364"
+      },
+      "xwayland": {
+        "pid": 21338,
+        "start_ticks": "19403283"
+      }
+    },
+    "protected_baseline_comparison": [
+      {
+        "path": "/data/data/com.termux/files/usr/lib/libvulkan_wrapper.so",
+        "authorized_target_upgrade": true,
+        "historical_sha256": "e78fff330f54d4666937d1800c9c2c192afab34be5aba153fab36046937dbe5a",
+        "installed_sha256": "021a695932c881f8def8b5aadc65771ca5f812e6d7caf7055dc9db828055a9c0",
+        "unchanged": false
+      },
+      {
+        "path": "/data/data/com.termux/files/usr/lib/libvulkan_freedreno.so",
+        "authorized_target_upgrade": false,
+        "historical_sha256": "df7c286663e6b9aad7a325f0af0df8590ff9c582ac76cf236684528c757eac22",
+        "installed_sha256": "df7c286663e6b9aad7a325f0af0df8590ff9c582ac76cf236684528c757eac22",
+        "unchanged": true
+      },
+      {
+        "path": "/data/data/com.termux/files/usr/lib/libvulkan_lvp.so",
+        "authorized_target_upgrade": false,
+        "historical_sha256": "9de387ff88c909e9d279b47f09648da3f5cb3dba648e6c13c7eef02e78fdbd74",
+        "installed_sha256": "9de387ff88c909e9d279b47f09648da3f5cb3dba648e6c13c7eef02e78fdbd74",
+        "unchanged": true
+      },
+      {
+        "path": "/data/data/com.termux/files/usr/lib/libEGL_mesa.so",
+        "authorized_target_upgrade": true,
+        "historical_sha256": "b1a7bc68bf3f8c88f431688cffbcfbf6709e981cad07403765e393f4a6ae9fcf",
+        "installed_sha256": "7fe733b59062aefa486b010c5f6ef462fcf6a0cf04b958c9d8df388aa47de929",
+        "unchanged": false
+      },
+      {
+        "path": "/data/data/com.termux/files/usr/lib/libGLX_mesa.so",
+        "authorized_target_upgrade": true,
+        "historical_sha256": "4d42c98f17a9f76ee2a585d7edf295792bd6d6e22254e17b4905cd36af5ceb53",
+        "installed_sha256": "966f15b54e9c389ee9b5671012abc610dcc9db689483193cc81daef7c4e5339c",
+        "unchanged": false
+      },
+      {
+        "path": "/data/data/com.termux/files/usr/lib/dri/kgsl_dri.so",
+        "authorized_target_upgrade": true,
+        "historical_sha256": "2b4327c1781f8bb2ccc6ec1d08b7fad48458e6116985550131908d7b1cc6dd26",
+        "installed_sha256": "8a3f595fe86215d3df98cb5c953b292f28a5d1e44f0a70acfc6d19571b51bd74",
+        "unchanged": false
+      },
+      {
+        "path": "/data/data/com.termux/files/usr/lib/dri/zink_dri.so",
+        "authorized_target_upgrade": true,
+        "historical_sha256": "2b4327c1781f8bb2ccc6ec1d08b7fad48458e6116985550131908d7b1cc6dd26",
+        "installed_sha256": "8a3f595fe86215d3df98cb5c953b292f28a5d1e44f0a70acfc6d19571b51bd74",
+        "unchanged": false
+      },
+      {
+        "path": "/data/data/com.termux/files/usr/bin/Xwayland",
+        "authorized_target_upgrade": false,
+        "historical_sha256": "f630852ece891aeb3976a6c1cd7e8cd5ff653f94daf184a7a3a9cef7b0af9f05",
+        "installed_sha256": "f630852ece891aeb3976a6c1cd7e8cd5ff653f94daf184a7a3a9cef7b0af9f05",
+        "unchanged": true
+      }
+    ],
+    "non_target_packages_unchanged": true
+  },
+  "staged_and_installed_regressions": [
+    {
+      "mode": "staged",
+      "demo": "vkcube",
+      "status": "PASS",
+      "receipt": ".source/gpu-stage1/s44-sync-overhead/regression-tests/staged-vkcube-20261101-023947-3470/summary.json",
+      "default_switches_unset": true,
+      "drag_ms": 6000,
+      "step_ms": 8,
+      "present_core_copy_count": 169,
+      "present_core_zero_bins": 0,
+      "max_complete_receive_gap_ms": 75,
+      "thin": {
+        "sizes": [
+          {
+            "requested": [
+              200,
+              1
+            ],
+            "actual": {
+              "WIDTH": 200,
+              "HEIGHT": 1
+            }
+          },
+          {
+            "requested": [
+              200,
+              2
+            ],
+            "actual": {
+              "WIDTH": 200,
+              "HEIGHT": 2
+            }
+          },
+          {
+            "requested": [
+              400,
+              1
+            ],
+            "actual": {
+              "WIDTH": 400,
+              "HEIGHT": 1
+            }
+          },
+          {
+            "requested": [
+              500,
+              500
+            ],
+            "actual": {
+              "WIDTH": 500,
+              "HEIGHT": 500
+            }
+          }
+        ],
+        "fixed_size_probe_exit": 0,
+        "fixed_size_advancement": "PASS",
+        "during_resize_rotation": "NOT_PROVEN_BY_THIS_PROBE"
+      },
+      "close_exit": 0,
+      "default_vkcube_close": {
+        "status": "PASS",
+        "selected_wsi": "xcb",
+        "arguments": [],
+        "close": {
+          "status": "PASS",
+          "mode": "close",
+          "xid": "0x00400000",
+          "root": "0x000002fd",
+          "expected_pid": 4141,
+          "client_pid": 4141,
+          "ownership": "xres_local_client_pid",
+          "managed": true,
+          "wm_delete_window": true,
+          "close_allowed": true,
+          "frame_extents": {
+            "left": 5,
+            "right": 5,
+            "top": 29,
+            "bottom": 5
+          },
+          "close_request": "SENT"
+        },
+        "exit_code": 0,
+        "wayland_surface_created": false
+      },
+      "libraries": {
+        "egl": {
+          "path": "/data/data/com.termux/files/home/alroot_wayland/.source/gpu-stage1/s44-sync-overhead/mesa/stage/data/data/com.termux/files/usr/lib/libEGL_mesa.so",
+          "sha256": "7fe733b59062aefa486b010c5f6ef462fcf6a0cf04b958c9d8df388aa47de929"
+        },
+        "glx": {
+          "path": "/data/data/com.termux/files/home/alroot_wayland/.source/gpu-stage1/s44-sync-overhead/mesa/stage/data/data/com.termux/files/usr/lib/libGLX_mesa.so",
+          "sha256": "966f15b54e9c389ee9b5671012abc610dcc9db689483193cc81daef7c4e5339c"
+        },
+        "gallium": {
+          "path": "/data/data/com.termux/files/home/alroot_wayland/.source/gpu-stage1/s44-sync-overhead/mesa/stage/data/data/com.termux/files/usr/lib/libgallium-27.0.0-devel.so",
+          "sha256": "2a9dadf8f1719ba713d7409caba92ca08dd47265b308c259e61775951d8f91ac"
+        },
+        "gbm": {
+          "path": "/data/data/com.termux/files/home/alroot_wayland/.source/gpu-stage1/s44-sync-overhead/mesa/stage/data/data/com.termux/files/usr/lib/libgbm.so",
+          "sha256": "325775f69b57d189b1ce1ff7dcbe3245dcb44379d1cf8c00ddf32b9e5a2af441"
+        },
+        "dril": {
+          "path": "/data/data/com.termux/files/home/alroot_wayland/.source/gpu-stage1/s44-sync-overhead/mesa/stage/data/data/com.termux/files/usr/lib/dri/libdril_dri.so",
+          "sha256": "8a3f595fe86215d3df98cb5c953b292f28a5d1e44f0a70acfc6d19571b51bd74"
+        },
+        "zink": {
+          "path": "/data/data/com.termux/files/home/alroot_wayland/.source/gpu-stage1/s44-sync-overhead/mesa/stage/data/data/com.termux/files/usr/lib/dri/libdril_dri.so",
+          "sha256": "8a3f595fe86215d3df98cb5c953b292f28a5d1e44f0a70acfc6d19571b51bd74"
+        },
+        "kgsl": {
+          "path": "/data/data/com.termux/files/home/alroot_wayland/.source/gpu-stage1/s44-sync-overhead/mesa/stage/data/data/com.termux/files/usr/lib/dri/libdril_dri.so",
+          "sha256": "8a3f595fe86215d3df98cb5c953b292f28a5d1e44f0a70acfc6d19571b51bd74"
+        },
+        "wrapper": {
+          "path": "/data/data/com.termux/files/home/alroot_wayland/.source/gpu-stage1/s44-sync-overhead/wrapper/runtime/libvulkan_wrapper.so",
+          "sha256": "021a695932c881f8def8b5aadc65771ca5f812e6d7caf7055dc9db828055a9c0"
+        }
+      }
+    },
+    {
+      "mode": "staged",
+      "demo": "zink",
+      "status": "PASS",
+      "receipt": ".source/gpu-stage1/s44-sync-overhead/regression-tests/staged-zink-20261101-024004-6092/summary.json",
+      "default_switches_unset": true,
+      "drag_ms": 6000,
+      "step_ms": 8,
+      "present_core_copy_count": 135,
+      "present_core_zero_bins": 0,
+      "max_complete_receive_gap_ms": 101,
+      "thin": {
+        "sizes": [
+          {
+            "requested": [
+              200,
+              1
+            ],
+            "actual": {
+              "WIDTH": 200,
+              "HEIGHT": 1
+            }
+          },
+          {
+            "requested": [
+              200,
+              2
+            ],
+            "actual": {
+              "WIDTH": 200,
+              "HEIGHT": 2
+            }
+          },
+          {
+            "requested": [
+              400,
+              1
+            ],
+            "actual": {
+              "WIDTH": 400,
+              "HEIGHT": 1
+            }
+          },
+          {
+            "requested": [
+              500,
+              500
+            ],
+            "actual": {
+              "WIDTH": 500,
+              "HEIGHT": 500
+            }
+          }
+        ],
+        "fixed_size_probe_exit": 0,
+        "fixed_size_advancement": "PASS",
+        "during_resize_rotation": "NOT_PROVEN_BY_THIS_PROBE"
+      },
+      "close_exit": 0,
+      "default_vkcube_close": null,
+      "libraries": {
+        "egl": {
+          "path": "/data/data/com.termux/files/home/alroot_wayland/.source/gpu-stage1/s44-sync-overhead/mesa/stage/data/data/com.termux/files/usr/lib/libEGL_mesa.so",
+          "sha256": "7fe733b59062aefa486b010c5f6ef462fcf6a0cf04b958c9d8df388aa47de929"
+        },
+        "glx": {
+          "path": "/data/data/com.termux/files/home/alroot_wayland/.source/gpu-stage1/s44-sync-overhead/mesa/stage/data/data/com.termux/files/usr/lib/libGLX_mesa.so",
+          "sha256": "966f15b54e9c389ee9b5671012abc610dcc9db689483193cc81daef7c4e5339c"
+        },
+        "gallium": {
+          "path": "/data/data/com.termux/files/home/alroot_wayland/.source/gpu-stage1/s44-sync-overhead/mesa/stage/data/data/com.termux/files/usr/lib/libgallium-27.0.0-devel.so",
+          "sha256": "2a9dadf8f1719ba713d7409caba92ca08dd47265b308c259e61775951d8f91ac"
+        },
+        "gbm": {
+          "path": "/data/data/com.termux/files/home/alroot_wayland/.source/gpu-stage1/s44-sync-overhead/mesa/stage/data/data/com.termux/files/usr/lib/libgbm.so",
+          "sha256": "325775f69b57d189b1ce1ff7dcbe3245dcb44379d1cf8c00ddf32b9e5a2af441"
+        },
+        "dril": {
+          "path": "/data/data/com.termux/files/home/alroot_wayland/.source/gpu-stage1/s44-sync-overhead/mesa/stage/data/data/com.termux/files/usr/lib/dri/libdril_dri.so",
+          "sha256": "8a3f595fe86215d3df98cb5c953b292f28a5d1e44f0a70acfc6d19571b51bd74"
+        },
+        "zink": {
+          "path": "/data/data/com.termux/files/home/alroot_wayland/.source/gpu-stage1/s44-sync-overhead/mesa/stage/data/data/com.termux/files/usr/lib/dri/libdril_dri.so",
+          "sha256": "8a3f595fe86215d3df98cb5c953b292f28a5d1e44f0a70acfc6d19571b51bd74"
+        },
+        "kgsl": {
+          "path": "/data/data/com.termux/files/home/alroot_wayland/.source/gpu-stage1/s44-sync-overhead/mesa/stage/data/data/com.termux/files/usr/lib/dri/libdril_dri.so",
+          "sha256": "8a3f595fe86215d3df98cb5c953b292f28a5d1e44f0a70acfc6d19571b51bd74"
+        },
+        "wrapper": {
+          "path": "/data/data/com.termux/files/home/alroot_wayland/.source/gpu-stage1/s44-sync-overhead/wrapper/runtime/libvulkan_wrapper.so",
+          "sha256": "021a695932c881f8def8b5aadc65771ca5f812e6d7caf7055dc9db828055a9c0"
+        }
+      }
+    },
+    {
+      "mode": "installed",
+      "demo": "vkcube",
+      "status": "PASS",
+      "receipt": ".source/gpu-stage1/s44-sync-overhead/regression-tests/installed-vkcube-20261101-024541-19690/summary.json",
+      "default_switches_unset": true,
+      "drag_ms": 6000,
+      "step_ms": 8,
+      "present_core_copy_count": 242,
+      "present_core_zero_bins": 0,
+      "max_complete_receive_gap_ms": 79,
+      "thin": {
+        "sizes": [
+          {
+            "requested": [
+              200,
+              1
+            ],
+            "actual": {
+              "WIDTH": 200,
+              "HEIGHT": 1
+            }
+          },
+          {
+            "requested": [
+              200,
+              2
+            ],
+            "actual": {
+              "WIDTH": 200,
+              "HEIGHT": 2
+            }
+          },
+          {
+            "requested": [
+              400,
+              1
+            ],
+            "actual": {
+              "WIDTH": 400,
+              "HEIGHT": 1
+            }
+          },
+          {
+            "requested": [
+              500,
+              500
+            ],
+            "actual": {
+              "WIDTH": 500,
+              "HEIGHT": 500
+            }
+          }
+        ],
+        "fixed_size_probe_exit": 0,
+        "fixed_size_advancement": "PASS",
+        "during_resize_rotation": "NOT_PROVEN_BY_THIS_PROBE"
+      },
+      "close_exit": 0,
+      "default_vkcube_close": {
+        "status": "PASS",
+        "selected_wsi": "xcb",
+        "arguments": [],
+        "close": {
+          "status": "PASS",
+          "mode": "close",
+          "xid": "0x00400000",
+          "root": "0x000002fd",
+          "expected_pid": 20095,
+          "client_pid": 20095,
+          "ownership": "xres_local_client_pid",
+          "managed": true,
+          "wm_delete_window": true,
+          "close_allowed": true,
+          "frame_extents": {
+            "left": 5,
+            "right": 5,
+            "top": 29,
+            "bottom": 5
+          },
+          "close_request": "SENT"
+        },
+        "exit_code": 0,
+        "wayland_surface_created": false
+      },
+      "libraries": {
+        "egl": {
+          "path": "/data/data/com.termux/files/usr/lib/libEGL_mesa.so",
+          "sha256": "7fe733b59062aefa486b010c5f6ef462fcf6a0cf04b958c9d8df388aa47de929"
+        },
+        "glx": {
+          "path": "/data/data/com.termux/files/usr/lib/libGLX_mesa.so",
+          "sha256": "966f15b54e9c389ee9b5671012abc610dcc9db689483193cc81daef7c4e5339c"
+        },
+        "gallium": {
+          "path": "/data/data/com.termux/files/usr/lib/libgallium-27.0.0-devel.so",
+          "sha256": "2a9dadf8f1719ba713d7409caba92ca08dd47265b308c259e61775951d8f91ac"
+        },
+        "gbm": {
+          "path": "/data/data/com.termux/files/usr/lib/libgbm.so",
+          "sha256": "325775f69b57d189b1ce1ff7dcbe3245dcb44379d1cf8c00ddf32b9e5a2af441"
+        },
+        "dril": {
+          "path": "/data/data/com.termux/files/usr/lib/dri/libdril_dri.so",
+          "sha256": "8a3f595fe86215d3df98cb5c953b292f28a5d1e44f0a70acfc6d19571b51bd74"
+        },
+        "zink": {
+          "path": "/data/data/com.termux/files/usr/lib/dri/libdril_dri.so",
+          "sha256": "8a3f595fe86215d3df98cb5c953b292f28a5d1e44f0a70acfc6d19571b51bd74"
+        },
+        "kgsl": {
+          "path": "/data/data/com.termux/files/usr/lib/dri/libdril_dri.so",
+          "sha256": "8a3f595fe86215d3df98cb5c953b292f28a5d1e44f0a70acfc6d19571b51bd74"
+        },
+        "wrapper": {
+          "path": "/data/data/com.termux/files/usr/lib/libvulkan_wrapper.so",
+          "sha256": "021a695932c881f8def8b5aadc65771ca5f812e6d7caf7055dc9db828055a9c0"
+        }
+      }
+    },
+    {
+      "mode": "installed",
+      "demo": "zink",
+      "status": "PASS",
+      "receipt": ".source/gpu-stage1/s44-sync-overhead/regression-tests/installed-zink-20261101-024557-21225/summary.json",
+      "default_switches_unset": true,
+      "drag_ms": 6000,
+      "step_ms": 8,
+      "present_core_copy_count": 209,
+      "present_core_zero_bins": 0,
+      "max_complete_receive_gap_ms": 58,
+      "thin": {
+        "sizes": [
+          {
+            "requested": [
+              200,
+              1
+            ],
+            "actual": {
+              "WIDTH": 200,
+              "HEIGHT": 1
+            }
+          },
+          {
+            "requested": [
+              200,
+              2
+            ],
+            "actual": {
+              "WIDTH": 200,
+              "HEIGHT": 2
+            }
+          },
+          {
+            "requested": [
+              400,
+              1
+            ],
+            "actual": {
+              "WIDTH": 400,
+              "HEIGHT": 1
+            }
+          },
+          {
+            "requested": [
+              500,
+              500
+            ],
+            "actual": {
+              "WIDTH": 500,
+              "HEIGHT": 500
+            }
+          }
+        ],
+        "fixed_size_probe_exit": 0,
+        "fixed_size_advancement": "PASS",
+        "during_resize_rotation": "NOT_PROVEN_BY_THIS_PROBE"
+      },
+      "close_exit": 0,
+      "default_vkcube_close": null,
+      "libraries": {
+        "egl": {
+          "path": "/data/data/com.termux/files/usr/lib/libEGL_mesa.so",
+          "sha256": "7fe733b59062aefa486b010c5f6ef462fcf6a0cf04b958c9d8df388aa47de929"
+        },
+        "glx": {
+          "path": "/data/data/com.termux/files/usr/lib/libGLX_mesa.so",
+          "sha256": "966f15b54e9c389ee9b5671012abc610dcc9db689483193cc81daef7c4e5339c"
+        },
+        "gallium": {
+          "path": "/data/data/com.termux/files/usr/lib/libgallium-27.0.0-devel.so",
+          "sha256": "2a9dadf8f1719ba713d7409caba92ca08dd47265b308c259e61775951d8f91ac"
+        },
+        "gbm": {
+          "path": "/data/data/com.termux/files/usr/lib/libgbm.so",
+          "sha256": "325775f69b57d189b1ce1ff7dcbe3245dcb44379d1cf8c00ddf32b9e5a2af441"
+        },
+        "dril": {
+          "path": "/data/data/com.termux/files/usr/lib/dri/libdril_dri.so",
+          "sha256": "8a3f595fe86215d3df98cb5c953b292f28a5d1e44f0a70acfc6d19571b51bd74"
+        },
+        "zink": {
+          "path": "/data/data/com.termux/files/usr/lib/dri/libdril_dri.so",
+          "sha256": "8a3f595fe86215d3df98cb5c953b292f28a5d1e44f0a70acfc6d19571b51bd74"
+        },
+        "kgsl": {
+          "path": "/data/data/com.termux/files/usr/lib/dri/libdril_dri.so",
+          "sha256": "8a3f595fe86215d3df98cb5c953b292f28a5d1e44f0a70acfc6d19571b51bd74"
+        },
+        "wrapper": {
+          "path": "/data/data/com.termux/files/usr/lib/libvulkan_wrapper.so",
+          "sha256": "021a695932c881f8def8b5aadc65771ca5f812e6d7caf7055dc9db828055a9c0"
+        }
+      }
+    }
+  ],
+  "installed_default_diagnostics": [
+    {
+      "case": "egl-wayland-light",
+      "status": "PASS",
+      "environment": {
+        "MESA_LOADER_DRIVER_OVERRIDE": "zink",
+        "GALLIUM_DRIVER": "zink",
+        "XDG_SESSION_TYPE": "wayland",
+        "LIBGL_KOPPER_DRI2": "1",
+        "VK_DRIVER_FILES": "/data/data/com.termux/files/usr/share/vulkan/icd.d/wrapper_icd.aarch64.json",
+        "DISPLAY": ":98",
+        "XDG_RUNTIME_DIR": "/data/data/com.termux/files/home/.alroot-wayland/runtime",
+        "VK_ICD_FILENAMES": "/data/data/com.termux/files/usr/share/vulkan/icd.d/wrapper_icd.aarch64.json",
+        "MESA_VK_WSI_PRESENT_MODE": "mailbox",
+        "S44_WSI_PROFILE": "1",
+        "S44_WRAPPER_PROFILE": "1",
+        "S44_ZINK_SUBMIT_STATS": "1",
+        "WAYLAND_DISPLAY": "wayland-0",
+        "EGL_PLATFORM": "wayland",
+        "vblank_mode": "0",
+        "GALLIUM_THREAD": null,
+        "ZINK_DEBUG": null,
+        "mesa_glthread": null,
+        "S44_WRAPPER_SUBMIT_STACK": null,
+        "S44_ZINK_COMPACT_SUBMITS": null
+      },
+      "loaded_libraries": {
+        "wrapper": {
+          "path": "/data/data/com.termux/files/usr/lib/libvulkan_wrapper.so",
+          "sha256": "021a695932c881f8def8b5aadc65771ca5f812e6d7caf7055dc9db828055a9c0"
+        },
+        "egl": {
+          "path": "/data/data/com.termux/files/usr/lib/libEGL_mesa.so",
+          "sha256": "7fe733b59062aefa486b010c5f6ef462fcf6a0cf04b958c9d8df388aa47de929"
+        },
+        "gallium": {
+          "path": "/data/data/com.termux/files/usr/lib/libgallium-27.0.0-devel.so",
+          "sha256": "2a9dadf8f1719ba713d7409caba92ca08dd47265b308c259e61775951d8f91ac"
+        }
+      },
+      "wrapper": [
+        {
+          "scope": "process_cumulative",
+          "enabled": 1,
+          "submit1": 1200,
+          "submit2": 0,
+          "stack1": 1200,
+          "stack2": 0,
+          "commands": 1201,
+          "heap_calls": 0,
+          "null_fence_skips": 1200,
+          "stack_batches1": 2400,
+          "stack_batches2": 0,
+          "batch_limit": 5,
+          "command_limit": 8
+        }
+      ],
+      "zink": [
+        {
+          "compact_submits": 1,
+          "driver_id": 8,
+          "throttle": 1,
+          "implicit_sync": 0,
+          "threaded_submit": 1,
+          "empty_fd_candidates": 0,
+          "empty_fd_removed": 0,
+          "submit_info_count": 2400,
+          "queue_submit": {
+            "calls": 1200,
+            "total_ns": 21268252,
+            "max_ns": 293385,
+            "timeouts": 0,
+            "errors": 0
+          },
+          "timeline_poll": {
+            "calls": 0,
+            "total_ns": 0,
+            "max_ns": 0,
+            "timeouts": 0,
+            "errors": 0
+          },
+          "timeline_finite": {
+            "calls": 0,
+            "total_ns": 0,
+            "max_ns": 0,
+            "timeouts": 0,
+            "errors": 0
+          },
+          "timeline_infinite": {
+            "calls": 1200,
+            "total_ns": 211321635,
+            "max_ns": 2487552,
+            "timeouts": 0,
+            "errors": 0
+          }
+        }
+      ],
+      "wsi_swapchains": 0,
+      "receipt": ".source/gpu-stage1/s44-sync-overhead/benchmarks/installed-default-egl-wayland-light-20261101-024659-23989/summary.json"
+    },
+    {
+      "case": "glx-light",
+      "status": "PASS",
+      "environment": {
+        "MESA_LOADER_DRIVER_OVERRIDE": "zink",
+        "GALLIUM_DRIVER": "zink",
+        "XDG_SESSION_TYPE": "x11",
+        "LIBGL_KOPPER_DRI2": "1",
+        "VK_DRIVER_FILES": "/data/data/com.termux/files/usr/share/vulkan/icd.d/wrapper_icd.aarch64.json",
+        "DISPLAY": ":98",
+        "XDG_RUNTIME_DIR": "/data/data/com.termux/files/home/.alroot-wayland/runtime",
+        "VK_ICD_FILENAMES": "/data/data/com.termux/files/usr/share/vulkan/icd.d/wrapper_icd.aarch64.json",
+        "MESA_VK_WSI_PRESENT_MODE": "mailbox",
+        "S44_WSI_PROFILE": "1",
+        "S44_WRAPPER_PROFILE": "1",
+        "S44_ZINK_SUBMIT_STATS": "1",
+        "vblank_mode": "0",
+        "GALLIUM_THREAD": null,
+        "ZINK_DEBUG": null,
+        "mesa_glthread": null,
+        "S44_WRAPPER_SUBMIT_STACK": null,
+        "S44_ZINK_COMPACT_SUBMITS": null
+      },
+      "loaded_libraries": {
+        "wrapper": {
+          "path": "/data/data/com.termux/files/usr/lib/libvulkan_wrapper.so",
+          "sha256": "021a695932c881f8def8b5aadc65771ca5f812e6d7caf7055dc9db828055a9c0"
+        },
+        "glx": {
+          "path": "/data/data/com.termux/files/usr/lib/libGLX_mesa.so",
+          "sha256": "966f15b54e9c389ee9b5671012abc610dcc9db689483193cc81daef7c4e5339c"
+        },
+        "gallium": {
+          "path": "/data/data/com.termux/files/usr/lib/libgallium-27.0.0-devel.so",
+          "sha256": "2a9dadf8f1719ba713d7409caba92ca08dd47265b308c259e61775951d8f91ac"
+        }
+      },
+      "wrapper": [
+        {
+          "scope": "process_cumulative",
+          "enabled": 1,
+          "submit1": 5850,
+          "submit2": 5849,
+          "stack1": 5850,
+          "stack2": 5849,
+          "commands": 11700,
+          "heap_calls": 0,
+          "null_fence_skips": 5854,
+          "stack_batches1": 17550,
+          "stack_batches2": 5849,
+          "batch_limit": 5,
+          "command_limit": 8
+        }
+      ],
+      "zink": [
+        {
+          "compact_submits": 1,
+          "driver_id": 8,
+          "throttle": 1,
+          "implicit_sync": 0,
+          "threaded_submit": 1,
+          "empty_fd_candidates": 5850,
+          "empty_fd_removed": 5850,
+          "submit_info_count": 17550,
+          "queue_submit": {
+            "calls": 5850,
+            "total_ns": 118452157,
+            "max_ns": 416458,
+            "timeouts": 0,
+            "errors": 0
+          },
+          "timeline_poll": {
+            "calls": 0,
+            "total_ns": 0,
+            "max_ns": 0,
+            "timeouts": 0,
+            "errors": 0
+          },
+          "timeline_finite": {
+            "calls": 0,
+            "total_ns": 0,
+            "max_ns": 0,
+            "timeouts": 0,
+            "errors": 0
+          },
+          "timeline_infinite": {
+            "calls": 5848,
+            "total_ns": 407077499,
+            "max_ns": 2120052,
+            "timeouts": 0,
+            "errors": 0
+          }
+        }
+      ],
+      "wsi_swapchains": 2,
+      "receipt": ".source/gpu-stage1/s44-sync-overhead/benchmarks/installed-default-glx-light-20261101-024657-23893/summary.json"
+    },
+    {
+      "case": "vkcube-wayland-probe",
+      "status": "PASS",
+      "environment": {
+        "MESA_LOADER_DRIVER_OVERRIDE": "zink",
+        "GALLIUM_DRIVER": "zink",
+        "XDG_SESSION_TYPE": "wayland",
+        "LIBGL_KOPPER_DRI2": "1",
+        "VK_DRIVER_FILES": "/data/data/com.termux/files/usr/share/vulkan/icd.d/wrapper_icd.aarch64.json",
+        "DISPLAY": ":98",
+        "XDG_RUNTIME_DIR": "/data/data/com.termux/files/home/.alroot-wayland/runtime",
+        "VK_ICD_FILENAMES": "/data/data/com.termux/files/usr/share/vulkan/icd.d/wrapper_icd.aarch64.json",
+        "MESA_VK_WSI_PRESENT_MODE": "mailbox",
+        "S44_WSI_PROFILE": "1",
+        "S44_WRAPPER_PROFILE": "1",
+        "S44_ZINK_SUBMIT_STATS": "1",
+        "WAYLAND_DISPLAY": "wayland-0",
+        "vblank_mode": "0",
+        "GALLIUM_THREAD": null,
+        "ZINK_DEBUG": null,
+        "mesa_glthread": null,
+        "S44_WRAPPER_SUBMIT_STACK": null,
+        "S44_ZINK_COMPACT_SUBMITS": null
+      },
+      "loaded_libraries": {
+        "wrapper": {
+          "path": "/data/data/com.termux/files/usr/lib/libvulkan_wrapper.so",
+          "sha256": "021a695932c881f8def8b5aadc65771ca5f812e6d7caf7055dc9db828055a9c0"
+        }
+      },
+      "wrapper": [
+        {
+          "scope": "process_cumulative",
+          "enabled": 1,
+          "submit1": 1201,
+          "submit2": 1200,
+          "stack1": 1201,
+          "stack2": 1200,
+          "commands": 1201,
+          "heap_calls": 0,
+          "null_fence_skips": 4,
+          "stack_batches1": 1201,
+          "stack_batches2": 1200,
+          "batch_limit": 5,
+          "command_limit": 8
+        }
+      ],
+      "zink": [],
+      "wsi_swapchains": 2,
+      "receipt": ".source/gpu-stage1/s44-sync-overhead/benchmarks/installed-default-vkcube-wayland-probe-20261101-024700-24019/summary.json"
+    }
+  ],
+  "timing": {
+    "method": {
+      "size": "800x600",
+      "duration_seconds": 4,
+      "egl_frames": 6000,
+      "cpuset": "foreground",
+      "thermal_gpu_frequency": "unavailable in this session; do not attribute observed drift to a specific cause",
+      "requested_vulkan_wsi_present_mode": "mailbox",
+      "native_egl_swap_interval": 0,
+      "native_egl_has_vulkan_wsi_swapchain": false
+    },
+    "means": {
+      "egl-wayland-light": {
+        "baseline_fps": [
+          1210.012,
+          1135.287
+        ],
+        "candidate_fps": [
+          1189.727,
+          1146.303
+        ],
+        "baseline_mean": 1172.6495,
+        "candidate_mean": 1168.015,
+        "descriptive_percent": -0.3952161323566794,
+        "claim": "descriptive only; substantial run-order variation"
+      },
+      "glx-heavy": {
+        "baseline_fps": [
+          483.0,
+          454.0
+        ],
+        "candidate_fps": [
+          515.0,
+          471.0
+        ],
+        "baseline_mean": 468.5,
+        "candidate_mean": 493.0,
+        "descriptive_percent": 5.22945570971185,
+        "claim": "descriptive only; substantial run-order variation"
+      },
+      "glx-light": {
+        "baseline_fps": [
+          2058.0,
+          1799.0
+        ],
+        "candidate_fps": [
+          2122.0,
+          1891.0
+        ],
+        "baseline_mean": 1928.5,
+        "candidate_mean": 2006.5,
+        "descriptive_percent": 4.04459424423127,
+        "claim": "descriptive only; substantial run-order variation"
+      },
+      "vk-xcb-heavy": {
+        "baseline_fps": [
+          2255.0,
+          1649.0,
+          1956.0,
+          1706.0
+        ],
+        "candidate_fps": [
+          1684.0,
+          1831.0,
+          2616.0,
+          1855.0
+        ],
+        "baseline_mean": 1891.5,
+        "candidate_mean": 1996.5,
+        "descriptive_percent": 5.551149881046791,
+        "claim": "descriptive only; substantial run-order variation"
+      },
+      "vk-xcb-light": {
+        "baseline_fps": [
+          4561.0,
+          3357.0,
+          2739.0,
+          2689.0
+        ],
+        "candidate_fps": [
+          4067.0,
+          3750.0,
+          2444.0,
+          2840.0
+        ],
+        "baseline_mean": 3336.5,
+        "candidate_mean": 3275.25,
+        "descriptive_percent": -1.8357560317698196,
+        "claim": "descriptive only; substantial run-order variation"
+      }
+    },
+    "claim": "No fixed FPS gain or mandatory CPU-fence wait reduction claimed. Counts prove reduced repeated work; no repeatable material timing regression demonstrated. Small losses remain possible within short-run variability.",
+    "unprofiled_runs": 28,
+    "measurement_runner_sha256": "aa9aafc43b6f8309703e4b82889e6255cade1f748d39bd348c545c2a633e7c63",
+    "final_runner_sha256": "249f1fe73fcdc8ce04c506b78a7ebde34bd8ba3d4f2106533cffdd0d3760c1dc",
+    "raw_runs": [
+      {
+        "receipt": ".source/gpu-stage1/s44-sync-overhead/benchmarks/r2-abba-egl-wayland-light-1-baseline-20261101-023620-28947/summary.json",
+        "case": "egl-wayland-light",
+        "variant": "baseline",
+        "fps": [
+          1210.012
+        ],
+        "process_wall_seconds": 5.151604580983985,
+        "rusage_process_lifetime": {
+          "ru_utime": 1.139048,
+          "ru_stime": 0.476883,
+          "ru_maxrss": 80676,
+          "ru_minflt": 8939,
+          "ru_majflt": 0,
+          "ru_nvcsw": 23899,
+          "ru_nivcsw": 4430
+        }
+      },
+      {
+        "receipt": ".source/gpu-stage1/s44-sync-overhead/benchmarks/r2-abba-egl-wayland-light-2-both-20261101-023625-29033/summary.json",
+        "case": "egl-wayland-light",
+        "variant": "both",
+        "fps": [
+          1189.727
+        ],
+        "process_wall_seconds": 5.209106091991998,
+        "rusage_process_lifetime": {
+          "ru_utime": 1.12592,
+          "ru_stime": 0.48749099999999995,
+          "ru_maxrss": 80156,
+          "ru_minflt": 8899,
+          "ru_majflt": 0,
+          "ru_nvcsw": 23840,
+          "ru_nivcsw": 4832
+        }
+      },
+      {
+        "receipt": ".source/gpu-stage1/s44-sync-overhead/benchmarks/r2-abba-egl-wayland-light-3-both-20261101-023631-29135/summary.json",
+        "case": "egl-wayland-light",
+        "variant": "both",
+        "fps": [
+          1146.303
+        ],
+        "process_wall_seconds": 5.409888695983682,
+        "rusage_process_lifetime": {
+          "ru_utime": 1.099122,
+          "ru_stime": 0.529476,
+          "ru_maxrss": 80100,
+          "ru_minflt": 8905,
+          "ru_majflt": 0,
+          "ru_nvcsw": 23776,
+          "ru_nivcsw": 4985
+        }
+      },
+      {
+        "receipt": ".source/gpu-stage1/s44-sync-overhead/benchmarks/r2-abba-egl-wayland-light-4-baseline-20261101-023636-29315/summary.json",
+        "case": "egl-wayland-light",
+        "variant": "baseline",
+        "fps": [
+          1135.287
+        ],
+        "process_wall_seconds": 5.457100102008553,
+        "rusage_process_lifetime": {
+          "ru_utime": 1.131919,
+          "ru_stime": 0.5285719999999999,
+          "ru_maxrss": 80224,
+          "ru_minflt": 8917,
+          "ru_majflt": 0,
+          "ru_nvcsw": 23783,
+          "ru_nivcsw": 4252
+        }
+      },
+      {
+        "receipt": ".source/gpu-stage1/s44-sync-overhead/benchmarks/r2-abba-glx-heavy-1-baseline-20261101-023700-29790/summary.json",
+        "case": "glx-heavy",
+        "variant": "baseline",
+        "fps": [
+          483.0
+        ],
+        "process_wall_seconds": 4.60495104000438,
+        "rusage_process_lifetime": {
+          "ru_utime": 1.708105,
+          "ru_stime": 0.6101759999999999,
+          "ru_maxrss": 147716,
+          "ru_minflt": 36685,
+          "ru_majflt": 17,
+          "ru_nvcsw": 21934,
+          "ru_nivcsw": 2304
+        }
+      },
+      {
+        "receipt": ".source/gpu-stage1/s44-sync-overhead/benchmarks/r2-abba-glx-heavy-2-both-20261101-023704-29945/summary.json",
+        "case": "glx-heavy",
+        "variant": "both",
+        "fps": [
+          515.0
+        ],
+        "process_wall_seconds": 4.5083549470000435,
+        "rusage_process_lifetime": {
+          "ru_utime": 1.512661,
+          "ru_stime": 0.608992,
+          "ru_maxrss": 143940,
+          "ru_minflt": 31125,
+          "ru_majflt": 0,
+          "ru_nvcsw": 23277,
+          "ru_nivcsw": 2523
+        }
+      },
+      {
+        "receipt": ".source/gpu-stage1/s44-sync-overhead/benchmarks/r2-abba-glx-heavy-3-both-20261101-023709-30049/summary.json",
+        "case": "glx-heavy",
+        "variant": "both",
+        "fps": [
+          471.0
+        ],
+        "process_wall_seconds": 4.5080690089962445,
+        "rusage_process_lifetime": {
+          "ru_utime": 1.461548,
+          "ru_stime": 0.578641,
+          "ru_maxrss": 143588,
+          "ru_minflt": 31028,
+          "ru_majflt": 0,
+          "ru_nvcsw": 21406,
+          "ru_nivcsw": 2426
+        }
+      },
+      {
+        "receipt": ".source/gpu-stage1/s44-sync-overhead/benchmarks/r2-abba-glx-heavy-4-baseline-20261101-023714-30214/summary.json",
+        "case": "glx-heavy",
+        "variant": "baseline",
+        "fps": [
+          454.0
+        ],
+        "process_wall_seconds": 4.509058540017577,
+        "rusage_process_lifetime": {
+          "ru_utime": 1.471126,
+          "ru_stime": 0.497349,
+          "ru_maxrss": 144140,
+          "ru_minflt": 30973,
+          "ru_majflt": 0,
+          "ru_nvcsw": 20559,
+          "ru_nivcsw": 2281
+        }
+      },
+      {
+        "receipt": ".source/gpu-stage1/s44-sync-overhead/benchmarks/r2-abba-glx-light-1-baseline-20261101-023602-28462/summary.json",
+        "case": "glx-light",
+        "variant": "baseline",
+        "fps": [
+          2058.0
+        ],
+        "process_wall_seconds": 4.25125525900512,
+        "rusage_process_lifetime": {
+          "ru_utime": 0.8802749999999999,
+          "ru_stime": 1.306461,
+          "ru_maxrss": 93768,
+          "ru_minflt": 12051,
+          "ru_majflt": 0,
+          "ru_nvcsw": 73412,
+          "ru_nivcsw": 5335
+        }
+      },
+      {
+        "receipt": ".source/gpu-stage1/s44-sync-overhead/benchmarks/r2-abba-glx-light-2-both-20261101-023606-28581/summary.json",
+        "case": "glx-light",
+        "variant": "both",
+        "fps": [
+          2122.0
+        ],
+        "process_wall_seconds": 4.251506612985395,
+        "rusage_process_lifetime": {
+          "ru_utime": 0.9868129999999999,
+          "ru_stime": 1.3425179999999999,
+          "ru_maxrss": 93996,
+          "ru_minflt": 12042,
+          "ru_majflt": 0,
+          "ru_nvcsw": 75393,
+          "ru_nivcsw": 4459
+        }
+      },
+      {
+        "receipt": ".source/gpu-stage1/s44-sync-overhead/benchmarks/r2-abba-glx-light-3-both-20261101-023611-28658/summary.json",
+        "case": "glx-light",
+        "variant": "both",
+        "fps": [
+          1891.0
+        ],
+        "process_wall_seconds": 4.253082393988734,
+        "rusage_process_lifetime": {
+          "ru_utime": 0.8883409999999999,
+          "ru_stime": 1.274937,
+          "ru_maxrss": 94076,
+          "ru_minflt": 12043,
+          "ru_majflt": 0,
+          "ru_nvcsw": 67227,
+          "ru_nivcsw": 5864
+        }
+      },
+      {
+        "receipt": ".source/gpu-stage1/s44-sync-overhead/benchmarks/r2-abba-glx-light-4-baseline-20261101-023615-28845/summary.json",
+        "case": "glx-light",
+        "variant": "baseline",
+        "fps": [
+          1799.0
+        ],
+        "process_wall_seconds": 4.307059529994149,
+        "rusage_process_lifetime": {
+          "ru_utime": 0.830826,
+          "ru_stime": 1.289625,
+          "ru_maxrss": 93692,
+          "ru_minflt": 12070,
+          "ru_majflt": 0,
+          "ru_nvcsw": 63703,
+          "ru_nivcsw": 6059
+        }
+      },
+      {
+        "receipt": ".source/gpu-stage1/s44-sync-overhead/benchmarks/r2-abba-vk-xcb-heavy-1-baseline-20261101-023642-29440/summary.json",
+        "case": "vk-xcb-heavy",
+        "variant": "baseline",
+        "fps": [
+          2255.0
+        ],
+        "process_wall_seconds": 4.191154530009953,
+        "rusage_process_lifetime": {
+          "ru_utime": 0.211303,
+          "ru_stime": 0.658003,
+          "ru_maxrss": 49952,
+          "ru_minflt": 10055,
+          "ru_majflt": 2,
+          "ru_nvcsw": 33327,
+          "ru_nivcsw": 1476
+        }
+      },
+      {
+        "receipt": ".source/gpu-stage1/s44-sync-overhead/benchmarks/r2-abba-vk-xcb-heavy-2-both-20261101-023646-29537/summary.json",
+        "case": "vk-xcb-heavy",
+        "variant": "both",
+        "fps": [
+          1684.0
+        ],
+        "process_wall_seconds": 4.195607445988571,
+        "rusage_process_lifetime": {
+          "ru_utime": 0.17105199999999998,
+          "ru_stime": 0.558825,
+          "ru_maxrss": 49808,
+          "ru_minflt": 10070,
+          "ru_majflt": 0,
+          "ru_nvcsw": 24878,
+          "ru_nivcsw": 1442
+        }
+      },
+      {
+        "receipt": ".source/gpu-stage1/s44-sync-overhead/benchmarks/r2-abba-vk-xcb-heavy-3-both-20261101-023651-29611/summary.json",
+        "case": "vk-xcb-heavy",
+        "variant": "both",
+        "fps": [
+          1831.0
+        ],
+        "process_wall_seconds": 4.1957491649955045,
+        "rusage_process_lifetime": {
+          "ru_utime": 0.20945799999999998,
+          "ru_stime": 0.570282,
+          "ru_maxrss": 49624,
+          "ru_minflt": 10063,
+          "ru_majflt": 0,
+          "ru_nvcsw": 27241,
+          "ru_nivcsw": 1250
+        }
+      },
+      {
+        "receipt": ".source/gpu-stage1/s44-sync-overhead/benchmarks/r2-abba-vk-xcb-heavy-4-baseline-20261101-023655-29686/summary.json",
+        "case": "vk-xcb-heavy",
+        "variant": "baseline",
+        "fps": [
+          1649.0
+        ],
+        "process_wall_seconds": 4.191627498017624,
+        "rusage_process_lifetime": {
+          "ru_utime": 0.17088399999999998,
+          "ru_stime": 0.5520849999999999,
+          "ru_maxrss": 49596,
+          "ru_minflt": 10058,
+          "ru_majflt": 0,
+          "ru_nvcsw": 24521,
+          "ru_nivcsw": 1513
+        }
+      },
+      {
+        "receipt": ".source/gpu-stage1/s44-sync-overhead/benchmarks/r2-abba-vk-xcb-light-1-baseline-20261101-023545-27716/summary.json",
+        "case": "vk-xcb-light",
+        "variant": "baseline",
+        "fps": [
+          4561.0
+        ],
+        "process_wall_seconds": 4.128614686022047,
+        "rusage_process_lifetime": {
+          "ru_utime": 0.18631899999999998,
+          "ru_stime": 0.7562749999999999,
+          "ru_maxrss": 45432,
+          "ru_minflt": 7207,
+          "ru_majflt": 0,
+          "ru_nvcsw": 56606,
+          "ru_nivcsw": 2226
+        }
+      },
+      {
+        "receipt": ".source/gpu-stage1/s44-sync-overhead/benchmarks/r2-abba-vk-xcb-light-2-both-20261101-023549-27898/summary.json",
+        "case": "vk-xcb-light",
+        "variant": "both",
+        "fps": [
+          4067.0
+        ],
+        "process_wall_seconds": 4.133612342004199,
+        "rusage_process_lifetime": {
+          "ru_utime": 0.228467,
+          "ru_stime": 0.7036509999999999,
+          "ru_maxrss": 45420,
+          "ru_minflt": 7208,
+          "ru_majflt": 0,
+          "ru_nvcsw": 50508,
+          "ru_nivcsw": 2208
+        }
+      },
+      {
+        "receipt": ".source/gpu-stage1/s44-sync-overhead/benchmarks/r2-abba-vk-xcb-light-3-both-20261101-023553-28121/summary.json",
+        "case": "vk-xcb-light",
+        "variant": "both",
+        "fps": [
+          3750.0
+        ],
+        "process_wall_seconds": 4.133619684987934,
+        "rusage_process_lifetime": {
+          "ru_utime": 0.223606,
+          "ru_stime": 0.7043499999999999,
+          "ru_maxrss": 45800,
+          "ru_minflt": 7197,
+          "ru_majflt": 0,
+          "ru_nvcsw": 46495,
+          "ru_nivcsw": 2213
+        }
+      },
+      {
+        "receipt": ".source/gpu-stage1/s44-sync-overhead/benchmarks/r2-abba-vk-xcb-light-4-baseline-20261101-023558-28243/summary.json",
+        "case": "vk-xcb-light",
+        "variant": "baseline",
+        "fps": [
+          3357.0
+        ],
+        "process_wall_seconds": 4.138228853000328,
+        "rusage_process_lifetime": {
+          "ru_utime": 0.245659,
+          "ru_stime": 0.657844,
+          "ru_maxrss": 45964,
+          "ru_minflt": 7199,
+          "ru_majflt": 0,
+          "ru_nvcsw": 42180,
+          "ru_nivcsw": 3101
+        }
+      },
+      {
+        "receipt": ".source/gpu-stage1/s44-sync-overhead/benchmarks/r2-baab-vk-xcb-heavy-1-both-20261101-023830-32618/summary.json",
+        "case": "vk-xcb-heavy",
+        "variant": "both",
+        "fps": [
+          2616.0
+        ],
+        "process_wall_seconds": 4.130591456021648,
+        "rusage_process_lifetime": {
+          "ru_utime": 0.204147,
+          "ru_stime": 0.57621,
+          "ru_maxrss": 49772,
+          "ru_minflt": 10063,
+          "ru_majflt": 0,
+          "ru_nvcsw": 39048,
+          "ru_nivcsw": 1443
+        }
+      },
+      {
+        "receipt": ".source/gpu-stage1/s44-sync-overhead/benchmarks/r2-baab-vk-xcb-heavy-2-baseline-20261101-023834-32742/summary.json",
+        "case": "vk-xcb-heavy",
+        "variant": "baseline",
+        "fps": [
+          1956.0
+        ],
+        "process_wall_seconds": 4.187218956998549,
+        "rusage_process_lifetime": {
+          "ru_utime": 0.178923,
+          "ru_stime": 0.530448,
+          "ru_maxrss": 50056,
+          "ru_minflt": 10067,
+          "ru_majflt": 0,
+          "ru_nvcsw": 28697,
+          "ru_nivcsw": 1328
+        }
+      },
+      {
+        "receipt": ".source/gpu-stage1/s44-sync-overhead/benchmarks/r2-baab-vk-xcb-heavy-3-baseline-20261101-023838-399/summary.json",
+        "case": "vk-xcb-heavy",
+        "variant": "baseline",
+        "fps": [
+          1706.0
+        ],
+        "process_wall_seconds": 4.134328749001725,
+        "rusage_process_lifetime": {
+          "ru_utime": 0.18442,
+          "ru_stime": 0.49975699999999995,
+          "ru_maxrss": 49716,
+          "ru_minflt": 10057,
+          "ru_majflt": 0,
+          "ru_nvcsw": 25190,
+          "ru_nivcsw": 1218
+        }
+      },
+      {
+        "receipt": ".source/gpu-stage1/s44-sync-overhead/benchmarks/r2-baab-vk-xcb-heavy-4-both-20261101-023843-482/summary.json",
+        "case": "vk-xcb-heavy",
+        "variant": "both",
+        "fps": [
+          1855.0
+        ],
+        "process_wall_seconds": 4.141297341993777,
+        "rusage_process_lifetime": {
+          "ru_utime": 0.200561,
+          "ru_stime": 0.5326799999999999,
+          "ru_maxrss": 49940,
+          "ru_minflt": 10062,
+          "ru_majflt": 0,
+          "ru_nvcsw": 26955,
+          "ru_nivcsw": 1295
+        }
+      },
+      {
+        "receipt": ".source/gpu-stage1/s44-sync-overhead/benchmarks/r2-baab-vk-xcb-light-1-both-20261101-023847-573/summary.json",
+        "case": "vk-xcb-light",
+        "variant": "both",
+        "fps": [
+          2444.0
+        ],
+        "process_wall_seconds": 4.204438435990596,
+        "rusage_process_lifetime": {
+          "ru_utime": 0.22475799999999999,
+          "ru_stime": 0.669013,
+          "ru_maxrss": 45484,
+          "ru_minflt": 7205,
+          "ru_majflt": 0,
+          "ru_nvcsw": 30071,
+          "ru_nivcsw": 3735
+        }
+      },
+      {
+        "receipt": ".source/gpu-stage1/s44-sync-overhead/benchmarks/r2-baab-vk-xcb-light-2-baseline-20261101-023851-833/summary.json",
+        "case": "vk-xcb-light",
+        "variant": "baseline",
+        "fps": [
+          2739.0
+        ],
+        "process_wall_seconds": 4.196300987008726,
+        "rusage_process_lifetime": {
+          "ru_utime": 0.28586,
+          "ru_stime": 0.682539,
+          "ru_maxrss": 45356,
+          "ru_minflt": 7204,
+          "ru_majflt": 0,
+          "ru_nvcsw": 33993,
+          "ru_nivcsw": 3494
+        }
+      },
+      {
+        "receipt": ".source/gpu-stage1/s44-sync-overhead/benchmarks/r2-baab-vk-xcb-light-3-baseline-20261101-023856-966/summary.json",
+        "case": "vk-xcb-light",
+        "variant": "baseline",
+        "fps": [
+          2689.0
+        ],
+        "process_wall_seconds": 4.201817602006486,
+        "rusage_process_lifetime": {
+          "ru_utime": 0.261891,
+          "ru_stime": 0.667342,
+          "ru_maxrss": 45160,
+          "ru_minflt": 7200,
+          "ru_majflt": 0,
+          "ru_nvcsw": 33497,
+          "ru_nivcsw": 2860
+        }
+      },
+      {
+        "receipt": ".source/gpu-stage1/s44-sync-overhead/benchmarks/r2-baab-vk-xcb-light-4-both-20261101-023900-1451/summary.json",
+        "case": "vk-xcb-light",
+        "variant": "both",
+        "fps": [
+          2840.0
+        ],
+        "process_wall_seconds": 4.201922498003114,
+        "rusage_process_lifetime": {
+          "ru_utime": 0.24054099999999998,
+          "ru_stime": 0.7355149999999999,
+          "ru_maxrss": 45668,
+          "ru_minflt": 7195,
+          "ru_majflt": 0,
+          "ru_nvcsw": 35384,
+          "ru_nivcsw": 3016
+        }
+      }
+    ]
+  },
+  "profiled_structural_evidence": [
+    {
+      "case": "egl-wayland-light",
+      "variant": "baseline",
+      "receipt": ".source/gpu-stage1/s44-sync-overhead/benchmarks/r2-profile-egl-wayland-light-baseline-20261101-023415-25173/summary.json",
+      "wrapper": [
+        {
+          "scope": "process_cumulative",
+          "enabled": 0,
+          "submit1": 10000,
+          "submit2": 0,
+          "stack1": 0,
+          "stack2": 0,
+          "commands": 10001,
+          "heap_calls": 20000,
+          "null_fence_skips": 0,
+          "stack_batches1": 0,
+          "stack_batches2": 0,
+          "batch_limit": 5,
+          "command_limit": 8
+        }
+      ],
+      "zink": [
+        {
+          "compact_submits": 0,
+          "driver_id": 8,
+          "throttle": 1,
+          "implicit_sync": 0,
+          "threaded_submit": 1,
+          "empty_fd_candidates": 0,
+          "empty_fd_removed": 0,
+          "submit_info_count": 20000,
+          "queue_submit": {
+            "calls": 10000,
+            "total_ns": 300543005,
+            "max_ns": 2295313,
+            "timeouts": 0,
+            "errors": 0
+          },
+          "timeline_poll": {
+            "calls": 0,
+            "total_ns": 0,
+            "max_ns": 0,
+            "timeouts": 0,
+            "errors": 0
+          },
+          "timeline_finite": {
+            "calls": 0,
+            "total_ns": 0,
+            "max_ns": 0,
+            "timeouts": 0,
+            "errors": 0
+          },
+          "timeline_infinite": {
+            "calls": 10000,
+            "total_ns": 4380786147,
+            "max_ns": 3776823,
+            "timeouts": 0,
+            "errors": 0
+          }
+        }
+      ]
+    },
+    {
+      "case": "egl-wayland-light",
+      "variant": "default",
+      "receipt": ".source/gpu-stage1/s44-sync-overhead/benchmarks/r2-profile-egl-wayland-light-default-20261101-023424-25450/summary.json",
+      "wrapper": [
+        {
+          "scope": "process_cumulative",
+          "enabled": 1,
+          "submit1": 10000,
+          "submit2": 0,
+          "stack1": 10000,
+          "stack2": 0,
+          "commands": 10001,
+          "heap_calls": 0,
+          "null_fence_skips": 10000,
+          "stack_batches1": 20000,
+          "stack_batches2": 0,
+          "batch_limit": 5,
+          "command_limit": 8
+        }
+      ],
+      "zink": [
+        {
+          "compact_submits": 1,
+          "driver_id": 8,
+          "throttle": 1,
+          "implicit_sync": 0,
+          "threaded_submit": 1,
+          "empty_fd_candidates": 0,
+          "empty_fd_removed": 0,
+          "submit_info_count": 20000,
+          "queue_submit": {
+            "calls": 10000,
+            "total_ns": 269770407,
+            "max_ns": 3658958,
+            "timeouts": 0,
+            "errors": 0
+          },
+          "timeline_poll": {
+            "calls": 0,
+            "total_ns": 0,
+            "max_ns": 0,
+            "timeouts": 0,
+            "errors": 0
+          },
+          "timeline_finite": {
+            "calls": 0,
+            "total_ns": 0,
+            "max_ns": 0,
+            "timeouts": 0,
+            "errors": 0
+          },
+          "timeline_infinite": {
+            "calls": 10000,
+            "total_ns": 4392925113,
+            "max_ns": 3406511,
+            "timeouts": 0,
+            "errors": 0
+          }
+        }
+      ]
+    },
+    {
+      "case": "glx-light",
+      "variant": "baseline",
+      "receipt": ".source/gpu-stage1/s44-sync-overhead/benchmarks/r2-profile-glx-light-baseline-20261101-023405-24805/summary.json",
+      "wrapper": [
+        {
+          "scope": "process_cumulative",
+          "enabled": 0,
+          "submit1": 7561,
+          "submit2": 7560,
+          "stack1": 0,
+          "stack2": 0,
+          "commands": 15122,
+          "heap_calls": 37804,
+          "null_fence_skips": 0,
+          "stack_batches1": 0,
+          "stack_batches2": 0,
+          "batch_limit": 5,
+          "command_limit": 8
+        }
+      ],
+      "zink": [
+        {
+          "compact_submits": 0,
+          "driver_id": 8,
+          "throttle": 1,
+          "implicit_sync": 0,
+          "threaded_submit": 1,
+          "empty_fd_candidates": 7561,
+          "empty_fd_removed": 0,
+          "submit_info_count": 30244,
+          "queue_submit": {
+            "calls": 7561,
+            "total_ns": 269510274,
+            "max_ns": 798698,
+            "timeouts": 0,
+            "errors": 0
+          },
+          "timeline_poll": {
+            "calls": 0,
+            "total_ns": 0,
+            "max_ns": 0,
+            "timeouts": 0,
+            "errors": 0
+          },
+          "timeline_finite": {
+            "calls": 0,
+            "total_ns": 0,
+            "max_ns": 0,
+            "timeouts": 0,
+            "errors": 0
+          },
+          "timeline_infinite": {
+            "calls": 7559,
+            "total_ns": 503436093,
+            "max_ns": 3818542,
+            "timeouts": 0,
+            "errors": 0
+          }
+        }
+      ]
+    },
+    {
+      "case": "glx-light",
+      "variant": "default",
+      "receipt": ".source/gpu-stage1/s44-sync-overhead/benchmarks/r2-profile-glx-light-default-20261101-023410-25076/summary.json",
+      "wrapper": [
+        {
+          "scope": "process_cumulative",
+          "enabled": 1,
+          "submit1": 8058,
+          "submit2": 8057,
+          "stack1": 8058,
+          "stack2": 8057,
+          "commands": 16116,
+          "heap_calls": 0,
+          "null_fence_skips": 8062,
+          "stack_batches1": 24174,
+          "stack_batches2": 8057,
+          "batch_limit": 5,
+          "command_limit": 8
+        }
+      ],
+      "zink": [
+        {
+          "compact_submits": 1,
+          "driver_id": 8,
+          "throttle": 1,
+          "implicit_sync": 0,
+          "threaded_submit": 1,
+          "empty_fd_candidates": 8058,
+          "empty_fd_removed": 8058,
+          "submit_info_count": 24174,
+          "queue_submit": {
+            "calls": 8058,
+            "total_ns": 262522680,
+            "max_ns": 1149739,
+            "timeouts": 0,
+            "errors": 0
+          },
+          "timeline_poll": {
+            "calls": 0,
+            "total_ns": 0,
+            "max_ns": 0,
+            "timeouts": 0,
+            "errors": 0
+          },
+          "timeline_finite": {
+            "calls": 0,
+            "total_ns": 0,
+            "max_ns": 0,
+            "timeouts": 0,
+            "errors": 0
+          },
+          "timeline_infinite": {
+            "calls": 8056,
+            "total_ns": 414773551,
+            "max_ns": 1622917,
+            "timeouts": 0,
+            "errors": 0
+          }
+        }
+      ]
+    },
+    {
+      "case": "vk-xcb-light",
+      "variant": "baseline",
+      "receipt": ".source/gpu-stage1/s44-sync-overhead/benchmarks/r2-profile-vk-xcb-light-baseline-20261101-023315-23049/summary.json",
+      "wrapper": [
+        {
+          "scope": "process_cumulative",
+          "enabled": 0,
+          "submit1": 18008,
+          "submit2": 18006,
+          "stack1": 0,
+          "stack2": 0,
+          "commands": 18008,
+          "heap_calls": 36014,
+          "null_fence_skips": 0,
+          "stack_batches1": 0,
+          "stack_batches2": 0,
+          "batch_limit": 5,
+          "command_limit": 8
+        }
+      ],
+      "zink": []
+    },
+    {
+      "case": "vk-xcb-light",
+      "variant": "default",
+      "receipt": ".source/gpu-stage1/s44-sync-overhead/benchmarks/r2-profile-vk-xcb-light-default-20261101-023401-24587/summary.json",
+      "wrapper": [
+        {
+          "scope": "process_cumulative",
+          "enabled": 1,
+          "submit1": 12405,
+          "submit2": 12403,
+          "stack1": 12405,
+          "stack2": 12403,
+          "commands": 12405,
+          "heap_calls": 0,
+          "null_fence_skips": 12405,
+          "stack_batches1": 12405,
+          "stack_batches2": 12403,
+          "batch_limit": 5,
+          "command_limit": 8
+        }
+      ],
+      "zink": []
+    },
+    {
+      "case": "vkcube-wayland-probe",
+      "variant": "default",
+      "receipt": ".source/gpu-stage1/s44-sync-overhead/benchmarks/r2-profile-vkcube-wayland-probe-default-20261101-023432-25627/summary.json",
+      "wrapper": [
+        {
+          "scope": "process_cumulative",
+          "enabled": 1,
+          "submit1": 1201,
+          "submit2": 1200,
+          "stack1": 1201,
+          "stack2": 1200,
+          "commands": 1201,
+          "heap_calls": 0,
+          "null_fence_skips": 4,
+          "stack_batches1": 1201,
+          "stack_batches2": 1200,
+          "batch_limit": 5,
+          "command_limit": 8
+        }
+      ],
+      "zink": []
+    }
+  ],
+  "local_mock": {
+    "cases": 102,
+    "ASan": true,
+    "UBSan": true,
+    "LSan": false,
+    "test_sha256": "1bd9dcf0fed4bea31076c83465bd3f2929d866552db48c7e6dd992841d756d7c"
+  },
+  "policy_fixture_checks": 22,
+  "terminal_fixture_checks": 8,
+  "sources": {
+    "mesa": {
+      "modified_sources": {
+        "src/gallium/drivers/zink/zink_batch.c": "befe0dd50916ea61fbc8658d25c4b86cad49e17e00b4bd89b26ef035e0b34c91",
+        "src/gallium/drivers/zink/zink_screen.c": "327938e17434d3ee623ebfdcfefb08ac6cca3613188c688eca0c734ba4f84675",
+        "src/gallium/drivers/zink/zink_screen.h": "808990a88ac9f19f76e013220761e38471b7d07e263bf6f77155d6b5d543abdb",
+        "src/gallium/drivers/zink/zink_types.h": "23e0174ce0ef2d7618421e82dc5a74a878375bea2e7510389fb614bc43569f44"
+      },
+      "patches": {
+        "graphics/patches/mesa/zink/0001-s44-submit-compaction-profile.patch": "74aa4b476abdb8d64bf86abe25b36690334330de28395746a0dac2ccac245708",
+        "graphics/patches/mesa/zink/0002-zink-submit-default-on.patch": "15796e2212c6ad264168fbabc3c6d944847136de35eada5573c5703e2dd97420"
+      },
+      "patches_manifest_sha256": "ed9582c1fa7926290fcb011ab58fc052a094b5215533b817c0fb6c970e1a3df5",
+      "prepare": {
+        "baseline_git": "6f90e92dfdacc4759d8e9ccb328805d0f0b4439b",
+        "baseline_source": "/data/data/com.termux/files/home/alroot_wayland/.source/gpu-stage1/s42-default-graphics/mesa/source",
+        "build": "/data/data/com.termux/files/home/alroot_wayland/.source/gpu-stage1/s44-sync-overhead/mesa/build",
+        "installed_files_changed": false,
+        "options": [
+          "--prefix=/data/data/com.termux/files/usr",
+          "--libdir=lib",
+          "--sysconfdir=etc",
+          "--datadir=share",
+          "--buildtype=debugoptimized",
+          "-Dgallium-drivers=zink,freedreno,softpipe,llvmpipe",
+          "-Dvulkan-drivers=",
+          "-Dfreedreno-kmds=msm,kgsl",
+          "-Dplatforms=x11,wayland",
+          "-Degl=enabled",
+          "-Dglx=dri",
+          "-Dglvnd=enabled",
+          "-Dgles1=enabled",
+          "-Dgles2=enabled",
+          "-Dopengl=true",
+          "-Dgbm=enabled",
+          "-Dllvm=enabled",
+          "-Dshared-llvm=enabled",
+          "-Dandroid-stub=false",
+          "-Dbuild-tests=false",
+          "-Dgallium-va=disabled",
+          "-Dgallium-rusticl=false",
+          "-Dvideo-codecs=",
+          "-Dmesa-clc=auto",
+          "-Ddri-drivers-path=/data/data/com.termux/files/usr/lib/dri",
+          "-Dc_args=--target=aarch64-linux-android35",
+          "-Dcpp_args=--target=aarch64-linux-android35",
+          "-Dc_link_args=-Wl,--no-as-needed -landroid-shmem -Wl,--as-needed",
+          "-Dcpp_link_args=-Wl,--no-as-needed -landroid-shmem -Wl,--as-needed"
+        ],
+        "source": "/data/data/com.termux/files/home/alroot_wayland/.source/gpu-stage1/s44-sync-overhead/mesa/source"
+      },
+      "prepare_receipt_sha256": "f925694b067c31a72fde323e4d401233963dc782c3d67638314a4dbfea77ec79"
+    },
+    "wrapper": {
+      "modified_sources": {
+        "src/vulkan/wrapper/wrapper_device.c": "91f77c3ec761144f563f27b9a8d879b18b677c69aa37e86f8caaf7ecd995c5d0",
+        "src/vulkan/wsi/wsi_common.c": "510e1b739e09408e4c167a204e8c2322416da6e84d81abe507df979c74f508f4",
+        "src/vulkan/wsi/wsi_common_private.h": "bf4648bdf0e31e25bf36049ef9aedd82d83677aa8686cee4d99e43871acd51b3",
+        "src/vulkan/wsi/wsi_common_wayland.c": "58a95fbabfa0061807618bf2a8b1626719fc7859eff38bcb1d09ddc8fe16ed46",
+        "src/vulkan/wsi/wsi_common_x11.c": "b268dd6bdc29c1d6e1ea53978442dbb0a128e54292c856fb6381de43f07cc7ee",
+        "src/vulkan/wsi/wsi_s44_profile.h": "e715b5978de77105d0839562a42e45fa05bfcbac0704ecfcc787460a27a32727"
+      },
+      "patches": {
+        "graphics/patches/mesa/wrapper/0006-s44-submit-stack.patch": "d9f5ae06e1d477ffc1b026996ed49f81a891094fc97ddd1cd2f85abcffb2e85b",
+        "graphics/patches/mesa/wrapper/0007-s44-wsi-profile.patch": "8476c2d503a7385e42e81b0dd8d4e03ba742f8b5a352aa64eb92fa319d1086c1",
+        "graphics/patches/mesa/wrapper/0008-wrapper-small-multi-submit.patch": "7453bf479d49d33ec0a1f177fc3cce40a80d0e0787e6e295db936118c3057d83"
+      },
+      "patches_manifest_sha256": "f6da0e5fd62b14880b3c8b0cbea17f85b399566ee9c5f0695a754feb5f555e06",
+      "prepare": {
+        "baseline_git": "b3b32abb82af4d374fd35c7192a7f524a5fc8bd3",
+        "baseline_source": "/data/data/com.termux/files/home/alroot_wayland/.source/gpu-stage1/s42-default-graphics/wrapper/source",
+        "build": "/data/data/com.termux/files/home/alroot_wayland/.source/gpu-stage1/s44-sync-overhead/wrapper/build",
+        "installed_files_changed": false,
+        "options": [
+          "--prefix=/data/data/com.termux/files/usr",
+          "--libdir=lib",
+          "--buildtype=debugoptimized",
+          "--wrap-mode=nofallback",
+          "-Dvulkan-drivers=wrapper",
+          "-Dplatforms=x11,wayland",
+          "-Dgallium-drivers=",
+          "-Dglx=disabled",
+          "-Degl=disabled",
+          "-Dgbm=disabled",
+          "-Dllvm=disabled",
+          "-Dbuild-tests=false",
+          "-Dgallium-va=disabled",
+          "-Dvideo-codecs=",
+          "-Dc_args=--target=aarch64-linux-android35",
+          "-Dc_link_args=-landroid-shmem",
+          "-Dcpp_link_args=-landroid-shmem"
+        ],
+        "source": "/data/data/com.termux/files/home/alroot_wayland/.source/gpu-stage1/s44-sync-overhead/wrapper/source"
+      },
+      "prepare_receipt_sha256": "19966b70ba263c227976213a82dfcbea1aaa2fb2343a3b69402fc326d633fcfa"
+    }
+  },
+  "rollback": {
+    "mesa": {
+      "path": "/data/data/com.termux/files/home/alroot_wayland/.source/gpu-stage1/s44-sync-overhead/rollback/mesa_27.0.0~devel+alroot.s42.1_aarch64.deb",
+      "sha256": "87b07712d61616ae978bbaaf95f1d690820a3882f9c55b0ff8cfb6a351a345cf",
+      "version": "27.0.0~devel+alroot.s42.1"
+    },
+    "mesa-dev": {
+      "path": "/data/data/com.termux/files/home/alroot_wayland/.source/gpu-stage1/s44-sync-overhead/rollback/mesa-dev_27.0.0~devel+alroot.s42.1_all.deb",
+      "sha256": "6df20b4ab28b44e73a596e482e7dcdc66d756af47f07b35a5384810c1b7db4f7",
+      "version": "27.0.0~devel+alroot.s42.1"
+    },
+    "vulkan-wrapper-android": {
+      "path": "/data/data/com.termux/files/home/alroot_wayland/.source/gpu-stage1/s44-sync-overhead/rollback/vulkan-wrapper-android_26.3.0+alroot.s42.1_aarch64.deb",
+      "sha256": "36e1b6fed5970861bd606d8f9721d31a3264388db6f5dbb4c79a33c0f992aa46",
+      "version": "26.3.0+alroot.s42.1"
+    }
+  },
+  "evidence_sha256": {
+    ".source/gpu-stage1/s44-sync-overhead/regression-tests/staged-vkcube-20261101-023947-3470/summary.json": "ab753762459e7107bfacc4f28f83e3530731cc7a76cb74184835077c94a8bae0",
+    ".source/gpu-stage1/s44-sync-overhead/regression-tests/staged-zink-20261101-024004-6092/summary.json": "00536ae4b22baa82d6577362ba815e5a3e0ff0d355e0752a265cc741d8a34f8e",
+    ".source/gpu-stage1/s44-sync-overhead/regression-tests/installed-vkcube-20261101-024541-19690/summary.json": "f6be916a155d7c65e608b3dd855f98a7d70c4b336169f785c24293b295bf569e",
+    ".source/gpu-stage1/s44-sync-overhead/regression-tests/installed-zink-20261101-024557-21225/summary.json": "4d390110071fcf0499c3b7faad90a43edf2cdc823dbc60d620bcce7799e567e0",
+    ".source/gpu-stage1/s44-sync-overhead/benchmarks/installed-default-egl-wayland-light-20261101-024659-23989/summary.json": "353bc80ef2ea4f5b48d430f4fd839c2f1b2f0b9f7d023dfd35a423f735572439",
+    ".source/gpu-stage1/s44-sync-overhead/benchmarks/installed-default-glx-light-20261101-024657-23893/summary.json": "f639af74e1a71017d799a2ab14e3015d1deac60d9c1831dd2fb2c9541997c848",
+    ".source/gpu-stage1/s44-sync-overhead/benchmarks/installed-default-vkcube-wayland-probe-20261101-024700-24019/summary.json": "8fdbdf6c9e7e8582aa38846cb60eac7f712a705d1a2aa130f72020c883bda108",
+    ".source/gpu-stage1/s44-sync-overhead/selection.json": "4ffce5345b12d0f1d6e1ab685908b28a6ca97a2f189a821316b37f762f5df4c1",
+    ".source/gpu-stage1/s44-sync-overhead/measurement-selection.json": "db98f15a3f57618ce0c72965feb2435609188890a01deacdf6ebd8ee11d8db60",
+    ".source/gpu-stage1/s44-sync-overhead/package-manifest.json": "3d349d3cb39dc4317de4ab5265431a7dfe9a3c4d0b0678b9b86327ad983265e6",
+    ".source/gpu-stage1/s44-sync-overhead/install-receipt.json": "e5a31ff8c754e7786ef41af916751c089b7c60af040656221ef09f689efc9f21",
+    ".source/gpu-stage1/s44-sync-overhead/benchmarks/r2-abba-egl-wayland-light-1-baseline-20261101-023620-28947/summary.json": "489a3d955ed64238794911c449b32b6788d865d95d1da6f94fa14cd111465bb1",
+    ".source/gpu-stage1/s44-sync-overhead/benchmarks/r2-abba-egl-wayland-light-2-both-20261101-023625-29033/summary.json": "158c76b23be6134bbe832fb6c9ef448c7320a2f89eaf1684da92da584497d8dc",
+    ".source/gpu-stage1/s44-sync-overhead/benchmarks/r2-abba-egl-wayland-light-3-both-20261101-023631-29135/summary.json": "0659616053ba8c47b0abed8b2f7aab6de15b933a11a67f9485645805812c8d94",
+    ".source/gpu-stage1/s44-sync-overhead/benchmarks/r2-abba-egl-wayland-light-4-baseline-20261101-023636-29315/summary.json": "f9877fa093529be3c4be9311508a7aeab1016e741bc0fd54e00c268fd9e5f7e3",
+    ".source/gpu-stage1/s44-sync-overhead/benchmarks/r2-abba-glx-heavy-1-baseline-20261101-023700-29790/summary.json": "3683c0bf8350fad499e4c5b0040e0d4dad4a1321cd6548c2f2d026e33f4b45be",
+    ".source/gpu-stage1/s44-sync-overhead/benchmarks/r2-abba-glx-heavy-2-both-20261101-023704-29945/summary.json": "9789a64b15c90a47e3d266129958b997cc2683dec07c756db77315816797fdb2",
+    ".source/gpu-stage1/s44-sync-overhead/benchmarks/r2-abba-glx-heavy-3-both-20261101-023709-30049/summary.json": "d708d23a2e488b0458920bf7f57eff42ecb05ee704416942a969808d001a4484",
+    ".source/gpu-stage1/s44-sync-overhead/benchmarks/r2-abba-glx-heavy-4-baseline-20261101-023714-30214/summary.json": "d8e44652faaa193400a5a89edd8f2d519636ba9331d1de6dd48b31d63658abff",
+    ".source/gpu-stage1/s44-sync-overhead/benchmarks/r2-abba-glx-light-1-baseline-20261101-023602-28462/summary.json": "17555c23c0c352b509f90893565a9d9d612c1414c5abbccae21577af9f78709a",
+    ".source/gpu-stage1/s44-sync-overhead/benchmarks/r2-abba-glx-light-2-both-20261101-023606-28581/summary.json": "3510949e28fe8070f4cad2e6eefdaca4d006e07f8c99fa2ddfce627066fa692b",
+    ".source/gpu-stage1/s44-sync-overhead/benchmarks/r2-abba-glx-light-3-both-20261101-023611-28658/summary.json": "ab1e5edf3bfa5c4869adda488205c9e158910e3e73e0d4ff176be9af17f7acd8",
+    ".source/gpu-stage1/s44-sync-overhead/benchmarks/r2-abba-glx-light-4-baseline-20261101-023615-28845/summary.json": "86a9cc4bbcdf05bbac28aca2059c0d6cce87105f13ce2edb04aeb0dfb418ed73",
+    ".source/gpu-stage1/s44-sync-overhead/benchmarks/r2-abba-vk-xcb-heavy-1-baseline-20261101-023642-29440/summary.json": "bedd5ad0a14fdbbb66fe7c5ad2d495571a05ce2c583cb783fd451ea47fbfcc88",
+    ".source/gpu-stage1/s44-sync-overhead/benchmarks/r2-abba-vk-xcb-heavy-2-both-20261101-023646-29537/summary.json": "ae3ac13f7fc29e12443bf978c653be777d1e01f58d43309e2a55c078ab361791",
+    ".source/gpu-stage1/s44-sync-overhead/benchmarks/r2-abba-vk-xcb-heavy-3-both-20261101-023651-29611/summary.json": "4dd48b6f8d08d243ab373ce3682fd02a0fc0983928e9b4e8f03d26f2a7b4c560",
+    ".source/gpu-stage1/s44-sync-overhead/benchmarks/r2-abba-vk-xcb-heavy-4-baseline-20261101-023655-29686/summary.json": "548060f8e5f0d6c92ab583f36780ea6425a0c351c1aec0b0cc38f80378491057",
+    ".source/gpu-stage1/s44-sync-overhead/benchmarks/r2-abba-vk-xcb-light-1-baseline-20261101-023545-27716/summary.json": "a84cf961033e3ba7d2ca693c35574612f24cfadbbba7c933ae180b9e2852153b",
+    ".source/gpu-stage1/s44-sync-overhead/benchmarks/r2-abba-vk-xcb-light-2-both-20261101-023549-27898/summary.json": "d2109774d4ea5c9b4b84f7e2fc692b9b9b64d00f6388762c512c44376fa741bb",
+    ".source/gpu-stage1/s44-sync-overhead/benchmarks/r2-abba-vk-xcb-light-3-both-20261101-023553-28121/summary.json": "9731aba641b64b62d4c4c696a386384d885dd095cf242d24234eed84fb3f7be8",
+    ".source/gpu-stage1/s44-sync-overhead/benchmarks/r2-abba-vk-xcb-light-4-baseline-20261101-023558-28243/summary.json": "de7c72b5189edcd5fc4cc4ec6bf300539b28ccea7348d66461b19a627c75b6a5",
+    ".source/gpu-stage1/s44-sync-overhead/benchmarks/r2-baab-vk-xcb-heavy-1-both-20261101-023830-32618/summary.json": "a39ce28015ffcdf8038c55fc6ba9025eedbb97dc16b149cdc6b7fe5c0ad07bda",
+    ".source/gpu-stage1/s44-sync-overhead/benchmarks/r2-baab-vk-xcb-heavy-2-baseline-20261101-023834-32742/summary.json": "fce3d24e7a3fe14876408868e4356699f2804b36b2004750ef555d92a7a9ce71",
+    ".source/gpu-stage1/s44-sync-overhead/benchmarks/r2-baab-vk-xcb-heavy-3-baseline-20261101-023838-399/summary.json": "d8c186cfb868a5b1498c8b8f6cbdfc998f49f163d4a28c81c7d251f5a9ef0d96",
+    ".source/gpu-stage1/s44-sync-overhead/benchmarks/r2-baab-vk-xcb-heavy-4-both-20261101-023843-482/summary.json": "07e1c01d2de22e9fad101f0fa88044daea3c93657e2878a2c3278de2e51eb3b3",
+    ".source/gpu-stage1/s44-sync-overhead/benchmarks/r2-baab-vk-xcb-light-1-both-20261101-023847-573/summary.json": "4b776e38866cea34742e7aa889f65089c4b6b6c42d5020a36582f73703dd49b7",
+    ".source/gpu-stage1/s44-sync-overhead/benchmarks/r2-baab-vk-xcb-light-2-baseline-20261101-023851-833/summary.json": "84c2980bc4ad42331e0539c866b11d83dd80d2d94c52ee96055cc85cc4bb29fa",
+    ".source/gpu-stage1/s44-sync-overhead/benchmarks/r2-baab-vk-xcb-light-3-baseline-20261101-023856-966/summary.json": "d881e7fcaac43b4aeace4b225c0e04bf92a980b98eb9b6aaefa3971ab793913e",
+    ".source/gpu-stage1/s44-sync-overhead/benchmarks/r2-baab-vk-xcb-light-4-both-20261101-023900-1451/summary.json": "30bf5fba0d73672fb839ebd5fcf0d7e1ebdb769f74244042b1f9586dc932dc1c",
+    ".source/gpu-stage1/s44-sync-overhead/benchmarks/r2-profile-egl-wayland-light-baseline-20261101-023415-25173/summary.json": "f34069fefdb5d2957ef1f96bed9c471313f16d68024596eebcec0503c9da0cb0",
+    ".source/gpu-stage1/s44-sync-overhead/benchmarks/r2-profile-egl-wayland-light-default-20261101-023424-25450/summary.json": "64fd89e97a751678fd27d32e6ada97c3587b4f72e326568959ef84ee86a251df",
+    ".source/gpu-stage1/s44-sync-overhead/benchmarks/r2-profile-glx-light-baseline-20261101-023405-24805/summary.json": "e8229a493e4ba86abda141a383a1c1910de2dc8cdf2c70d6c4f729de3d1eb1c6",
+    ".source/gpu-stage1/s44-sync-overhead/benchmarks/r2-profile-glx-light-default-20261101-023410-25076/summary.json": "fabc65cd8083cff87641f911d3fadd547a48dd55e9a996911ee98ec8d5cf5a08",
+    ".source/gpu-stage1/s44-sync-overhead/benchmarks/r2-profile-vk-xcb-light-baseline-20261101-023315-23049/summary.json": "f2d2d9715b78d06a06252685a595f942eaa3ba57bf914e5c05884060b469ad8f",
+    ".source/gpu-stage1/s44-sync-overhead/benchmarks/r2-profile-vk-xcb-light-default-20261101-023401-24587/summary.json": "be8767995dd466c467493290bbd82e45f294dd31543e71d91407f970813fbdbf",
+    ".source/gpu-stage1/s44-sync-overhead/benchmarks/r2-profile-vkcube-wayland-probe-default-20261101-023432-25627/summary.json": "01d8d4e249754e1f66e3498399ec060490d24b4f5eb30140b6b0b279e0dcf162"
+  },
+  "limits": [
+    "No SuperTuxKart benchmark or Android physical display FPS was measured.",
+    "No fixed FPS gain or reduced mandatory CPU fence wait is claimed.",
+    "During-resize rotation/pixel correctness is not proved by the inherited COPY-completion probe. Fixed-size image advancement is checked.",
+    "Native Wayland AHB producer readiness and DRI previous-frame throttle remain enabled. No zero-copy or host APK change.",
+    "Original eight-file protected snapshot remains historical: five authorized target files differ, three non-target files match."
+  ]
+}

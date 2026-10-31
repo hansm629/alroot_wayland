@@ -1,7 +1,7 @@
 # Alroot graphics acceleration — S26U baseline and stage 1 contracts
 
 This directory holds optional backend adapters, isolated validation, and the
-user-authorized **S42 installed Vulkan Wrapper + Mesa 27 Zink baseline** for
+user-authorized **installed Vulkan Wrapper + Mesa 27 Zink baseline** for
 S26U Termux Bionic XFCE4. S42 defines the direct S39 Xwayland session as the
 `awstart` default while keeping the server renderer separate from client
 driver selection. Package identities, installation/rollback procedures and
@@ -14,10 +14,19 @@ inside the X11 desktop's window manager, while explicit Wayland selection and
 Wayland-session AUTO behavior remain available. The installed package's plain
 launch and WM close action passed in the running XFCE session.
 
+[GPU-S44 submission overhead improvements](docs/gpu-s44-submit-overhead.md)
+upgrade Wrapper to `26.3.0+alroot.s44.1` and Mesa/Mesa-dev to
+`27.0.0~devel+alroot.s44.1`. Bounded submit translation avoids repeated Wrapper
+allocations and Zink omits an empty submit header, with both changes enabled
+in the installed binaries. Required fence waits remain. Staged and installed
+resize/close gates passed; short timing runs do not establish a fixed FPS gain.
+The [S44 results](docs/gpu-s44-submit-overhead-results.json) record identities,
+measurements, limits and rollback evidence.
+
 The stage notes below retain their original evidence and decisions. Statements
 in those notes that global drivers, the APK or defaults were unchanged refer
-to that stage; they do not prohibit the later, explicitly authorized S42
-package/default promotion. They also do not establish S42 runtime acceptance.
+to that stage; they do not prohibit the later, explicitly authorized S42/S44
+package/default promotions. Runtime acceptance is recorded separately for each.
 
 ## Non-negotiable contracts
 
@@ -27,11 +36,11 @@ package/default promotion. They also do not establish S42 runtime acceptance.
 2. **ANGLE Vulkan-backend EGL/GLES is an EGL implementation**, not a DRM/GBM
    device. A usable ANGLE context does **not** prove that an Xwayland GLAMOR
    render target is exportable to `linux-dmabuf` or an AHB. Probe functionality.
-3. **Preserve Termux-X11 DRI3** for every driver. S42 authorizes reviewed
+3. **Preserve Termux-X11 DRI3** for every driver. The authorized S42/S44 promotions use reviewed
    `.deb` installation of Wrapper, Mesa/Mesa-dev and the accepted demo owner
    packages into the standard Termux prefix, with exact rollback artifacts.
    Keep compatibility checks for the shared drivers; intentional replacements
-   are checked against S42 package manifests, not earlier unchanged-file
+   are checked against the accepted owner-package manifests, not earlier unchanged-file
    snapshots. `$PREFIX/bin/Xwayland`, `/dev/*` and the Termux-X11 APK are outside
    this promotion. The Alroot GPU Xwayland binary remains separate, selected
    only inside the validated Alroot session; this S26U selection does not
