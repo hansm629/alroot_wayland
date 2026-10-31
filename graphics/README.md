@@ -8,6 +8,12 @@ driver selection. Package identities, installation/rollback procedures and
 the actual deployment gates are recorded in
 [GPU-S42 installed defaults](docs/gpu-s42-installed-defaults.md).
 
+[GPU-S43 vkcube default WSI correction](docs/gpu-s43-vkcube-default-wsi.md)
+updates only `vulkan-tools` to `1.4.365+alroot.s42.2`: plain `vkcube` now opens
+inside the X11 desktop's window manager, while explicit Wayland selection and
+Wayland-session AUTO behavior remain available. The installed package's plain
+launch and WM close action passed in the running XFCE session.
+
 The stage notes below retain their original evidence and decisions. Statements
 in those notes that global drivers, the APK or defaults were unchanged refer
 to that stage; they do not prohibit the later, explicitly authorized S42

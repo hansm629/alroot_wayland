@@ -1,5 +1,11 @@
 # GPU-S42 — installed Wrapper / Mesa 27 defaults for S26U
 
+**S43 follow-up:** the `vulkan-tools` package below was subsequently updated to
+`1.4.365+alroot.s42.2` to correct plain `vkcube` selecting the host Wayland socket
+from an X11 desktop. See [GPU-S43](gpu-s43-vkcube-default-wsi.md) for the installed
+fix and plain-launch/WM-close evidence. This page retains the original S42
+package identities and receipts; its X11 demo probes explicitly selected XCB.
+
 ## Scope and deployment state
 
 S42 promotes the accepted Vulkan Wrapper and Mesa 27 Zink client path to the

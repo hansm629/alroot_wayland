@@ -44,3 +44,25 @@ equivalent. Build success is not a visual or Present regression result.
 Use the private baseline and coalesced variants for a controlled comparison:
 both use Release, XCB plus Xlib, and no Wayland/display WSI. Xlib is enabled because
 this upstream build needs its Display type even when exercising `--wsi xcb`.
+
+## S42 package promotion and S43 default selection
+
+S42 installed the accepted coalesced client through the `vulkan-tools` owner
+package and enabled XCB, Xlib, Wayland and display WSI. With all four enabled,
+upstream AUTO tries Wayland first. The Android host socket can be reachable
+from the X11 desktop's runtime directory even without `WAYLAND_DISPLAY`.
+
+Patch 0005 keeps AUTO in an explicitly identified X11 session when `DISPLAY`
+is nonempty and an X11 backend is compiled. It skips only the Wayland AUTO
+probe; the existing XCB/Xlib checks still select a backend only after a
+successful connection. Explicit `--wsi` choices and Wayland-session AUTO
+remain unchanged. The patch does not change the accepted resize event loop.
+
+`graphics/tools/build-s43-vkcube-deb.py` pins the accepted S42 package/source,
+patch 0005 and its resulting source. It builds only `vkcube`, preserves the
+other package payload and emits `vulkan-tools 1.4.365+alroot.s42.2`, with the
+exact S42 package retained for rollback. The build expects the accepted S42
+package to be installed; it deliberately rejects a different baseline.
+
+See [GPU-S43](../../../docs/gpu-s43-vkcube-default-wsi.md) for installed hashes
+and the real-desktop default-launch and window-manager-close checks.

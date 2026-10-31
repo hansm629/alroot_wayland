@@ -1,0 +1,19 @@
+--- a/cube/cube.c
++++ b/cube/cube.c
+@@ -3778,7 +3778,15 @@
+ // Otherwise, it errors out if the specified wsi_platform isn't available
+ static void demo_check_and_set_wsi_platform(struct demo *demo) {
+ #if defined(VK_USE_PLATFORM_WAYLAND_KHR)
+-    if (demo->wsi_platform == WSI_PLATFORM_WAYLAND || demo->wsi_platform == WSI_PLATFORM_AUTO) {
++    // An X11 desktop can share a runtime directory with the Android Wayland host.
++    // Keep AUTO in the desktop's window manager; explicit --wsi still wins.
++    bool prefer_x11 = false;
++#if defined(VK_USE_PLATFORM_XCB_KHR) || defined(VK_USE_PLATFORM_XLIB_KHR)
++    const char *session_type = getenv("XDG_SESSION_TYPE");
++    const char *display = getenv("DISPLAY");
++    prefer_x11 = session_type != NULL && strcmp(session_type, "x11") == 0 && display != NULL && display[0] != '\0';
++#endif
++    if (demo->wsi_platform == WSI_PLATFORM_WAYLAND || (demo->wsi_platform == WSI_PLATFORM_AUTO && !prefer_x11)) {
+         bool wayland_extension_available = false;
+         for (uint32_t i = 0; i < demo->enabled_extension_count; i++) {
+             if (strcmp(demo->extension_names[i], VK_KHR_WAYLAND_SURFACE_EXTENSION_NAME) == 0) {
