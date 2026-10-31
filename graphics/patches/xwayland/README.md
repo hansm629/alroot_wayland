@@ -279,6 +279,43 @@ still intermittent edge artifacts; do not claim pixel-perfect or
 zero-flicker gameplay. See
 `graphics/docs/gpu-s32-nonblank-present-continuity.md`.
 
+### S36 — KGSL root GLAMOR directly backed by Android AHB (candidate)
+
+`kgsl/0010-kgsl-rootful-ahb-direct-output.patch` is **not applied by
+the ordinary KGSL Xwayland builder**. A separate S36 build applies it to
+an isolated copy of the pinned S32-era private GLAMOR source, then links
+that isolated Xwayland executable with the S32 window/Present objects,
+the AHB image-FD validator and the existing Alroot Wayland custom
+`alroot_gpu_buffer_v1` client protocol. Global GLES/Vulkan and system
+Termux-X11 binaries are never rebuilt or overwritten.
+
+Only explicit `S36_KGSL_ROOT_AHB_OUTPUT=1` on S26 Ultra / Adreno KGSL
+rootful, 1920×1080 and 24-bit output uses the special allocation.
+The **GLAMOR pixmap is already an AHB-backed GPU texture**, so Xfwm4
+composes straight into it, and the Android host imports the same storage
+into its existing Vulkan VkImage/desktop GPU-composition path. No second
+GLES output blit, host VkBuffer staging or CPU pixel copies. Producer
+GPU `glFinish()` and final Vulkan GPU composition remain; this is not
+direct scanout or end-to-end zero-copy. Other sizes/vendors/rootless
+surfaces use the original DMA-BUF transport.
+
+The opt-in S36 has passed full-HD real AHB pixel identity, actual Android
+VkImage import and disposable Xfwm4 `vkcube`/Mesa Zink `glxgears`
+survival/animated-content tests; **actual Android physical visual quality
+is still unverified**. Keep the existing S32/S30 rollback and do not
+promote S36 to default.
+
+```bash
+bash graphics/tools/build-s36-rootful-ahb-output.sh
+bash graphics/tools/test-s36-build-and-scope.sh
+python3 graphics/tools/test-s36-rootful-ahb-output.py --mode candidate --demo vkcube --pattern extreme --wm --seconds 7
+python3 graphics/tools/test-s36-rootful-ahb-output.py --mode candidate --demo zink --pattern abrupt --wm --seconds 8
+```
+
+See `graphics/docs/gpu-s36-direct-rootful-ahb-output.md` for the exact
+private binary hash, explicit native Termux session switch, physical
+acceptance, and `--restore-s32`/`--restore-s30` rollback commands.
+
 `S17_MATRIX_MODE=smoke bash graphics/tools/test-s17-zink-matrix.sh` checks
 Termux wrapper + Zink, Termux Turnip + Zink and Debian Turnip + Zink on
 isolated Xwayland, validating runtime execution, AHB/ABI branch, X11

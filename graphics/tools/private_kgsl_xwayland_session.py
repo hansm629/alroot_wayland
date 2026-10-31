@@ -39,6 +39,10 @@ PRIVATE_XWAYLANDS = {
         'S32_KGSL_NONBLANK_REAL_PRESENT',
         'b56b7abacd6f1e1a9f1ba2e453d2038b73eec15cd5cf5d5160eb582876194455',
     ),
+    ROOT / '.source/gpu-stage1/s36-ahb-output/runtime/Xwayland': (
+        'S36_KGSL_ROOTFUL_AHB_DIRECT_VKIMAGE',
+        'df7c98daf732cbc735646e0fa92ca3ae9689a681952d3783acb7c7b1cae7e9f5',
+    ),
 }
 
 

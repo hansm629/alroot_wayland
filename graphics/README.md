@@ -872,3 +872,25 @@ APK, driver, default or XFCE change was promoted. The investigation is
 **unresolved** until actual Android SurfaceView/panel content and buffer
 fences are correlated with X11. Read-only test and evidence:
 `graphics/docs/gpu-s35-resize-display-pipeline-incident.md`.
+
+**GPU-S36 direct AHB-backed rootful Xwayland output (2026-10-31):** After
+S35 identified that Xfwm4's composited overlay was not accumulating
+colored gear ghosts in isolated movement tests, S36 tests the **output
+transport** rather than adding more old-frame copying or clearing. On
+S26 Ultra / KGSL only, the 1920×1080 GLAMOR root GPU texture is itself
+backed by AHardwareBuffer external GPU memory and sent over the existing
+`alroot_gpu_buffer_v1` Wayland protocol. Android's unchanged Vulkan host
+imports it as a **VkImage**, avoiding both the previous Xwayland DMA-BUF
+→ Android `VkBuffer → VkImage` GPU-copy and an extra GLES output blit.
+Android GPU composition/swapchain rendering and producer `glFinish()`
+remain; this is **not end-to-end zero-copy**. The first integration
+exposed an Xorg Wayland-generation manager lifetime bug (`invalid object
+27`), now fixed in the separate S36 candidate. Full-HD AHB GPU pixel
+identity 5/5, real host VkImage import, isolated Vulkan `vkcube` 42
+gentle/37 extreme resizes and Mesa27 Zink `glxgears` 43 abrupt resizes
+passed. **No physical-screen visual verdict or FPS improvement is
+claimed**: the helper reported 0 on-screen frames during isolated
+testing; S32 and S36 Zink demo FPS were similar. No user XFCE restart,
+APK or system driver change; all previous project binaries remain
+SHA256-pinned. Opt-in S36 launch and S32/S30 rollback are documented in
+`graphics/docs/gpu-s36-direct-rootful-ahb-output.md`.

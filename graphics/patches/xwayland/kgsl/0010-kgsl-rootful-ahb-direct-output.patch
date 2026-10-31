@@ -1,0 +1,187 @@
+--- a/hw/xwayland/xwayland-glamor-gbm.c
++++ b/hw/xwayland/xwayland-glamor-gbm.c
+@@ -69,6 +69,7 @@
+ #include "xwayland-pixmap.h"
+ #include "xwayland-screen.h"
+ #include "xwayland-window-buffers.h"
++#include "s36_xwl_ahb_output.h"
+ 
+ #include "linux-dmabuf-unstable-v1-client-protocol.h"
+ #include "linux-drm-syncobj-v1-client-protocol.h"
+@@ -123,6 +124,7 @@
+ 
+ struct xwl_pixmap {
+     struct wl_buffer *buffer;
++    struct s36_ahb_output *s36_ahb;
+     EGLImage image;
+     unsigned int texture;
+     struct gbm_bo *bo;
+@@ -142,6 +144,11 @@
+ #endif /* DRI3 */
+ };
+ 
++/* The S36 direct AHB pixmap binds its wl_buffer at pixmap creation, before
++ * xwl_glamor_pixmap_get_wl_buffer can be called. Reuse the original Xwayland
++ * wl_buffer.release bookkeeping listener; do not implement a second pool. */
++static const struct wl_buffer_listener xwl_glamor_gbm_buffer_listener;
++
+ static DevPrivateKeyRec xwl_gbm_private_key;
+ static DevPrivateKeyRec xwl_auth_state_private_key;
+ 
+@@ -435,6 +442,52 @@
+ #endif /* defined(XWL_HAS_GLAMOR) && defined(DRI3) */
+     xwl_pixmap_set_private(pixmap, xwl_pixmap);
+ 
++#ifdef __ANDROID__
++    {
++        const char *s36 = getenv("S36_KGSL_ROOT_AHB_OUTPUT");
++        if (s36 && s36[0] == '1' && !s36[1] &&
++            !xwl_screen->rootless &&
++            width == 1920 && height == 1080 && depth == 24 &&
++            hint == CREATE_PIXMAP_USAGE_BACKING_PIXMAP) {
++            /* Manager registration is asynchronous. The first one or
++             * two framebuffers may use the unchanged DMA-BUF fallback.
++             * Once advertised, the *actual* Xorg GLAMOR pixmap texture is
++             * backed by a GPU-writable AHB. No output-to-AHB blit remains. */
++            s36_ahb_output_probe(xwl_screen->display);
++            struct s36_ahb_output *direct = NULL;
++            struct wl_buffer *wlbuf = s36_ahb_output_create(
++                xwl_screen->display, xwl_screen->egl_display, 0,
++                width, height, &direct);
++            if (wlbuf && direct) {
++                unsigned int ahb_texture = s36_ahb_output_texture(direct);
++                if (!glamor_set_pixmap_texture(pixmap, ahb_texture)) {
++                    wl_buffer_destroy(wlbuf);
++                    s36_ahb_output_destroy(direct);
++                    xwl_pixmap_set_private(pixmap, NULL);
++                    free(xwl_pixmap);
++                    glamor_destroy_pixmap(pixmap);
++                    ErrorF("S36_DIRECT_AHB_FBO=ERROR could not install GLAMOR texture\n");
++                    return NULL;
++                }
++                /* GLAMOR now owns ahb_texture and frees it when the pixmap
++                 * is destroyed. The S36 state owns AHB + GL memory only. */
++                s36_ahb_output_glamor_owns_texture(direct);
++                xwl_pixmap->s36_ahb = direct;
++                xwl_pixmap->buffer = wlbuf;
++                xwl_pixmap->texture = ahb_texture;
++                wl_buffer_add_listener(wlbuf,
++                                       &xwl_glamor_gbm_buffer_listener,
++                                       pixmap);
++                static Bool logged_s36_direct;
++                if (!logged_s36_direct) {
++                    logged_s36_direct = TRUE;
++                    ErrorF("S36_KGSL_ROOT_AHB_DIRECT_GLAMOR_FBO=ACTIVE 1920x1080 GPU_ONLY_NO_SECOND_OUTPUT_COPY\n");
++                }
++            }
++        }
++    }
++#endif
++
+     if (xwl_screen->rootless && hint == CREATE_PIXMAP_USAGE_BACKING_PIXMAP)
+         glamor_clear_pixmap(pixmap);
+ 
+@@ -904,6 +957,12 @@
+         if (xwl_pixmap->buffer)
+             wl_buffer_destroy(xwl_pixmap->buffer);
+ 
++        if (xwl_pixmap->s36_ahb) {
++            xwl_glamor_egl_make_current(xwl_screen);
++            s36_ahb_output_destroy(xwl_pixmap->s36_ahb);
++            xwl_pixmap->s36_ahb = NULL;
++        }
++
+         if (xwl_pixmap->image != EGL_NO_IMAGE_KHR)
+             eglDestroyImageKHR(xwl_screen->egl_display, xwl_pixmap->image);
+         if (xwl_pixmap->bo)
+@@ -1128,7 +1187,15 @@
+     if (xwl_pixmap->buffer) {
+         if (xwl_glamor_is_kgsl_surfaceless(xwl_screen)) {
+             xwl_glamor_egl_make_current(xwl_screen);
+-            glFinish();
++            if (xwl_pixmap->s36_ahb) {
++                if (s36_ahb_output_copy(xwl_pixmap->s36_ahb,
++                                        xwl_pixmap->texture) != 0) {
++                    ErrorF("S36_AHB_ROOT_COPY_ERROR existing Wayland buffer\n");
++                    return NULL;
++                }
++            } else {
++                glFinish();
++            }
+         }
+         /* Buffer already exists. */
+         return xwl_pixmap->buffer;
+@@ -1137,6 +1204,43 @@
+     if (!xwl_pixmap->bo && !xwl_glamor_is_kgsl_surfaceless(xwl_screen))
+        return NULL;
+ 
++#ifdef __ANDROID__
++    {
++        const char *s36_enable = getenv("S36_KGSL_ROOT_AHB_OUTPUT");
++        if (s36_enable && s36_enable[0] == '1' && !s36_enable[1] &&
++            !xwl_screen->rootless &&
++            xwl_glamor_is_kgsl_surfaceless(xwl_screen) &&
++            pixmap->drawable.width == 1920 &&
++            pixmap->drawable.height == 1080 &&
++            pixmap->drawable.depth == 24) {
++            xwl_glamor_egl_make_current(xwl_screen);
++            if (xwl_pixmap->s36_ahb) {
++                if (s36_ahb_output_copy(xwl_pixmap->s36_ahb,
++                                        xwl_pixmap->texture) == 0)
++                    xwl_pixmap->buffer = s36_ahb_output_recreate_buffer(
++                        xwl_pixmap->s36_ahb);
++            }
++            if (xwl_pixmap->buffer) {
++                wl_buffer_add_listener(xwl_pixmap->buffer,
++                                        &xwl_glamor_gbm_buffer_listener,
++                                        pixmap);
++                static Bool logged_s36;
++                if (!logged_s36) {
++                    logged_s36 = TRUE;
++                    ErrorF("S36_KGSL_ROOT_AHB_OUTPUT=ACTIVE verified fullHD AHB->host VkImage Wayland transport\n");
++                }
++                return xwl_pixmap->buffer;
++            }
++            if (xwl_pixmap->s36_ahb) {
++                ErrorF("S36_KGSL_ROOT_AHB_OUTPUT=FRAME_REFUSED source GPU copy or Wayland handle failed\n");
++                return NULL;
++            }
++            /* The first pixels before the custom manager is advertised
++             * use unchanged DMA-BUF. Never introduce an extra GL copy. */
++        }
++    }
++#endif
++
+     if (xwl_glamor_is_kgsl_surfaceless(xwl_screen)) {
+         if (!init_buffer_params_kgsl_surfaceless(xwl_screen, pixmap,
+                                                  &format,
+@@ -1234,6 +1338,13 @@
+ {
+     struct xwl_gbm_private *xwl_gbm = xwl_gbm_get(xwl_screen);
+ 
++#ifdef __ANDROID__
++    /* A new Xorg generation reconnects to the Wayland host with a fresh
++     * wl_display. Never send AHB wl_buffer requests with an old registry
++     * manager object ID (S36 initial trace: invalid object 27). */
++    s36_ahb_output_reset(xwl_screen->display);
++#endif
++
+     if (!xwl_gbm)
+         return;
+ 
+@@ -2605,6 +2716,15 @@
+     EGLint major, minor;
+     const char *egl_vendor;
+ 
++#ifdef __ANDROID__
++    /* Xwayland enters more than one server generation during startup.
++     * The old EGL+Wayland screen cleanup is not guaranteed to call the
++     * GLAMOR cleanup helper. A new KGSL EGL initialization is the safe
++     * generation boundary at which to invalidate a registry manager
++     * proxy from the previous Wayland connection. */
++    s36_ahb_output_reset(NULL);
++#endif
++
+     if (!xwl_screen->dmabuf) {
+         ErrorF("Xwayland glamor: KGSL surfaceless requires linux-dmabuf\n");
+         return FALSE;
