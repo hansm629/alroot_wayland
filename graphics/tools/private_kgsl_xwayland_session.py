@@ -51,7 +51,48 @@ PRIVATE_XWAYLANDS = {
         'S38_KGSL_FRAME_LIFETIME_LATEST_PRESENT',
         '3f27886fae2bde560d34ca53dedacf4cec09fd9dbcddc591efafc4ec9bc994c2',
     ),
+    ROOT / '.source/gpu-stage1/s39-live-resize/runtime/Xwayland': (
+        'S39_KGSL_RESIZE_ORIGIN_ROOT_POOL',
+        'c5f6c9a512f84e31f60ec52a9f10e689e0746f831049e57a4223ade2750f3899',
+    ),
 }
+
+
+# The S39 binary retains opt-in branches. Matching its file hash alone must
+# not claim that its origin/pool changes or prerequisite S38 path are active.
+PRIVATE_XWAYLAND_REQUIRED_FLAGS = {
+    ROOT / '.source/gpu-stage1/s39-live-resize/runtime/Xwayland': {
+        'ALROOT_XWAYLAND_DUAL_ABI_FENCE': '1',
+        'XWAYLAND_FORCE_KGSL_SURFACELESS': '1',
+        'FD_KGSL_ENABLE_DMABUF': '1',
+        'MESA_LOADER_DRIVER_OVERRIDE': 'kgsl',
+        'GALLIUM_DRIVER': 'freedreno',
+        'S30_KGSL_TINY_AHB_FD0': '1',
+        'S32_KGSL_NO_BLANK_PRESENT': '1',
+        'S36_KGSL_ROOT_AHB_OUTPUT': '1',
+        'S37_KGSL_THIN_AHB_FD0': '1',
+        'S38_KGSL_FRAME_LIFETIME': '1',
+        'S39_KGSL_RESIZE_ORIGIN': '1',
+        'S39_KGSL_KEEP_UNRELATED_ROOT_POOL': '1',
+    },
+}
+
+
+def _validate_profile_flags(proc: Path, trusted: Path):
+    required = PRIVATE_XWAYLAND_REQUIRED_FLAGS.get(trusted)
+    if not required:
+        return
+    try:
+        entries = (proc / 'environ').read_bytes().split(b'\x00')
+    except OSError as exc:
+        raise RuntimeError('cannot verify required private Xwayland profile flags') from exc
+    environment = dict(entry.split(b'=', 1) for entry in entries if b'=' in entry)
+    missing = [key for key, value in required.items()
+               if environment.get(key.encode()) != value.encode()]
+    if missing:
+        # Never print unrelated process environment or secret values.
+        raise RuntimeError('private S39 Xwayland profile flags missing or incorrect: ' +
+                           ', '.join(missing))
 
 
 def _file_sha256(path: Path) -> str:
@@ -104,6 +145,7 @@ def validate_private_kgsl_xwayland(pid: int, display: str) -> str:
             continue
         if trusted.stat().st_uid != os.getuid() or _file_sha256(trusted) != sha256:
             raise RuntimeError('private Xwayland signature changed; refusing unknown binary')
+        _validate_profile_flags(proc, trusted)
         return label
 
     raise RuntimeError('unexpected Xwayland executable; refusing system Termux-X11')

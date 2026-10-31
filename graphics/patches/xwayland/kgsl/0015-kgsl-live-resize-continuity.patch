@@ -1,0 +1,54 @@
+--- a/hw/xwayland/xwayland-window.c
++++ b/hw/xwayland/xwayland-window.c
+@@ -1900,8 +1900,14 @@
+              abs(sh - dh) <= (sh / 10 > 12 ? sh / 10 : 12));
+         if (policy != 1 && s31_compatible) {
+-            const int sx = policy == 2 ? 0 : (sw > dw ? (sw - dw) / 2 : 0);
+-            const int sy = policy == 2 ? 0 : (sh > dh ? (sh - dh) / 2 : 0);
+-            const int dx = policy == 2 ? 0 : (dw > sw ? (dw - sw) / 2 : 0);
+-            const int dy = policy == 2 ? 0 : (dh > sh ? (dh - sh) / 2 : 0);
++            /* Present copies this client at origin (0, 0). Replaying the
++             * same frame centered would move/crop its landmarks between
++             * resizes and real Presents, even with a fresh snapshot. */
++            const char *s39 = getenv("S39_KGSL_RESIZE_ORIGIN");
++            const Bool present_origin = policy == 2 ||
++                (s32_nonblank_enabled() && s39 && s39[0] == '1' && !s39[1]);
++            const int sx = present_origin ? 0 : (sw > dw ? (sw - dw) / 2 : 0);
++            const int sy = present_origin ? 0 : (sh > dh ? (sh - dh) / 2 : 0);
++            const int dx = present_origin ? 0 : (dw > sw ? (dw - sw) / 2 : 0);
++            const int dy = present_origin ? 0 : (dh > sh ? (dh - sh) / 2 : 0);
+             const unsigned cw = sw < dw ? sw : dw;
+             const unsigned ch = sh < dh ? sh : dh;
+@@ -2257,4 +2263,32 @@
+        return;
+
++#ifdef XWL_HAS_GLAMOR
++    const char *s39_keep = getenv("S39_KGSL_KEEP_UNRELATED_ROOT_POOL");
++    if (s39_keep && s39_keep[0] == '1' && !s39_keep[1] &&
++        !xwl_screen->rootless && xwl_screen->glamor &&
++        xwl_glamor_is_kgsl_surfaceless(xwl_screen) &&
++        xwl_window->surface_window == screen->root && window != screen->root) {
++        PixmapPtr root_pixmap = screen->GetWindowPixmap(screen->root);
++        if (old_pixmap != root_pixmap && pixmap != root_pixmap) {
++            /* This child switched between independent backing pixmaps.
++             * The output owner's backing, extent and depth are unchanged.
++             * Its available buffers still match the root; busy ones retain
++             * their normal compositor references/release callbacks. Damage
++             * handling and full KGSL preservation on reuse are unchanged.
++             * Actual root/surface changes and any shared-root pixmap case
++             * continue through the original disposal path below. */
++            static Bool logged;
++            if (!logged) {
++                logged = TRUE;
++                ErrorF("S39_ROOT_POOL_KEEP=ACTIVE independent_child=0x%lx surface=0x%lx root_extent=%dx%d\n",
++                       (unsigned long)window->drawable.id,
++                       (unsigned long)xwl_window->surface_window->drawable.id,
++                       root_pixmap->drawable.width, root_pixmap->drawable.height);
++            }
++            return;
++        }
++    }
++#endif
++
+     xwl_window_buffers_dispose(xwl_window, FALSE);
+ }

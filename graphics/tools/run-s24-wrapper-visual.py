@@ -4,8 +4,11 @@
 This does NOT show a graphical window in Termux's default DISPLAY=:0.
 The temporary client belongs to the already-running Alroot Wayland helper
 XFCE display (e.g. :94); the user must bring THAT Android Activity forward.
+--coalesced-xcb explicitly selects a pinned private vkcube event-loop build;
+it does not change the default installed vkcube or the S26 wrapper ICD.
 """
 import argparse
+import hashlib
 import os
 import pathlib
 import re
@@ -22,6 +25,16 @@ STATE = HOME / '.alroot-wayland'
 ICD = ROOT / '.source/gpu-stage1/s24-wrapper-xcb-resize/runtime/wrapper_icd.private.json'
 S26_ICD = ROOT / '.source/gpu-stage1/s26-wrapper-resize-retry/runtime/wrapper_icd.private.json'
 GLX27 = ROOT / '.source/gpu-stage27-pr25/mesa-private/glx-runtime/lib'
+S39_COALESCED_VKCUBE = ROOT / '.source/gpu-stage1/s39-live-resize/runtime/vkcube.coalesced'
+S39_COALESCED_SHA256 = '0050e7126c8d096cd14a7e0b1026b7063f898e33eb7be5b80116991cee57c208'
+
+
+def file_sha256(path):
+    digest = hashlib.sha256()
+    with path.open('rb') as source:
+        for chunk in iter(lambda: source.read(1024 * 1024), b''):
+            digest.update(chunk)
+    return digest.hexdigest()
 
 
 def x11_windows(env):
@@ -52,9 +65,13 @@ def run():
     parser.add_argument('demo', nargs='?', default='vulkan', choices=('vulkan', 'zink'))
     parser.add_argument('--s26', action='store_true',
                         help='Opt-in S26 private XCB transient-import retry (default retains S24 binary)')
+    parser.add_argument('--coalesced-xcb', action='store_true',
+                        help='Explicit private vkcube XCB Configure batching; requires vulkan and --s26')
     parser.add_argument('--auto-resize', action='store_true',
                         help='move and resize only this demo, then leave it open for manual testing')
     args = parser.parse_args()
+    if args.coalesced_xcb and (args.demo != 'vulkan' or not args.s26):
+        parser.error('--coalesced-xcb requires demo vulkan and --s26')
     icd = S26_ICD if args.s26 else ICD
     if not icd.is_file() or not (icd.parent / 'libvulkan_wrapper.so').is_file():
         raise RuntimeError('missing private wrapper ICD; build the requested route first')
@@ -64,7 +81,9 @@ def run():
     original_display = env.get('DISPLAY', 'unset')
     for key in ('WAYLAND_DISPLAY', 'LD_PRELOAD', 'LIBGL_ALWAYS_SOFTWARE',
                 'MESA_LOADER_DRIVER_OVERRIDE', 'GALLIUM_DRIVER', 'LIBGL_DRIVERS_PATH',
-                'S26_WRAPPER_TEST_FAIL_PIXMAP_ONCE', 'S26_WRAPPER_XCB_RETRY_TRANSIENT'):
+                'S26_WRAPPER_TEST_FAIL_PIXMAP_ONCE', 'S26_WRAPPER_XCB_RETRY_TRANSIENT',
+                'S39_WRAPPER_XCB_CHECK_BEFORE_ACK', 'S39_WSI_TRACE',
+                'S39_VULKAN_TRACE', 'S39_VULKAN_TRACE_FILE'):
         env.pop(key, None)
     env.update(DISPLAY=display, XAUTHORITY=str(STATE / 'Xauthority'),
                VK_DRIVER_FILES=str(icd), VK_ICD_FILENAMES=str(icd),
@@ -72,7 +91,14 @@ def run():
     if args.s26:
         env['S26_WRAPPER_XCB_RETRY_TRANSIENT'] = '1'
     if args.demo == 'vulkan':
-        command = [str(PREFIX / 'bin/vkcube'), '--wsi', 'xcb']
+        client = S39_COALESCED_VKCUBE if args.coalesced_xcb else PREFIX / 'bin/vkcube'
+        client_label = ('PRIVATE_VKCUBE_XCB_CONFIGURE_COALESCED' if args.coalesced_xcb
+                        else 'INSTALLED_VKCUBE_XCB')
+        if not client.is_file() or not os.access(client, os.X_OK):
+            raise RuntimeError('selected vkcube executable is missing or not executable')
+        if args.coalesced_xcb and file_sha256(client) != S39_COALESCED_SHA256:
+            raise RuntimeError('private coalesced vkcube hash mismatch; refusing unknown client')
+        command = [str(client), '--wsi', 'xcb']
     else:
         if not (GLX27 / 'libGLX_mesa.so').is_file():
             raise RuntimeError('missing private Mesa27 GLX runtime')
@@ -81,10 +107,20 @@ def run():
                    LIBGL_DRIVERS_PATH=str(GLX27 / 'dri'),
                    MESA_LOADER_DRIVER_OVERRIDE='zink', GALLIUM_DRIVER='zink',
                    LIBGL_KOPPER_DRI2='1')
-        command = [str(PREFIX / 'bin/glxgears')]
+        client = PREFIX / 'bin/glxgears'
+        client_label = 'INSTALLED_GLXGEARS_ZINK'
+        command = [str(client)]
 
+    client_sha256 = file_sha256(client)
     baseline = x11_windows(env)
     print('S24_VISUAL_PRIVATE_WRAPPER=' + ('S26_TRANSIENT_RETRY' if args.s26 else 'S24_BASELINE'), flush=True)
+    print('S24_VISUAL_PRIVATE_ICD=' + str(icd), flush=True)
+    print('S24_VISUAL_WRAPPER_SHA256=' + file_sha256(icd.parent / 'libvulkan_wrapper.so'), flush=True)
+    print('S24_VISUAL_CLIENT=' + client_label, flush=True)
+    print('S24_VISUAL_CLIENT_EXECUTABLE=' + str(client), flush=True)
+    print('S24_VISUAL_CLIENT_SHA256=' + client_sha256, flush=True)
+    print('S24_VISUAL_CLIENT_PATCH=' +
+          ('VKCUBE_XCB_CONFIGURE_BATCH_ONLY' if args.coalesced_xcb else 'NONE_SELECTED'), flush=True)
     print('S24_VISUAL_PRIVATE_XWAYLAND=' + private_xwayland, flush=True)
     print('S24_VISUAL_TARGET=ALROOT_WAYLAND_HELPER_XFCE_' + display, flush=True)
     print('S24_VISUAL_CALLER_DISPLAY=' + original_display, flush=True)
