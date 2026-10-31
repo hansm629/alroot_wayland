@@ -349,6 +349,45 @@ explicit `--restart` from native Termux, with `--restore-s36` and
 `--restore-s32` rollback. See
 `graphics/docs/gpu-s37-thin-height-dri3-ahb-crash.md`.
 
+### S38 — latest Present, buffer release lifetime and pre-idle snapshot
+
+Apply `0012-kgsl-frame-release-lifetime.patch`,
+`0013-kgsl-latest-present-resize-snapshot.patch` and
+`0014-kgsl-snapshot-before-present-idle.patch` together to the isolated
+S37/S32 source inputs pinned by `relink-s38-frame-lifetime.py`.
+They are not part of the ordinary KGSL builder. The explicit flag is
+`S38_KGSL_FRAME_LIFETIME=1`, in addition to the S37/S36/S32/S30 flags.
+
+- 0012 preserves the release callback armed by `swap_pixmap()` when
+  replacing a Wayland buffer proxy. Its watchdog uses 100ms elapsed time
+  rather than 64 Xorg loop iterations. It never fabricates a GPU completion.
+- 0013 replaces an obsolete resize snapshot with an independent GPU copy
+  of the latest actual Present even if client/window extents differ.
+- 0014 puts that copy and existing uncovered-strip processing before the
+  original Present flush/fence/idle. The old generic copy entry point is
+  retained as a null-callback wrapper; only S38 selects the new hook.
+  **Do not ship 0013 alone with the old after-idle call site.**
+
+Five objects are compiled into a separate private executable. The patched
+generic Present object is linked before the unchanged static archive;
+the shared build tree, historical executables, APK and installed drivers
+are untouched. Test source hashes and the final executable are pinned.
+
+```bash
+bash graphics/tools/build-s38-frame-lifetime.sh
+python3 graphics/tools/test-s38-frame-lifetime.py --mode baseline --demo vkcube --storm
+python3 graphics/tools/test-s38-frame-lifetime.py --mode candidate --demo vkcube --storm --freshness
+python3 graphics/tools/test-s38-frame-lifetime.py --mode candidate --demo zink --storm
+python3 graphics/tools/test-s36-rootful-ahb-output.py --s38-frame-lifetime --mode candidate --pattern thin --demo vkcube --wm --seconds 6
+```
+
+These tests use disposable Xwayland/WM/client processes and preserve the
+live user XFCE. `--storm` deliberately adds synchronous X11 round trips;
+it diagnoses retained resources and is not a presentation benchmark.
+`start-s38-frame-lifetime.sh --restart` is the explicit desktop switch
+from a separate native Termux shell after saving work. Details and raw
+log locations: `graphics/docs/gpu-s38-frame-lifetime-and-latest-present.md`.
+
 `S17_MATRIX_MODE=smoke bash graphics/tools/test-s17-zink-matrix.sh` checks
 Termux wrapper + Zink, Termux Turnip + Zink and Debian Turnip + Zink on
 isolated Xwayland, validating runtime execution, AHB/ABI branch, X11

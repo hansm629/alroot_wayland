@@ -47,6 +47,10 @@ PRIVATE_XWAYLANDS = {
         'S37_KGSL_THIN_HEIGHT_DRI3_AHB_FD0',
         '193f43e03f0e754c39cfb73e04ac1e0032f8f632e6d06b5d1b675f67c834a594',
     ),
+    ROOT / '.source/gpu-stage1/s38-frame-continuity/runtime/Xwayland': (
+        'S38_KGSL_FRAME_LIFETIME_LATEST_PRESENT',
+        '3f27886fae2bde560d34ca53dedacf4cec09fd9dbcddc591efafc4ec9bc994c2',
+    ),
 }
 
 

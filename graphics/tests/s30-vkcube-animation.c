@@ -38,6 +38,7 @@ int main(int argc, char **argv)
     if (!d) return 3;
 
     uint64_t last_hash = 0;
+    int last_width = 0, last_height = 0, geometry_changes = 0;
     int samples = 0, changes = 0, non_grey_frames = 0, invalid = 0;
     for (int t = 0; t < 22; ++t) {
         XWindowAttributes attr;
@@ -74,18 +75,25 @@ int main(int argc, char **argv)
             }
         }
         XDestroyImage(img);
-        if (samples && hash != last_hash) ++changes;
+        if (samples) {
+            if (attr.width != last_width || attr.height != last_height)
+                ++geometry_changes;
+            else if (hash != last_hash)
+                ++changes;
+        }
+        last_width = attr.width;
+        last_height = attr.height;
         last_hash = hash;
         ++samples;
         if (non_grey >= 8) ++non_grey_frames;
         sleep_ms(65);
     }
     XSync(d, False);
-    printf("S30_ACTUAL_VULKAN_PRESENT_SAMPLES=%d HASH_CHANGES=%d NON_GREY_FRAMES=%d INVALID=%d XERR=%d\n",
-           samples, changes, non_grey_frames, invalid, errors);
+    printf("S30_ACTUAL_VULKAN_PRESENT_SAMPLES=%d HASH_CHANGES=%d NON_GREY_FRAMES=%d INVALID=%d XERR=%d GEOMETRY_CHANGES=%d\n",
+           samples, changes, non_grey_frames, invalid, errors, geometry_changes);
     XCloseDisplay(d);
     if (samples >= 15 && changes >= 4 && non_grey_frames >= 10 &&
-        !invalid && !errors) {
+        !invalid && !errors && !geometry_changes) {
         puts("S30_VKCUBE_REAL_FRAME_ADVANCE=PASS_NOT_FROZEN");
         return 0;
     }

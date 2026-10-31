@@ -1,0 +1,102 @@
+--- a/present/present_execute.c
++++ b/present/present_execute.c
+@@ -98,7 +98,8 @@
+ }
+
+ void
+-present_execute_copy(present_vblank_ptr vblank, uint64_t crtc_msc)
++present_execute_copy_with_callback(present_vblank_ptr vblank, uint64_t crtc_msc,
++                                 void (*after_copy)(present_vblank_ptr))
+ {
+     WindowPtr                   window = vblank->window;
+     ScreenPtr                   screen = window->drawable.pScreen;
+@@ -121,6 +122,12 @@
+      * which is then freed, freeing the region
+      */
+     vblank->update = NULL;
++
++    /* Extra source reads must join this submission before the release
++     * fence is created or the client is told that its pixmap is idle.
++     * A requeued copy returns above without calling this hook. */
++    if (after_copy)
++        after_copy(vblank);
+ #ifdef DRI3
+     if (vblank->release_syncobj) {
+         int fence_fd = screen_priv->flush_fenced(window);
+@@ -132,6 +139,12 @@
+         screen_priv->flush(window);
+         present_pixmap_idle(vblank->pixmap, vblank->window, vblank->serial, vblank->idle_fence);
+     }
++}
++
++void
++present_execute_copy(present_vblank_ptr vblank, uint64_t crtc_msc)
++{
++    present_execute_copy_with_callback(vblank, crtc_msc, NULL);
+ }
+
+ void
+--- a/present/present_priv.h
++++ b/present/present_priv.h
+@@ -362,6 +362,10 @@
+ present_execute_copy(present_vblank_ptr vblank, uint64_t crtc_msc);
+
+ void
++present_execute_copy_with_callback(present_vblank_ptr vblank, uint64_t crtc_msc,
++                                 void (*after_copy)(present_vblank_ptr));
++
++void
+ present_execute_post(present_vblank_ptr vblank, uint64_t ust, uint64_t crtc_msc);
+
+ /*
+--- a/hw/xwayland/xwayland-present.c
++++ b/hw/xwayland/xwayland-present.c
+@@ -58,6 +58,17 @@
+ #define TIMER_LEN_COPY      17  // ~60fps
+ #define TIMER_LEN_FLIP    1000  // 1fps
+
++#ifdef XWL_HAS_GLAMOR
++static void
++xwl_present_after_copy_before_idle(present_vblank_ptr vblank)
++{
++    /* Both operations read the client's Present pixmap. Keep them before
++     * the existing flush/release fence/idle sequence, never after it. */
++    xwl_window_s31_fill_uncovered_present(vblank->window, vblank->pixmap);
++    xwl_window_s30_real_present(vblank->window, vblank->pixmap);
++}
++#endif
++
+ static DevPrivateKeyRec xwl_present_window_private_key;
+
+ static struct xwl_present_window *
+@@ -1187,16 +1198,22 @@
+         }
+ #endif
+
+-        present_execute_copy(vblank, crtc_msc);
+ #ifdef XWL_HAS_GLAMOR
+-        /* A source pixmap smaller than the newly resized window leaves
+-         * uncovered strips. S31 opt-in paints only those, after the real
+-         * copy, never touching the freshly rendered client DRI3 image. */
+-        xwl_window_s31_fill_uncovered_present(window, vblank->pixmap);
+-        /* The real client render was copied successfully; the next
+-         * resize may capture fresh content rather than a placeholder. */
+-        xwl_window_s30_real_present(window, vblank->pixmap);
++        const char *s38 = getenv("S38_KGSL_FRAME_LIFETIME");
++        if (s38 && s38[0] == '1' && !s38[1] &&
++            xwl_glamor_is_kgsl_surfaceless(xwl_screen)) {
++            present_execute_copy_with_callback(vblank, crtc_msc,
++                                               xwl_present_after_copy_before_idle);
++        } else
+ #endif
++        {
++            present_execute_copy(vblank, crtc_msc);
++#ifdef XWL_HAS_GLAMOR
++            /* Keep the historical non-S38 policy unchanged. */
++            xwl_window_s31_fill_uncovered_present(window, vblank->pixmap);
++            xwl_window_s30_real_present(window, vblank->pixmap);
++#endif
++        }
+         assert(!vblank->queued);
+
+         /* Set the copy_executed field, so this will fall through to present_execute_post next time */

@@ -1,0 +1,43 @@
+--- a/hw/xwayland/xwayland-glamor-gbm.c
++++ b/hw/xwayland/xwayland-glamor-gbm.c
+@@ -186,7 +186,11 @@
+         !xwl_pixmap || !xwl_pixmap->buffer)
+         return;
+
+-    xwl_pixmap_del_buffer_release_cb(pixmap);
++    /* swap_pixmap() has already installed the new submission's release
++     * callback. Keep it while replacing only the protocol object. */
++    const char *s38 = getenv("S38_KGSL_FRAME_LIFETIME");
++    if (!s38 || s38[0] != '1' || s38[1])
++        xwl_pixmap_del_buffer_release_cb(pixmap);
+     wl_buffer_destroy(xwl_pixmap->buffer);
+     xwl_pixmap->buffer = NULL;
+ }
+--- a/hw/xwayland/xwayland-screen.c
++++ b/hw/xwayland/xwayland-screen.c
+@@ -455,9 +455,22 @@
+         if (xwl_window->frame_callback) {
+ #ifdef XWL_HAS_GLAMOR
+             if (kgsl) {
+-                xwl_window->blocked_frame_callback_count++;
+-                if (xwl_window->blocked_frame_callback_count < 64)
+-                    continue;
++                const char *s38 = getenv("S38_KGSL_FRAME_LIFETIME");
++                if (s38 && s38[0] == '1' && !s38[1]) {
++                    CARD32 now = GetTimeInMillis();
++                    if (!xwl_window->blocked_frame_callback_count) {
++                        xwl_window->blocked_frame_callback_count = now;
++                        continue;
++                    }
++                    CARD32 elapsed = now - xwl_window->blocked_frame_callback_count;
++                    if (elapsed < 100)
++                        continue;
++                    ErrorF("S38_FRAME_WATCHDOG_RECOVERY elapsed_ms=%u\n", elapsed);
++                } else {
++                    xwl_window->blocked_frame_callback_count++;
++                    if (xwl_window->blocked_frame_callback_count < 64)
++                        continue;
++                }
+                 xwl_window->blocked_frame_callback_count = 0;
+                 wl_callback_destroy(xwl_window->frame_callback);
+                 xwl_window->frame_callback = NULL;

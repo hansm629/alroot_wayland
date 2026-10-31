@@ -1,0 +1,41 @@
+--- a/hw/xwayland/xwayland-window.c
++++ b/hw/xwayland/xwayland-window.c
+@@ -2071,6 +2071,11 @@
+     free(frame);
+ }
+
++/* The source is the newly completed client Present, never a previous
++ * resize placeholder or a cropped window backing. */
++static PixmapPtr s30_capture_stable_frame(WindowPtr window,
++                                         DrawablePtr old_drawable);
++
+ /* No content from a resize placeholder is ever a source for the next
+  * placeholder. Invalidate only when a TRUE Vulkan DRI3 Present completes. */
+ void
+@@ -2088,8 +2093,25 @@
+         const int h = window->drawable.height;
+         const int sw = present_pixmap->drawable.width;
+         const int sh = present_pixmap->drawable.height;
+-        if (sw != w || sh < h || sh - h > 3)
++        if (sw != w || sh < h || sh - h > 3) {
++            const char *s38 = getenv("S38_KGSL_FRAME_LIFETIME");
++            if (s38 && s38[0] == '1' && !s38[1] &&
++                s28_is_optin_xcb_gpu_window(window,
++                    xwl_screen_get(window->drawable.pScreen))) {
++                /* The copy just displayed a newer real client frame.
++                 * Keeping the first pre-drag snapshot would let the next
++                 * ResizeWindow overwrite that newer frame with old pixels.
++                 * Cache the actual Present source even when its geometry
++                 * lags the window. This is an independent GPU copy: never
++                 * retain or write a client image after Present returns it.
++                 * If allocation/capture fails, invalidate the obsolete
++                 * cache rather than resurrecting the older generation. */
++                s30_drop_frame(window);
++                (void)s30_capture_stable_frame(window,
++                                               &present_pixmap->drawable);
++            }
+             return;
++        }
+     }
+     s30_drop_frame(window);
+ }

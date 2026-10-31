@@ -915,3 +915,24 @@ unverified/unresolved. S36 and older private binaries are immutable,
 system GPU drivers and user XFCE unchanged; S37 is opt-in with S36/S32
 rollback, **not default**. Notes and manual acceptance commands:
 `graphics/docs/gpu-s37-thin-height-dri3-ahb-crash.md`.
+
+**GPU-S38 latest Present and root-buffer lifetime (2026-10-31):** The
+remaining resize symptoms exposed two concrete Xwayland defects. A new
+real Present with geometry behind the current window did not replace the
+old resize snapshot: a controlled blue → green → resize sequence reverted
+to blue on S37. S38 keeps an independent GPU copy of the latest actual
+Present and performs source reads **before** the existing flush/release
+fence/idle sequence. Separately, the frame-recovery path deleted a newly
+armed buffer-release callback, leaking root AHB references. An isolated
+S37 three-burst resize/event-pressure test accumulated **343 → 618 → 908
+DMA-BUF FDs** after idle; the final S38 stayed at **44 → 39 → 44**. The
+64-event-loop timeout also becomes an elapsed-time 100ms watchdog, so
+input pressure alone cannot force recovery. S37's thin-height crash fix
+and S36's direct AHB output remain included. Geometry-changing image hashes
+no longer count as animation in the probes. This is a separate pinned,
+opt-in candidate: physical Android continuity still needs user checking,
+and short blank samples remain in extreme-resize readback. Native glibc
+GLX basic execution through the Bionic display server was checked, without
+adding an allocation broker or claiming glibc-native AHB support. Build,
+evidence, explicit native-Termux launch and S37/S36/S32 rollback:
+`graphics/docs/gpu-s38-frame-lifetime-and-latest-present.md`.

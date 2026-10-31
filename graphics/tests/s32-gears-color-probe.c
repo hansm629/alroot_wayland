@@ -37,6 +37,7 @@ int main(int argc, char **argv)
         consecutive_blank = 0, red_frames = 0, blue_frames = 0,
         green_frames = 0, changes = 0, invalid = 0;
     uint64_t prev_hash = 0;
+    int sample_width = 0, sample_height = 0, stable_geometry_samples = 0;
     long long until = monotonic_ms() + duration * 1000LL;
     while (monotonic_ms() < until) {
         XWindowAttributes a;
@@ -70,7 +71,15 @@ int main(int argc, char **argv)
                     }
                 }
                 XDestroyImage(image);
-                if (samples && prev_hash != hash) ++changes;
+                /* Re-cropping one old image as geometry changes is not
+                 * animation. Compare content only at the same extent. */
+                if (samples && a.width == sample_width &&
+                    a.height == sample_height) {
+                    ++stable_geometry_samples;
+                    if (prev_hash != hash) ++changes;
+                }
+                sample_width = a.width;
+                sample_height = a.height;
                 prev_hash = hash;
                 ++samples;
                 if (red >= 2) ++red_frames;
@@ -92,9 +101,9 @@ int main(int argc, char **argv)
         struct timespec pause = {.tv_sec = 0, .tv_nsec = 40000000L};
         nanosleep(&pause, NULL);
     }
-    printf("S32_GLX_COLOR_SAMPLES=%d COLORED=%d BLANK=%d MAX_BLANK_RUN=%d RED=%d GREEN=%d BLUE=%d CHANGED=%d INVALID=%d ERRORS=%d\n",
+    printf("S32_GLX_COLOR_SAMPLES=%d COLORED=%d BLANK=%d MAX_BLANK_RUN=%d RED=%d GREEN=%d BLUE=%d CHANGED=%d INVALID=%d ERRORS=%d STABLE_GEOMETRY_SAMPLES=%d\n",
            samples, colored, blank, max_blank, red_frames, green_frames,
-           blue_frames, changes, invalid, errors);
+           blue_frames, changes, invalid, errors, stable_geometry_samples);
     XCloseDisplay(d);
     return samples > 10 ? 0 : 5;
 }

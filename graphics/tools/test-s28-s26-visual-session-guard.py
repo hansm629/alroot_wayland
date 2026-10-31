@@ -49,8 +49,8 @@ def main():
         assert hashlib.sha256(path.read_bytes()).hexdigest() == sha256, (
             f'allowlisted {name} binary changed')
     print('S28_ALLOWLISTED_S16_AND_S28_BINARY_SHA256=PASS', flush=True)
-    assert len(guard.PRIVATE_XWAYLANDS) == 8, 'unexpected number of private KGSL server profiles'
-    print('S37_ALL_EIGHT_PINNED_PRIVATE_XWAYLAND_BINARY_HASHES=PASS', flush=True)
+    assert len(guard.PRIVATE_XWAYLANDS) == 9, 'unexpected number of private KGSL server profiles'
+    print('S38_ALL_NINE_PINNED_PRIVATE_XWAYLAND_BINARY_HASHES=PASS', flush=True)
 
     label = guard.validate_private_kgsl_xwayland(pid, display)
     assert label in ('S16_S27_KGSL_BASELINE', 'S28_KGSL_RESIZE_PRESERVE',
@@ -59,7 +59,8 @@ def main():
                      'S31_KGSL_ADAPTIVE_RESIZE_PRESENT_EXTENT',
                      'S32_KGSL_NONBLANK_REAL_PRESENT',
                      'S36_KGSL_ROOTFUL_AHB_DIRECT_VKIMAGE',
-                     'S37_KGSL_THIN_HEIGHT_DRI3_AHB_FD0')
+                     'S37_KGSL_THIN_HEIGHT_DRI3_AHB_FD0',
+                     'S38_KGSL_FRAME_LIFETIME_LATEST_PRESENT')
     print(f'S28_LIVE_PRIVATE_XWAYLAND={label} PID={pid} DISPLAY={display}', flush=True)
 
     scripts = {

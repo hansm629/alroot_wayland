@@ -30,6 +30,7 @@ LOGS = OUT / 'logs'
 BASE = ROOT / '.source/gpu-stage1/s32-no-blank-present/runtime/Xwayland'
 CANDIDATE = OUT / 'runtime/Xwayland'
 S37_THIN_CANDIDATE = False
+S38_FRAME_CANDIDATE = False
 ICD = ROOT / '.source/gpu-stage1/s26-wrapper-resize-retry/runtime/wrapper_icd.private.json'
 MESA_GLX = ROOT / '.source/gpu-stage27-pr25/mesa-private/glx-runtime/lib'
 SIZE_PATTERNS = {
@@ -123,7 +124,7 @@ def one_run(mode, demo, seconds, with_wm, tree, sampler, status_before,
                       TMPDIR=str(prefix_tmp))
     for key in ('DISPLAY', 'LD_PRELOAD', 'DBUS_SESSION_BUS_ADDRESS'):
         server_env.pop(key, None)
-    for opt in ('S37_KGSL_THIN_AHB_FD0', 'S37_DIAG_THIN_AHB',
+    for opt in ('S38_KGSL_FRAME_LIFETIME', 'S37_KGSL_THIN_AHB_FD0', 'S37_DIAG_THIN_AHB',
                 'S36_KGSL_ROOT_AHB_OUTPUT', 'S28_KGSL_RESIZE_PRESERVE','S29_KGSL_NATIVE_RESIZE',
                 'S30_KGSL_STABLE_FRAME','S30_KGSL_TINY_AHB_FD0',
                 'S31_KGSL_RESIZE_CONTENT_POLICY','S30_DIAG_TINY_AHB',
@@ -137,12 +138,16 @@ def one_run(mode, demo, seconds, with_wm, tree, sampler, status_before,
         if S37_THIN_CANDIDATE:
             server_env['S37_KGSL_THIN_AHB_FD0'] = '1'
             server_env['S37_DIAG_THIN_AHB'] = '1'
+        if S38_FRAME_CANDIDATE:
+            server_env['S38_KGSL_FRAME_LIFETIME'] = '1'
     else:
         server_env['S32_KGSL_NO_BLANK_PRESENT'] = '1'
         if S37_THIN_CANDIDATE:
-            # Baseline is S36 direct AHB with NO narrow-height FD fix.
-            # An expected negative control may return BadMatch 11.
+            # Both comparisons retain direct AHB output. The S37 comparison
+            # has S36 as its negative control; the S38 comparison uses S37.
             server_env['S36_KGSL_ROOT_AHB_OUTPUT'] = '1'
+        if S38_FRAME_CANDIDATE:
+            server_env['S37_KGSL_THIN_AHB_FD0'] = '1'
 
     client_env = os.environ.copy()
     for key in ('WAYLAND_DISPLAY', 'LD_PRELOAD', 'VK_DRIVER_FILES',
@@ -364,7 +369,7 @@ def one_run(mode, demo, seconds, with_wm, tree, sampler, status_before,
 
 
 def main():
-    global OUT, LOGS, BASE, CANDIDATE, S37_THIN_CANDIDATE
+    global OUT, LOGS, BASE, CANDIDATE, S37_THIN_CANDIDATE, S38_FRAME_CANDIDATE
     p = argparse.ArgumentParser()
     p.add_argument('--mode', choices=('baseline', 'candidate'),
                    default='candidate', help='baseline=S32 linear DMA-BUF; candidate=S36 direct AHB')
@@ -377,8 +382,19 @@ def main():
                    help='sample the isolated Xfwm4 COMPOSITED OVERLAY after glxgears movement')
     p.add_argument('--s37-thin-ahb', action='store_true',
                    help='compare S36 and opt-in S37 on thin-height AHB (267x19 / 826x8)')
+    p.add_argument('--s38-frame-lifetime', action='store_true',
+                   help='compare S37 and S38 latest-Present / buffer-lifetime fixes')
     options = p.parse_args()
-    if options.s37_thin_ahb:
+    if options.s37_thin_ahb and options.s38_frame_lifetime:
+        p.error('choose only one private candidate')
+    if options.s38_frame_lifetime:
+        S37_THIN_CANDIDATE = True
+        S38_FRAME_CANDIDATE = True
+        OUT = ROOT / '.source/gpu-stage1/s38-frame-continuity'
+        LOGS = OUT / 'logs'
+        BASE = ROOT / '.source/gpu-stage1/s37-thin-ahb/runtime/Xwayland'
+        CANDIDATE = OUT / 'runtime/Xwayland'
+    elif options.s37_thin_ahb:
         S37_THIN_CANDIDATE = True
         OUT = ROOT / '.source/gpu-stage1/s37-thin-ahb'
         LOGS = OUT / 'logs'
@@ -395,6 +411,9 @@ def main():
 
     import hashlib
     pinned = (
+        ((BASE, '193f43e03f0e754c39cfb73e04ac1e0032f8f632e6d06b5d1b675f67c834a594'),
+         (CANDIDATE, '3f27886fae2bde560d34ca53dedacf4cec09fd9dbcddc591efafc4ec9bc994c2'))
+        if options.s38_frame_lifetime else
         ((BASE, 'df7c98daf732cbc735646e0fa92ca3ae9689a681952d3783acb7c7b1cae7e9f5'),
          (CANDIDATE, '193f43e03f0e754c39cfb73e04ac1e0032f8f632e6d06b5d1b675f67c834a594'))
         if options.s37_thin_ahb else

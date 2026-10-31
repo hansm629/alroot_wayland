@@ -16,6 +16,7 @@ int main(int argc,char**argv){
  Display*d=XOpenDisplay(0);if(!d)return 3;
  int frames=0,colored=0,blank=0,black=0,changed=0,geometry=0,invalid=0,maxblank=0,run=0;
  unsigned long long last=0;int lastw=0,lasth=0;
+ int samplew=0,sampleh=0,stable_geometry_samples=0;
  long long stop=now_ms()+seconds*1000;
  while(now_ms()<stop){
   XWindowAttributes a;
@@ -33,13 +34,20 @@ int main(int argc,char**argv){
    hash^=p;hash*=1099511628211ULL;
   }
   XDestroyImage(im);
-  if(frames&&hash!=last)changed++;
+  /* A resize changes the crop and sample locations even when the server
+   * keeps replaying one frozen snapshot. Only same-geometry comparisons
+   * are evidence of new content; never count geometry alone as motion. */
+  if(frames&&a.width==samplew&&a.height==sampleh){
+   stable_geometry_samples++;
+   if(hash!=last)changed++;
+  }
+  samplew=a.width;sampleh=a.height;
   last=hash;frames++;
   if(nongrey>=8){colored++;run=0;}else{blank++;run++;if(run>maxblank)maxblank=run;}
   if(pureblack>8)black++;
 next:;
   struct timespec pause={.tv_sec=0,.tv_nsec=40000000};nanosleep(&pause,0);
  }
- printf("S31_MOTION frames=%d geometry_changes=%d drawn=%d blank=%d black=%d hash_changes=%d max_blank_samples=%d invalid=%d\n",frames,geometry,colored,blank,black,changed,maxblank,invalid);
+ printf("S31_MOTION frames=%d geometry_changes=%d drawn=%d blank=%d black=%d hash_changes=%d max_blank_samples=%d invalid=%d stable_geometry_samples=%d\n",frames,geometry,colored,blank,black,changed,maxblank,invalid,stable_geometry_samples);
  XCloseDisplay(d);return 0;
 }
