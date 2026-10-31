@@ -1,0 +1,153 @@
+--- a/hw/xwayland/xwayland-window.c
++++ b/hw/xwayland/xwayland-window.c
+@@ -80,6 +80,7 @@
+ struct s30_stable_frame {
+     PixmapPtr pixmap;
+ };
++static Bool s32_nonblank_enabled(void);
+ static void s30_drop_frame(WindowPtr window);
+ #endif
+ static const char *xwl_surface_tag = "xwl-surface";
+@@ -1802,7 +1803,8 @@
+     const char *s31 = getenv("S31_KGSL_RESIZE_CONTENT_POLICY");
+     if ((!opt || opt[0] != '1' || opt[1] != '\0') &&
+         (!s30 || s30[0] != '1' || s30[1] != '\0') &&
+-        (!s31 || !((s31[0] == '1' || s31[0] == '2' || s31[0] == '3') && !s31[1])))
++        (!s31 || !((s31[0] == '1' || s31[0] == '2' || s31[0] == '3') && !s31[1])) &&
++        !s32_nonblank_enabled())
+         return FALSE;
+     if (xwl_screen->rootless || !xwl_screen->glamor ||
+         !xwl_glamor_is_kgsl_surfaceless(xwl_screen) ||
+@@ -1839,7 +1841,7 @@
+      * previously reported black strip during rapid tiny resize. With S31
+      * adaptive/background mode, clearing even a 1px-wide target is safe:
+      * only a 1x1 solid texel is repeated, never the stale client scene. */
+-    const int min_target = policy == 1 || policy == 3 ? 1 : 30;
++    const int min_target = policy == 1 || policy == 3 || s32_nonblank_enabled() ? 1 : 30;
+     if (!old_pix || !dst_drawable ||
+         &old_pix->drawable == dst_drawable ||
+         old_pix->drawable.depth != dst_drawable->depth ||
+@@ -1916,11 +1918,19 @@
+ }
+ 
+ static Bool
++s32_nonblank_enabled(void)
++{
++    const char *opt = getenv("S32_KGSL_NO_BLANK_PRESENT");
++    return opt && opt[0] == '1' && !opt[1];
++}
++
++static Bool
+ s30_stable_enabled(void)
+ {
+     const char *opt = getenv("S30_KGSL_STABLE_FRAME");
+     const char *s31 = getenv("S31_KGSL_RESIZE_CONTENT_POLICY");
+-    return (opt && opt[0] == '1' && !opt[1]) ||
++    return s32_nonblank_enabled() ||
++           (opt && opt[0] == '1' && !opt[1]) ||
+            (s31 && (s31[0] == '1' || s31[0] == '2' || s31[0] == '3') && !s31[1]);
+ }
+ 
+@@ -1947,12 +1957,18 @@
+     if (!window || !source || !s30_stable_enabled())
+         return;
+     const char *s31 = getenv("S31_KGSL_RESIZE_CONTENT_POLICY");
+-    if (!s31 || s31[0] != '3' || s31[1])
++    const Bool s32 = s32_nonblank_enabled();
++    if ((!s31 || s31[0] != '3' || s31[1]) && !s32)
+         return;
+     screen = window->drawable.pScreen;
+     xwl_screen = xwl_screen_get(screen);
+     if (!s28_is_optin_xcb_gpu_window(window, xwl_screen))
+         return;
++    /* A previous flip may leave the client-owned imported DRI3 pixmap as
++     * the current WindowPixmap. The S32 strip clear must never overwrite
++     * that shared client Vulkan/GLX buffer, even on the copy fallback. */
++    if (s32 && xwl_glamor_kgsl_is_dri3_pixmap(screen->GetWindowPixmap(window)))
++        return;
+     w = window->drawable.width;
+     h = window->drawable.height;
+     sw = source->drawable.width;
+@@ -1968,6 +1984,14 @@
+         source->drawable.depth != window->drawable.depth ||
+         (window->drawable.depth != 24 && window->drawable.depth != 32))
+         return;
++
++    /* S32: unlike S31 never blank the whole active client window.
++     * A stale-but-real Present is preferable to hiding the entire cube or
++     * all three GLX gears. Keep its rendered area untouched and fill only
++     * newly exposed right/bottom strips. Replaying a snapshot *after*
++     * Present proved to increase black-edge artifacts, so do not do it.
++     * The stable 1:1 snapshot is still usable by the ResizeWindow hook
++     * until an extent-matched real client Present arrives. */
+     if (getenv("S31_RESIZE_DIAG")) {
+         static unsigned logged;
+         if (logged < 18) {
+@@ -2002,7 +2026,7 @@
+     if (fill && dst) {
+         ValidatePicture(fill);
+         ValidatePicture(dst);
+-        if (stale_extent) {
++        if (stale_extent && !s32) {
+             /* Do not expose a massive clipped gear or a little stale
+              * cube at the wrong coordinates. The next valid Present
+              * updates normally, without GPU-side interpolation. */
+@@ -2050,10 +2074,24 @@
+ /* No content from a resize placeholder is ever a source for the next
+  * placeholder. Invalidate only when a TRUE Vulkan DRI3 Present completes. */
+ void
+-xwl_window_s30_real_present(WindowPtr window)
++xwl_window_s30_real_present(WindowPtr window, PixmapPtr present_pixmap)
+ {
+-    if (s30_stable_enabled())
+-        s30_drop_frame(window);
++    if (!s30_stable_enabled())
++        return;
++    if (s32_nonblank_enabled() && present_pixmap) {
++        /* S31 retired the only valid GPU snapshot even when the client
++         * submitted a 350x252 source to a 900x720 window. In S32 retain
++         * that snapshot across stale Present calls and discard it only
++         * when the client has truly caught up with the X11 window extent.
++         * Physical padded AHB height may exceed logical height by 0-3. */
++        const int w = window->drawable.width;
++        const int h = window->drawable.height;
++        const int sw = present_pixmap->drawable.width;
++        const int sh = present_pixmap->drawable.height;
++        if (sw != w || sh < h || sh - h > 3)
++            return;
++    }
++    s30_drop_frame(window);
+ }
+ 
+ static PixmapPtr
+--- a/hw/xwayland/xwayland-window.h
++++ b/hw/xwayland/xwayland-window.h
+@@ -126,7 +126,7 @@
+ void xwl_window_set_window_pixmap(WindowPtr window, PixmapPtr pixmap);
+ #ifdef XWL_HAS_GLAMOR
+ /* S30: drop resize snapshot only after new actual DRI3 content arrives. */
+-void xwl_window_s30_real_present(WindowPtr window);
++void xwl_window_s30_real_present(WindowPtr window, PixmapPtr present_pixmap);
+ /* S31: after a resize-mismatched real Present copy, GPU-clear only the
+  * uncovered strips on the Xorg-owned window, preserving client content. */
+ void xwl_window_s31_fill_uncovered_present(WindowPtr window, PixmapPtr pixmap);
+--- a/hw/xwayland/xwayland-present.c
++++ b/hw/xwayland/xwayland-present.c
+@@ -1135,7 +1135,7 @@
+ #ifdef XWL_HAS_GLAMOR
+                 /* The flip pixmap is the client's real Vulkan image.
+                  * It must not be overwritten by a stale resize frame. */
+-                xwl_window_s30_real_present(window);
++                xwl_window_s30_real_present(window, vblank->pixmap);
+ #endif
+ 
+                 if (toplvl_window == screen->root &&
+@@ -1195,7 +1195,7 @@
+         xwl_window_s31_fill_uncovered_present(window, vblank->pixmap);
+         /* The real client render was copied successfully; the next
+          * resize may capture fresh content rather than a placeholder. */
+-        xwl_window_s30_real_present(window);
++        xwl_window_s30_real_present(window, vblank->pixmap);
+ #endif
+         assert(!vblank->queued);
+ 

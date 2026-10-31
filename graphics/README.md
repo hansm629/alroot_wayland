@@ -832,3 +832,24 @@ separately pinned opt-in Xwayland binary, has explicit S30 rollback,
 preserves S16/S28/S29/S30, Termux-X11, user XFCE/IME, Android helper APK,
 GPU libraries and original drivers. Build/test/manual commands:
 `graphics/docs/gpu-s31-adaptive-resize-and-present-extent.md`.
+
+**GPU-S32 corrective nonblank Present (2026-10-31):** User reported a
+severe **S31 regression**: continuous window resizing made `vkcube`
+disappear and `glxgears` flicker. Code audit found that S31's extreme
+extent-mismatch path deliberately cleared the **entire Xorg client
+drawable with a flat background after a real Present**, overwriting
+valid newly rendered pixels. S32 removes that destructive policy for an
+exact opt-in, fills **only exposed right/bottom strips**, and preserves
+an unscaled, window-local GPU snapshot during resize until a genuinely
+extent-matched client Present arrives; it never paints into an imported
+DRI3 client image or replays an old snapshot *after* Present. Isolated
+S26U Xfwm4 real-GPU tests tracked actual content, not just process
+survival: abrupt `vkcube` resize blank samples fell from **43/172**
+(S31) to **7/214** (S32), and RGB `glxgears` no-color samples from
+**13/216** to **2/215**. Gentle drag showed 214/214 drawn Vulkan
+samples; extreme 1px Vulkan resizing survived and animation recovered.
+The runs are separately sampled and **not physical-display evidence**;
+residual black-edge samples/cropping remain. S32 is a separate pinned
+candidate with **S30 rollback**, no automatic XFCE restart or default
+promotion, and no Termux-X11, driver, APK or user desktop changes.
+Details: `graphics/docs/gpu-s32-nonblank-present-continuity.md`.

@@ -247,6 +247,38 @@ resizes may momentarily show the background rather than stretched/cropped
 old client content. See
 `graphics/docs/gpu-s31-adaptive-resize-and-present-extent.md`.
 
+### S32 — undo S31 whole-window blanking after a real Present
+
+`kgsl/0009-kgsl-nonblank-present-continuity.patch` applies **only after
+0008**, to a separately linked S32 private Adreno KGSL Xwayland. S31
+wrongly filled the entire already-rendered Vulkan/GLX client window with
+a background color when a source pixmap extent was stale; physical user
+testing exposed a missing cube and gear flickering. S32
+(`S32_KGSL_NO_BLANK_PRESENT=1`) instead preserves the client's real
+rendered region and initializes only newly exposed right/bottom strips.
+The window-local last real GPU snapshot is kept until an **extent-matched
+actual Present**; the server does not replay a snapshot after Present,
+which proved to increase black-edge artifacts. A runtime guard prevents
+writing into imported client DRI3 images. S30's tiny AHB FD correction
+remains required (`S30_KGSL_TINY_AHB_FD0=1`). Other GPUs, Android helper,
+system Termux-X11 and global Mesa/Vulkan remain untouched.
+
+```bash
+bash graphics/tools/build-s32-kgsl-nonblank-present.sh
+bash graphics/tools/test-s32-build-and-scope.sh
+python3 graphics/tools/test-s32-nonblank-resize.py --mode candidate --pattern abrupt --demo vkcube --wm
+python3 graphics/tools/test-s32-nonblank-resize.py --mode candidate --pattern abrupt --demo zink --wm
+```
+
+The actual XFCE is not restarted by any of those build/tests. Only an
+**explicit native Termux**
+`start-s32-kgsl-nonblank-present.sh --restart` switches to the pinned
+S32 server, and `--restore-s30` returns to the previous S30 private
+baseline. **Physical Android quality is not yet accepted.** There are
+still intermittent edge artifacts; do not claim pixel-perfect or
+zero-flicker gameplay. See
+`graphics/docs/gpu-s32-nonblank-present-continuity.md`.
+
 `S17_MATRIX_MODE=smoke bash graphics/tools/test-s17-zink-matrix.sh` checks
 Termux wrapper + Zink, Termux Turnip + Zink and Debian Turnip + Zink on
 isolated Xwayland, validating runtime execution, AHB/ABI branch, X11

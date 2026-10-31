@@ -35,6 +35,10 @@ PRIVATE_XWAYLANDS = {
         'S31_KGSL_ADAPTIVE_RESIZE_PRESENT_EXTENT',
         '73acf8472faf1e5b91b5f4e998c32ed3322d30fc68e7b0683eef62b6a9c1fe90',
     ),
+    ROOT / '.source/gpu-stage1/s32-no-blank-present/runtime/Xwayland': (
+        'S32_KGSL_NONBLANK_REAL_PRESENT',
+        'b56b7abacd6f1e1a9f1ba2e453d2038b73eec15cd5cf5d5160eb582876194455',
+    ),
 }
 
 
