@@ -1,0 +1,62 @@
+--- a/src/vulkan/wsi/wsi_common.c
++++ b/src/vulkan/wsi/wsi_common.c
+@@ -544,7 +544,8 @@
+     * divisible by 4. Do NOT bind a logical WxH VkImage to a taller AHB.
+     * Select Mesa's standard GPU image-blit path: applications render at
+     * the unmodified logical H; a second physical H-aligned image receives
+-    * a GPU-only copy of precisely the logical rectangle. */
++    * a GPU-only copy of the logical rectangle; S41 extends its last row
++    * into the physical padding. */
+    const char *s24_xcb_pad = getenv("S24_WRAPPER_XCB_AHB_PAD_HEIGHT");
+    if (image_params->image_type == WSI_IMAGE_TYPE_ANDROID &&
+        s24_xcb_pad && s24_xcb_pad[0] == '1' && s24_xcb_pad[1] == '\0' &&
+@@ -3410,8 +3411,8 @@
+                             struct wsi_image *image)
+ {
+    /* S24: Android XCB padded-AHB transfer uses the same image-to-image
+-    * GPU copy as DXGI. Exactly the logical image extent is copied into
+-    * the larger AHB-bound destination image, leaving padded rows unused. */
++    * GPU copy as DXGI. The logical image extent remains unchanged even
++    * when the AHB-bound destination image has extra physical rows. */
+    assert(info->image_type == WSI_IMAGE_TYPE_DXGI ||
+           info->image_type == WSI_IMAGE_TYPE_ANDROID);
+
+@@ -3482,12 +3483,37 @@
+       .dstOffset = { .x = 0, .y = 0, .z = 0 },
+       .extent = info->create.extent,
+    };
++   struct VkImageCopy image_copies[4] = { image_copy };
++   uint32_t copy_count = 1;
++#ifdef __TERMUX__
++   if (info->image_type == WSI_IMAGE_TYPE_ANDROID && info->ahardware_buffer_desc) {
++      const AHardwareBuffer_Desc *physical = info->ahardware_buffer_desc;
++      const uint32_t width = info->create.extent.width;
++      const uint32_t height = info->create.extent.height;
++
++      /* DRI3 advertises the physical height. During resize, an older
++       * logical image can be presented into a taller window, exposing
++       * these rows. Define every padding row on each copy by extending
++       * the last valid row; the logical image itself stays untouched. */
++      if (width && height && height < 65532u &&
++          physical->width == width && physical->height > height &&
++          physical->height - height <= 3u && !(physical->height & 3u)) {
++         for (uint32_t y = height; y < physical->height; y++) {
++            struct VkImageCopy *padding = &image_copies[copy_count++];
++            *padding = image_copy;
++            padding->srcOffset.y = height - 1;
++            padding->dstOffset.y = y;
++            padding->extent.height = 1;
++         }
++      }
++   }
++#endif
+    wsi->CmdCopyImage(cmd_buffer,
+                      image->image,
+                      VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
+                      image->blit.image,
+                      VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+-                     1, &image_copy);
++                     copy_count, image_copies);
+
+    img_mem_barriers[0].srcAccessMask = VK_ACCESS_TRANSFER_READ_BIT;
+    img_mem_barriers[0].dstAccessMask = 0;

@@ -8,9 +8,12 @@ XFCE display (e.g. :94); the user must bring THAT Android Activity forward.
 --coalesced-glx selects the pinned private glxgears event-loop build.
 Defaults retain the installed clients. --require-s39 verifies the active
 server and its flags; it never restarts the desktop.
+--s41 selects the pinned private AHB padding fix for the coalesced Vulkan
+client and requires --s26, --coalesced-xcb, and --require-s39.
 """
 import argparse
 import hashlib
+import json
 import os
 import pathlib
 import re
@@ -26,6 +29,8 @@ PREFIX = pathlib.Path('/data/data/com.termux/files/usr')
 STATE = HOME / '.alroot-wayland'
 ICD = ROOT / '.source/gpu-stage1/s24-wrapper-xcb-resize/runtime/wrapper_icd.private.json'
 S26_ICD = ROOT / '.source/gpu-stage1/s26-wrapper-resize-retry/runtime/wrapper_icd.private.json'
+S41_ICD = ROOT / '.source/gpu-stage1/s41-ahb-padding/runtime/wrapper_icd.private.json'
+S41_WRAPPER_SHA256 = '21fdc1624cf35f957947e1e73813a6e3fbbcbb168eb18ce6bca2f96c0b03f11a'
 GLX27 = ROOT / '.source/gpu-stage27-pr25/mesa-private/glx-runtime/lib'
 S39_COALESCED_VKCUBE = ROOT / '.source/gpu-stage1/s39-live-resize/runtime/vkcube.coalesced'
 S39_COALESCED_SHA256 = '0050e7126c8d096cd14a7e0b1026b7063f898e33eb7be5b80116991cee57c208'
@@ -69,6 +74,8 @@ def run():
     parser.add_argument('demo', nargs='?', default='vulkan', choices=('vulkan', 'zink'))
     parser.add_argument('--s26', action='store_true',
                         help='Opt-in S26 private XCB transient-import retry (default retains S24 binary)')
+    parser.add_argument('--s41', action='store_true',
+                        help='Opt-in pinned AHB padding fix; requires vulkan, --s26, --coalesced-xcb, and --require-s39')
     parser.add_argument('--coalesced-xcb', action='store_true',
                         help='Explicit private vkcube XCB Configure batching; requires vulkan and --s26')
     parser.add_argument('--coalesced-glx', action='store_true',
@@ -82,9 +89,19 @@ def run():
         parser.error('--coalesced-xcb requires demo vulkan and --s26')
     if args.coalesced_glx and (args.demo != 'zink' or not args.s26):
         parser.error('--coalesced-glx requires demo zink and --s26')
-    icd = S26_ICD if args.s26 else ICD
+    if args.s41 and (args.demo != 'vulkan' or not args.s26 or
+                     not args.coalesced_xcb or not args.require_s39):
+        parser.error('--s41 requires demo vulkan, --s26, --coalesced-xcb, and --require-s39')
+    icd = S41_ICD if args.s41 else S26_ICD if args.s26 else ICD
     if not icd.is_file() or not (icd.parent / 'libvulkan_wrapper.so').is_file():
         raise RuntimeError('missing private wrapper ICD; build the requested route first')
+    if args.s41:
+        library = icd.parent / 'libvulkan_wrapper.so'
+        data = json.loads(icd.read_text())
+        if data.get('ICD', {}).get('library_path') != str(library):
+            raise RuntimeError('S41 private ICD must name its sibling wrapper library exactly')
+        if file_sha256(library) != S41_WRAPPER_SHA256:
+            raise RuntimeError('S41 private wrapper hash mismatch; refusing unknown library')
     pid, display = require_session()
     private_xwayland = validate_private_kgsl_xwayland(pid, display)
     if args.require_s39 and private_xwayland != 'S39_KGSL_RESIZE_ORIGIN_ROOT_POOL':
@@ -136,7 +153,9 @@ def run():
 
     client_sha256 = file_sha256(client)
     baseline = x11_windows(env)
-    print('S24_VISUAL_PRIVATE_WRAPPER=' + ('S26_TRANSIENT_RETRY' if args.s26 else 'S24_BASELINE'), flush=True)
+    print('S24_VISUAL_PRIVATE_WRAPPER=' +
+          ('S41_AHB_PADDING_EDGE_COPY' if args.s41 else
+           'S26_TRANSIENT_RETRY' if args.s26 else 'S24_BASELINE'), flush=True)
     print('S24_VISUAL_PRIVATE_ICD=' + str(icd), flush=True)
     print('S24_VISUAL_WRAPPER_SHA256=' + file_sha256(icd.parent / 'libvulkan_wrapper.so'), flush=True)
     print('S24_VISUAL_CLIENT=' + client_label, flush=True)

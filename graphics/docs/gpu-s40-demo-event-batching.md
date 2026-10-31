@@ -203,3 +203,12 @@ explicit redirect/unredirect sharing transition demonstrated a decoration
 write. That candidate and its trace binary were **not selected or shipped** as
 a fix for the glxgears resize report. S40 retains the S39 server and its existing
 release-fence/frame-lifetime protections.
+
+## S41 follow-up: vkcube bottom padding
+
+After accepting the S40 glxgears result, the user reported a remaining thin
+black line near the bottom of vkcube during continuous resizing. S41 initializes
+the physical AHB padding in a separate private Vulkan wrapper, with a new
+`run-s41-vkcube-visual.py` entry point. The S40 clients, server selection and
+glxgears route remain available with their original pins. See
+[S41's boundary proof and execution command](gpu-s41-ahb-padding.md).

@@ -1,0 +1,363 @@
+--- a/cube/cube.c
++++ b/cube/cube.c
+@@ -42,6 +42,10 @@
+ #endif
+ #if defined(VK_USE_PLATFORM_XCB_KHR)
+ #include "xcb_loader.h"
++#include <xcb/present.h>
++#include <xcb/xcbext.h>
++#include <errno.h>
++#include <time.h>
+ #endif
+ #if defined(VK_USE_PLATFORM_WAYLAND_KHR)
+ #include <linux/input.h>
+@@ -1151,6 +1155,304 @@
+     }
+ }
+
++/* Diagnostic only. Included after struct demo in the private probe build.
++ * One genuine Vulkan-rendered frame, resize before its first Present, then
++ * wait for actual X Present COPY + Idle before bounded owned-pixel readback.
++ * No production client or ICD is modified by this diagnostic source. */
++#if defined(VK_USE_PLATFORM_XCB_KHR)
++static struct {
++    bool enabled;
++    unsigned logical_h, target_h;
++    xcb_present_event_t event_id;
++    xcb_special_event_t *special;
++    uint32_t stamp;
++    xcb_visualtype_t visual;
++    unsigned bpp, scanline_pad;
++    bool msb_first;
++} s41_pad;
++
++static int64_t s41_pad_now_ms(void) {
++    struct timespec now;
++    clock_gettime(CLOCK_MONOTONIC, &now);
++    return (int64_t)now.tv_sec * 1000 + now.tv_nsec / 1000000;
++}
++
++static void s41_pad_die(const char *operation) {
++    fprintf(stderr, "S41_PAD_ERROR operation=%s\n", operation);
++    fflush(stderr);
++    exit(77);
++}
++
++static void s41_pad_sleep_until(int64_t deadline) {
++    while (s41_pad_now_ms() < deadline) {
++        int64_t remaining = deadline - s41_pad_now_ms();
++        if (remaining <= 0) break;
++        if (remaining > 5) remaining = 5;
++        struct timespec wait = {0, remaining * 1000000};
++        while (nanosleep(&wait, &wait) && errno == EINTR) {}
++    }
++}
++
++static unsigned s41_pad_env_uint(const char *name, unsigned fallback) {
++    const char *value = getenv(name);
++    if (!value) return fallback;
++    char *end;
++    errno = 0;
++    unsigned long parsed = strtoul(value, &end, 10);
++    if (errno || !*value || *end || parsed > 1000) s41_pad_die(name);
++    return (unsigned)parsed;
++}
++
++static void s41_pad_configure(struct demo *demo) {
++    const char *value = getenv("S41_PAD_REPRO");
++    if (!value || strcmp(value, "1")) return;
++    s41_pad.enabled = true;
++    s41_pad.logical_h = s41_pad_env_uint("S41_PAD_LOGICAL_H", 301);
++    s41_pad.target_h = s41_pad_env_uint("S41_PAD_TARGET_H", 304);
++    if (s41_pad.logical_h < 30 || s41_pad.logical_h > 900 ||
++        s41_pad.target_h <= s41_pad.logical_h ||
++        s41_pad.target_h > s41_pad.logical_h + 4)
++        s41_pad_die("invalid_logical_or_target_height");
++    demo->width = 320;
++    demo->height = (int)s41_pad.logical_h;
++    /* Never attach incremental damage/timing policy to this one-frame proof. */
++    demo->VK_KHR_incremental_present_enabled = false;
++    demo->VK_GOOGLE_display_timing_enabled = false;
++}
++
++/* Poll an XCB reply with a deadline. WSI has its own event-reading thread, so
++ * recheck the XCB reply queue periodically even if the fd is no longer ready. */
++static void *s41_pad_reply(struct demo *demo, unsigned sequence, const char *operation) {
++    const int64_t deadline = s41_pad_now_ms() + 3000;
++    while (s41_pad_now_ms() < deadline) {
++        void *reply = NULL;
++        xcb_generic_error_t *error = NULL;
++        if (xcb_poll_for_reply(demo->connection, sequence, &reply, &error)) {
++            if (error) {
++                fprintf(stderr, "S41_PAD_XERROR operation=%s code=%u major=%u minor=%u\n",
++                        operation, error->error_code, error->major_code, error->minor_code);
++                free(error);
++                free(reply);
++                s41_pad_die(operation);
++            }
++            if (!reply) s41_pad_die(operation);
++            return reply;
++        }
++        if (xcb_connection_has_error(demo->connection)) s41_pad_die("xcb_connection");
++        s41_pad_sleep_until(s41_pad_now_ms() + 2);
++    }
++    s41_pad_die(operation);
++    return NULL;
++}
++
++static xcb_get_geometry_reply_t *s41_pad_geometry(struct demo *demo, xcb_drawable_t drawable) {
++    xcb_get_geometry_cookie_t cookie = xcb_get_geometry(demo->connection, drawable);
++    xcb_flush(demo->connection);
++    return s41_pad_reply(demo, cookie.sequence, "get_geometry_timeout_or_error");
++}
++
++static void s41_pad_observe(struct demo *demo) {
++    if (!s41_pad.enabled) return;
++    const xcb_setup_t *setup = xcb_get_setup(demo->connection);
++    s41_pad.msb_first = setup->image_byte_order == XCB_IMAGE_ORDER_MSB_FIRST;
++    xcb_format_iterator_t formats = xcb_setup_pixmap_formats_iterator(setup);
++    for (; formats.rem; xcb_format_next(&formats)) {
++        if (formats.data->depth == demo->screen->root_depth) {
++            s41_pad.bpp = formats.data->bits_per_pixel;
++            s41_pad.scanline_pad = formats.data->scanline_pad;
++        }
++    }
++    xcb_depth_iterator_t depths = xcb_screen_allowed_depths_iterator(demo->screen);
++    for (; depths.rem; xcb_depth_next(&depths)) {
++        xcb_visualtype_iterator_t visuals = xcb_depth_visuals_iterator(depths.data);
++        for (; visuals.rem; xcb_visualtype_next(&visuals))
++            if (visuals.data->visual_id == demo->screen->root_visual)
++                s41_pad.visual = *visuals.data;
++    }
++    if ((s41_pad.bpp != 24 && s41_pad.bpp != 32) || !s41_pad.scanline_pad ||
++        s41_pad.visual._class != XCB_VISUAL_CLASS_TRUE_COLOR)
++        s41_pad_die("unsupported_readback_visual");
++    const xcb_query_extension_reply_t *extension = xcb_get_extension_data(demo->connection, &xcb_present_id);
++    if (!extension || !extension->present) s41_pad_die("missing_present");
++    xcb_present_query_version_cookie_t version_cookie = xcb_present_query_version(demo->connection, 1, 0);
++    xcb_flush(demo->connection);
++    free(s41_pad_reply(demo, version_cookie.sequence, "present_query_version"));
++    s41_pad.event_id = xcb_generate_id(demo->connection);
++    s41_pad.special = xcb_register_for_special_xge(demo->connection, &xcb_present_id,
++                                                   s41_pad.event_id, &s41_pad.stamp);
++    if (!s41_pad.special) s41_pad_die("register_present_observer");
++    xcb_present_select_input(demo->connection, s41_pad.event_id, demo->xcb_window,
++                            XCB_PRESENT_EVENT_MASK_COMPLETE_NOTIFY | XCB_PRESENT_EVENT_MASK_IDLE_NOTIFY);
++    xcb_get_geometry_reply_t *geometry = s41_pad_geometry(demo, demo->xcb_window);
++    if (geometry->width != 320 || geometry->height != s41_pad.logical_h)
++        s41_pad_die("initial_window_extent");
++    free(geometry);
++    fprintf(stderr, "S41_PAD_WINDOW xid=0x%x override_redirect=1 logical=320x%u target=320x%u "
++                    "bpp=%u image_byte_order=%s visual=0x%x rgb_masks=%08x,%08x,%08x\n",
++            demo->xcb_window, s41_pad.logical_h, s41_pad.target_h, s41_pad.bpp,
++            s41_pad.msb_first ? "MSB_FIRST" : "LSB_FIRST", s41_pad.visual.visual_id,
++            s41_pad.visual.red_mask, s41_pad.visual.green_mask, s41_pad.visual.blue_mask);
++    fflush(stderr);
++}
++
++static void s41_pad_before_present(struct demo *demo, VkFence rendered) {
++    if (!s41_pad.enabled) return;
++    if (demo->width != 320 || demo->height != (int)s41_pad.logical_h)
++        s41_pad_die("logical_swapchain_extent_changed");
++    VkResult result = vkWaitForFences(demo->device, 1, &rendered, VK_TRUE, UINT64_C(3000000000));
++    if (result != VK_SUCCESS) s41_pad_die("render_completion_timeout_or_error");
++    const uint32_t size[] = {320, s41_pad.target_h};
++    xcb_configure_window(demo->connection, demo->xcb_window,
++                         XCB_CONFIG_WINDOW_WIDTH | XCB_CONFIG_WINDOW_HEIGHT, size);
++    xcb_get_geometry_reply_t *geometry = s41_pad_geometry(demo, demo->xcb_window);
++    if (geometry->width != 320 || geometry->height != s41_pad.target_h)
++        s41_pad_die("target_window_extent");
++    free(geometry);
++    fprintf(stderr, "S41_PAD_BEFORE_PRESENT monotonic_ms=%lld rendered_logical=320x%u "
++                    "confirmed_window=320x%u render_fence=SIGNALED\n",
++            (long long)s41_pad_now_ms(), s41_pad.logical_h, s41_pad.target_h);
++    fflush(stderr);
++}
++
++static uint32_t s41_pad_pixel(const unsigned char *bytes) {
++    uint32_t result = 0;
++    unsigned count = s41_pad.bpp / 8;
++    for (unsigned i = 0; i < count; i++)
++        result |= (uint32_t)bytes[i] << (8 * (s41_pad.msb_first ? count - i - 1 : i));
++    return result;
++}
++
++static unsigned s41_pad_component(uint32_t pixel, uint32_t mask) {
++    if (!mask) return 0;
++    unsigned shift = 0;
++    while (!(mask & 1)) { mask >>= 1; shift++; }
++    return (unsigned)((((uint64_t)((pixel >> shift) & mask)) * 255 + mask / 2) / mask);
++}
++
++static uint32_t s41_pad_rgb(uint32_t pixel) {
++    return s41_pad_component(pixel, s41_pad.visual.red_mask) << 16 |
++           s41_pad_component(pixel, s41_pad.visual.green_mask) << 8 |
++           s41_pad_component(pixel, s41_pad.visual.blue_mask);
++}
++
++static bool s41_pad_black(uint32_t rgb) {
++    return ((rgb >> 16) & 255) <= 3 && ((rgb >> 8) & 255) <= 3 && (rgb & 255) <= 3;
++}
++
++static void s41_pad_read_rows(struct demo *demo, xcb_drawable_t drawable,
++                             const char *kind, unsigned extent_h, uint32_t reference[320], bool set_reference) {
++    unsigned first = s41_pad.logical_h - 1;
++    if (extent_h <= first || extent_h - first > 5) s41_pad_die("readback_row_extent");
++    unsigned rows = extent_h - first;
++    xcb_get_image_cookie_t cookie = xcb_get_image(demo->connection, XCB_IMAGE_FORMAT_Z_PIXMAP,
++        drawable, 0, (int16_t)first, 320, (uint16_t)rows, UINT32_MAX);
++    xcb_flush(demo->connection);
++    xcb_get_image_reply_t *reply = s41_pad_reply(demo, cookie.sequence, "owned_bottom_row_readback");
++    unsigned stride = ((320 * s41_pad.bpp + s41_pad.scanline_pad - 1) /
++                       s41_pad.scanline_pad) * (s41_pad.scanline_pad / 8);
++    if (reply->depth != demo->screen->root_depth ||
++        xcb_get_image_data_length(reply) < (int)(stride * rows))
++        s41_pad_die("readback_depth_or_length");
++    const unsigned char *data = xcb_get_image_data(reply);
++    if (set_reference)
++        for (unsigned x = 0; x < 320; x++)
++            reference[x] = s41_pad_rgb(s41_pad_pixel(data + x * (s41_pad.bpp / 8)));
++    if (set_reference) {
++        unsigned r = (reference[0] >> 16) & 255;
++        unsigned g = (reference[0] >> 8) & 255;
++        unsigned b = reference[0] & 255;
++        if (r != g || g != b || r <= 3 || r >= 252)
++            s41_pad_die("last_logical_row_is_not_gray_background");
++        for (unsigned x = 1; x < 320; x++)
++            if (reference[x] != reference[0])
++                s41_pad_die("last_logical_row_not_uniform");
++    }
++    for (unsigned r = 0; r < rows; r++) {
++        unsigned matches = 0, black = 0;
++        uint32_t left = 0, right = 0;
++        for (unsigned x = 0; x < 320; x++) {
++            uint32_t rgb = s41_pad_rgb(s41_pad_pixel(data + r * stride + x * (s41_pad.bpp / 8)));
++            matches += rgb == reference[x];
++            black += s41_pad_black(rgb);
++            if (x == 5) left = rgb;
++            if (x == 314) right = rgb;
++        }
++        fprintf(stderr, "S41_PAD_ROW drawable=%s xid=0x%x y=%u logical_h=%u actual_h=%u "
++                        "matches_last_logical_row=%u/320 black_pixels=%u/320 left_x5_rgb=%06x "
++                        "right_x314_rgb=%06x\n",
++                kind, drawable, first + r, s41_pad.logical_h, extent_h, matches, black, left, right);
++    }
++    free(reply);
++    fflush(stderr);
++}
++
++static void s41_pad_after_present(struct demo *demo, VkResult result) {
++    fprintf(stderr, "S41_PAD_QUEUE_PRESENT result=%d\n", result);
++    if (result != VK_SUCCESS && result != VK_SUBOPTIMAL_KHR)
++        s41_pad_die("vkQueuePresent_rejected_old_frame");
++    const int64_t deadline = s41_pad_now_ms() + 4000;
++    bool complete = false, idle = false;
++    uint32_t complete_serial = 0, idle_serial = 0;
++    xcb_pixmap_t pixmap = XCB_NONE;
++    while (s41_pad_now_ms() < deadline && (!complete || !idle)) {
++        xcb_generic_event_t *event;
++        while ((event = xcb_poll_for_special_event(demo->connection, s41_pad.special))) {
++            xcb_present_generic_event_t *generic = (xcb_present_generic_event_t *)event;
++            if (generic->event != s41_pad.event_id) s41_pad_die("wrong_present_observer_event");
++            if (generic->evtype == XCB_PRESENT_COMPLETE_NOTIFY) {
++                xcb_present_complete_notify_event_t *notification = (xcb_present_complete_notify_event_t *)event;
++                if (notification->window != demo->xcb_window ||
++                    notification->kind != XCB_PRESENT_COMPLETE_KIND_PIXMAP ||
++                    notification->mode != XCB_PRESENT_COMPLETE_MODE_COPY)
++                    s41_pad_die("expected_actual_present_COPY");
++                complete = true;
++                complete_serial = notification->serial;
++                fprintf(stderr, "S41_PAD_PRESENT_COMPLETE serial=%u mode=%u msc=%llu\n",
++                        complete_serial, notification->mode, (unsigned long long)notification->msc);
++            } else if (generic->evtype == XCB_PRESENT_IDLE_NOTIFY) {
++                xcb_present_idle_notify_event_t *notification = (xcb_present_idle_notify_event_t *)event;
++                if (notification->window != demo->xcb_window) s41_pad_die("wrong_idle_window");
++                idle = true;
++                idle_serial = notification->serial;
++                pixmap = notification->pixmap;
++            }
++            free(event);
++        }
++        if (xcb_connection_has_error(demo->connection)) s41_pad_die("present_wait_connection");
++        if (!complete || !idle) s41_pad_sleep_until(s41_pad_now_ms() + 2);
++    }
++    if (!complete || !idle || complete_serial != idle_serial || !pixmap)
++        s41_pad_die("present_COPY_idle_deadline_or_serial_mismatch");
++    xcb_get_geometry_reply_t *source_geometry = s41_pad_geometry(demo, pixmap);
++    const unsigned physical_h = source_geometry->height;
++    const unsigned expected_h = (s41_pad.logical_h + 3) & ~3u;
++    if (source_geometry->width != 320 || physical_h != expected_h)
++        s41_pad_die("unexpected_DRI3_physical_extent");
++    free(source_geometry);
++    xcb_get_geometry_reply_t *window_geometry = s41_pad_geometry(demo, demo->xcb_window);
++    if (window_geometry->width != 320 || window_geometry->height != s41_pad.target_h)
++        s41_pad_die("window_geometry_changed_before_capture");
++    free(window_geometry);
++    fprintf(stderr, "S41_PAD_CAPTURE_BEGIN monotonic_ms=%lld window=0x%x pixmap=0x%x "
++                    "logical=320x%u physical=320x%u target=320x%u after=COPY_AND_IDLE\n",
++            (long long)s41_pad_now_ms(), demo->xcb_window, pixmap,
++            s41_pad.logical_h, physical_h, s41_pad.target_h);
++    uint32_t reference[320];
++    s41_pad_read_rows(demo, pixmap, "source", physical_h, reference, true);
++    s41_pad_read_rows(demo, demo->xcb_window, "window", s41_pad.target_h, reference, false);
++    fprintf(stderr, "S41_PAD_CAPTURE_READY xid=0x%x hold_ms=2000 no_further_draws=1\n", demo->xcb_window);
++    fflush(stderr);
++    s41_pad_sleep_until(s41_pad_now_ms() + 2000);
++    xcb_present_select_input(demo->connection, s41_pad.event_id, demo->xcb_window, 0);
++    xcb_flush(demo->connection);
++    xcb_unregister_for_special_event(demo->connection, s41_pad.special);
++    s41_pad.special = NULL;
++    demo->quit = true;
++    fprintf(stderr, "S41_PAD_OBSERVATION=CAPTURED padding_correctness=READ_ROW_RESULTS\n");
++    fflush(stderr);
++}
++#endif
++
+ static void demo_draw(struct demo *demo) {
+     // Don't draw if initialization isn't complete, if the swapchain became outdated, or if the window is minimized
+     if (!demo->initialized || !demo->swapchain_ready || demo->is_minimized) {
+@@ -1336,7 +1638,16 @@
+         present.pNext = &present_time;
+     }
+
++#if defined(VK_USE_PLATFORM_XCB_KHR)
++    if (s41_pad.enabled) s41_pad_before_present(demo, current_submission.fence);
++#endif
+     err = vkQueuePresentKHR(demo->present_queue, &present);
++#if defined(VK_USE_PLATFORM_XCB_KHR)
++    if (s41_pad.enabled) {
++        s41_pad_after_present(demo, err);
++        return;
++    }
++#endif
+     demo->current_submission_index += 1;
+     demo->current_submission_index %= FRAME_LAG;
+     demo->first_swapchain_frame = false;
+@@ -2999,6 +3310,7 @@
+ }
+
+ static void demo_create_xcb_window(struct demo *demo) {
++    s41_pad_configure(demo);
+     uint32_t value_mask, value_list[32];
+
+     demo->xcb_window = xcb_generate_id(demo->connection);
+@@ -3006,6 +3318,11 @@
+     value_mask = XCB_CW_BACK_PIXEL | XCB_CW_EVENT_MASK;
+     value_list[0] = demo->screen->black_pixel;
+     value_list[1] = XCB_EVENT_MASK_KEY_RELEASE | XCB_EVENT_MASK_EXPOSURE | XCB_EVENT_MASK_STRUCTURE_NOTIFY;
++    if (s41_pad.enabled) {
++        value_mask |= XCB_CW_OVERRIDE_REDIRECT;
++        value_list[2] = value_list[1];
++        value_list[1] = 1;
++    }
+
+     xcb_create_window(demo->connection, XCB_COPY_FROM_PARENT, demo->xcb_window, demo->screen->root, 0, 0, demo->width, demo->height,
+                       0, XCB_WINDOW_CLASS_INPUT_OUTPUT, demo->screen->root_visual, value_mask, value_list);
+@@ -3038,6 +3355,7 @@
+     // runs
+     const uint32_t coords[] = {100, 100};
+     xcb_configure_window(demo->connection, demo->xcb_window, XCB_CONFIG_WINDOW_X | XCB_CONFIG_WINDOW_Y, coords);
++    s41_pad_observe(demo);
+ }
+ // VK_USE_PLATFORM_XCB_KHR
+ #endif

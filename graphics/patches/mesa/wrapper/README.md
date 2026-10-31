@@ -195,3 +195,19 @@ bash graphics/tools/test-s26-wrapper-xcb-resize.sh --visual zink
 It stages a **separate** private ICD and leaves the S24 runtime binary,
 system Wrapper, Termux-X11, APK, and `awstart` default unchanged. See
 `graphics/docs/gpu-s26-wrapper-xcb-transient-resize-recovery.md`.
+
+## 2026-10-31 GPU-S41 — initialize physical XCB AHB padding
+
+`0005-s41-ahb-padding-edge-copy.patch` extends S24's existing GPU image copy
+with up to three one-row regions, copying the last logical row into each
+physical padding row. DRI3 advertises the aligned physical height, so these
+rows can become visible when an old frame reaches a growing window. The
+logical image, existing barriers, submission and S26 import retry stay intact.
+
+The separate S41 wrapper is built with
+`python graphics/tools/build-s41-wrapper-padding.py`. Run the genuine-GPU
+five-case boundary proof with `python graphics/tools/test-s41-ahb-padding.py`
+and the S26 comparison with its `--s26` option. The visual entry point is
+`python graphics/tools/run-s41-vkcube-visual.py` on an active S39 desktop.
+The existing S40 glxgears route keeps its S26 wrapper. See
+[the S41 measurements and provenance](../../../docs/gpu-s41-ahb-padding.md).
