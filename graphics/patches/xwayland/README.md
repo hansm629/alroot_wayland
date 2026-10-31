@@ -316,6 +316,39 @@ See `graphics/docs/gpu-s36-direct-rootful-ahb-output.md` for the exact
 private binary hash, explicit native Termux session switch, physical
 acceptance, and `--restore-s32`/`--restore-s30` rollback commands.
 
+### S37 — S26U thin-height AHB FD tie and Vulkan DRI3 BadMatch 11
+
+`kgsl/0011-kgsl-thin-ahb-fd0.patch` applies **after S36's 0010**
+only to a separate S37 Bionic private Xwayland. S36's rootful AHB
+output remains intact. The user's `vkcube` 267×19 / 826×8 resize
+crashed because S30's gralloc FD0 tie exception covered **narrow width**
+but not **narrow height**. Actual S26U BGRA8 fd0 and metadata fd1 both
+have `st_size=28672` for 267×20, but distinct inodes, so the original
+size-only heuristic rejected them and Vulkan XCB DRI3 returned BadMatch.
+
+`S37_KGSL_THIN_AHB_FD0=1` permits Qualcomm fd0 **only** when width is
+over 64, height 1–128, exactly two same-sized but distinct-inode FDs,
+BGRA8 format, acceptable stride/padding and backing ≤2MiB. The vendor
+DMA-BUF reported `st_mode=0600` and must not be rejected by a generic
+`S_ISREG` check. All unsupported cases fail closed, and other vendors,
+installed Termux-X11, system Vulkan and the user's existing S36 binary
+are not modified.
+
+```bash
+bash graphics/tools/build-s37-kgsl-thin-ahb.sh
+bash graphics/tools/test-s37-build-and-scope.sh
+python3 graphics/tools/test-s36-rootful-ahb-output.py --s37-thin-ahb --mode candidate --pattern thin --demo vkcube --wm --seconds 7
+```
+
+The exact failed dimensions were reproduced on the previous S36 and
+successfully imported on S37, which survived 39 repeats and resumed
+animated Vulkan after restoring 500×500. This does **not** resolve
+the physical Android display's gear trails/black borders or prove
+complete glibc ICD compatibility. `start-s37-kgsl-thin-ahb.sh` requires
+explicit `--restart` from native Termux, with `--restore-s36` and
+`--restore-s32` rollback. See
+`graphics/docs/gpu-s37-thin-height-dri3-ahb-crash.md`.
+
 `S17_MATRIX_MODE=smoke bash graphics/tools/test-s17-zink-matrix.sh` checks
 Termux wrapper + Zink, Termux Turnip + Zink and Debian Turnip + Zink on
 isolated Xwayland, validating runtime execution, AHB/ABI branch, X11

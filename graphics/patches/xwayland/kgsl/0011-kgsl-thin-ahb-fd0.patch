@@ -1,0 +1,65 @@
+--- a/hw/xwayland/xwayland-glamor-gbm.c
++++ b/hw/xwayland/xwayland-glamor-gbm.c
+@@ -1568,7 +1568,8 @@
+ 
+     expected = (uint64_t)desc.stride * desc.height * 4;
+     tolerance = expected / 2 > 65536 ? expected / 2 : 65536;
+-    if (getenv("S30_DIAG_TINY_AHB") && width <= 64) {
++    if ((getenv("S30_DIAG_TINY_AHB") && width <= 64) ||
++        (getenv("S37_DIAG_THIN_AHB") && height <= 128)) {
+         ErrorF("S30_AHB_TINY_DIAG logical=%ux%u physical=%ux%u stride=%u expected=%llu tol=%llu nfd=%d\n",
+                width, height, desc.width, desc.height, desc.stride,
+                (unsigned long long)expected, (unsigned long long)tolerance, handle->numFds);
+@@ -1577,7 +1578,8 @@
+         struct stat st = {0};
+         if (handle->data[i] < 0 || fstat(handle->data[i], &st) || st.st_size <= 0)
+             continue;
+-        if (getenv("S30_DIAG_TINY_AHB") && width <= 64) {
++        if ((getenv("S30_DIAG_TINY_AHB") && width <= 64) ||
++            (getenv("S37_DIAG_THIN_AHB") && height <= 128)) {
+             ErrorF("S30_AHB_FD_DIAG fdindex=%d fsize=%llu mode=0%o ino=%llu\n", i,
+                    (unsigned long long)st.st_size, (unsigned)st.st_mode,
+                    (unsigned long long)st.st_ino);
+@@ -1619,6 +1621,42 @@
+             }
+         }
+     }
++
++    /* S37 / S26U only: S30's tie workaround handled narrow width, but a
++     * window resized to 267x19 or 826x8 has a NORMAL width and a tiny
++     * height. Qualcomm gralloc again returns two identically sized FDs:
++     * its image FD and the auxiliary metadata allocation. The size-only
++     * selection above marks this as ambiguous, so the Vulkan wrapper sees
++     * XCB DRI3 BadMatch 11 and vkcube crashes after retrying.
++     *
++     * Never guess a random FD: require BGRA8, a single-layer small AHB,
++     * exactly two distinct inodes with equal sizes, a plausibly-sized
++     * first FD, and an explicit S37 opt-in. The real S26U image FD is
++     * native_handle fd[0] (also used by the previously tested S30 path).
++     * The bounding box includes 128-row AHB padding from S24 WSI.
++     * Generic drivers, larger memory and all non-tied handles fail closed. */
++    const char *s37_thin = getenv("S37_KGSL_THIN_AHB_FD0");
++    if (selected < 0 && s37_thin && s37_thin[0] == '1' && !s37_thin[1] &&
++        desc.format == 5 && width > 64 && height >= 1 && height <= 128 &&
++        expected <= 2ULL * 1024 * 1024 &&
++        handle->numFds == 2 &&
++        handle->data[0] >= 0 && handle->data[1] >= 0) {
++        struct stat img = {0}, meta = {0};
++        if (!fstat(handle->data[0], &img) &&
++            !fstat(handle->data[1], &meta) &&
++            img.st_size >= (off_t)expected &&
++            (uint64_t)img.st_size - expected <= tolerance &&
++            img.st_size == meta.st_size &&
++            img.st_ino != meta.st_ino) {
++            selected = 0;
++            static unsigned s37_logged;
++            if (s37_logged++ < 16)
++                ErrorF("S37_KGSL_THIN_AHB_FD0_USED logical=%ux%u stride=%u bytes=%llu expected=%llu\n",
++                       width, height, desc.stride,
++                       (unsigned long long)img.st_size,
++                       (unsigned long long)expected);
++        }
++    }
+     if (selected < 0) {
+         ErrorF("S16 AHB DRI3 no unambiguous linear-sized DMA-BUF fd\n");
+         goto done;

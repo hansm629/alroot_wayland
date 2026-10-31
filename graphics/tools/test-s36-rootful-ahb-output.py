@@ -29,6 +29,7 @@ OUT = ROOT / '.source/gpu-stage1/s36-ahb-output'
 LOGS = OUT / 'logs'
 BASE = ROOT / '.source/gpu-stage1/s32-no-blank-present/runtime/Xwayland'
 CANDIDATE = OUT / 'runtime/Xwayland'
+S37_THIN_CANDIDATE = False
 ICD = ROOT / '.source/gpu-stage1/s26-wrapper-resize-retry/runtime/wrapper_icd.private.json'
 MESA_GLX = ROOT / '.source/gpu-stage27-pr25/mesa-private/glx-runtime/lib'
 SIZE_PATTERNS = {
@@ -38,6 +39,11 @@ SIZE_PATTERNS = {
                     380+(i if i<=45 else 90-i)*6) for i in range(91)),
     'extreme': ((300,250),(40,98),(8,98),(1,98),(4,101),
                 (300,250),(17,99),(500,500),(1,98),(300,250)),
+    # Exact S36 user video BadMatch 11 extents: 267x19, 826x8. Under
+    # S24's padded AHB WSI, server may see 267x20. Previous test patterns
+    # exercised only small *width*, missing the small-*height* failure.
+    'thin': ((300,300),(267,19),(826,8),(300,300),(826,8),
+             (267,19),(500,500),(350,12),(750,16),(300,300)),
 }  # All geometry updates are restricted to the spawned demo's own XID.
 
 
@@ -117,7 +123,8 @@ def one_run(mode, demo, seconds, with_wm, tree, sampler, status_before,
                       TMPDIR=str(prefix_tmp))
     for key in ('DISPLAY', 'LD_PRELOAD', 'DBUS_SESSION_BUS_ADDRESS'):
         server_env.pop(key, None)
-    for opt in ('S36_KGSL_ROOT_AHB_OUTPUT', 'S28_KGSL_RESIZE_PRESERVE','S29_KGSL_NATIVE_RESIZE',
+    for opt in ('S37_KGSL_THIN_AHB_FD0', 'S37_DIAG_THIN_AHB',
+                'S36_KGSL_ROOT_AHB_OUTPUT', 'S28_KGSL_RESIZE_PRESERVE','S29_KGSL_NATIVE_RESIZE',
                 'S30_KGSL_STABLE_FRAME','S30_KGSL_TINY_AHB_FD0',
                 'S31_KGSL_RESIZE_CONTENT_POLICY','S30_DIAG_TINY_AHB',
                 'S30_TRACE_STABLE','S32_KGSL_NO_BLANK_PRESENT'):
@@ -127,8 +134,15 @@ def one_run(mode, demo, seconds, with_wm, tree, sampler, status_before,
     if mode == 'candidate':
         server_env['S32_KGSL_NO_BLANK_PRESENT'] = '1'
         server_env['S36_KGSL_ROOT_AHB_OUTPUT'] = '1'
+        if S37_THIN_CANDIDATE:
+            server_env['S37_KGSL_THIN_AHB_FD0'] = '1'
+            server_env['S37_DIAG_THIN_AHB'] = '1'
     else:
         server_env['S32_KGSL_NO_BLANK_PRESENT'] = '1'
+        if S37_THIN_CANDIDATE:
+            # Baseline is S36 direct AHB with NO narrow-height FD fix.
+            # An expected negative control may return BadMatch 11.
+            server_env['S36_KGSL_ROOT_AHB_OUTPUT'] = '1'
 
     client_env = os.environ.copy()
     for key in ('WAYLAND_DISPLAY', 'LD_PRELOAD', 'VK_DRIVER_FILES',
@@ -350,6 +364,7 @@ def one_run(mode, demo, seconds, with_wm, tree, sampler, status_before,
 
 
 def main():
+    global OUT, LOGS, BASE, CANDIDATE, S37_THIN_CANDIDATE
     p = argparse.ArgumentParser()
     p.add_argument('--mode', choices=('baseline', 'candidate'),
                    default='candidate', help='baseline=S32 linear DMA-BUF; candidate=S36 direct AHB')
@@ -360,7 +375,15 @@ def main():
                    help='gentle drags, abrupt aspect changes or 1px extreme')
     p.add_argument('--audit-composite-move-trails', action='store_true',
                    help='sample the isolated Xfwm4 COMPOSITED OVERLAY after glxgears movement')
+    p.add_argument('--s37-thin-ahb', action='store_true',
+                   help='compare S36 and opt-in S37 on thin-height AHB (267x19 / 826x8)')
     options = p.parse_args()
+    if options.s37_thin_ahb:
+        S37_THIN_CANDIDATE = True
+        OUT = ROOT / '.source/gpu-stage1/s37-thin-ahb'
+        LOGS = OUT / 'logs'
+        BASE = ROOT / '.source/gpu-stage1/s36-ahb-output/runtime/Xwayland'
+        CANDIDATE = OUT / 'runtime/Xwayland'
     if not 3 <= options.seconds <= 35:
         p.error('duration must be 3..35 seconds per case')
     if options.audit_composite_move_trails and (options.demo != 'zink' or not options.wm):
@@ -371,10 +394,14 @@ def main():
         raise RuntimeError('Alroot Wayland host not running')
 
     import hashlib
-    for path, digest in (
-        (BASE, 'b56b7abacd6f1e1a9f1ba2e453d2038b73eec15cd5cf5d5160eb582876194455'),
-        (CANDIDATE, 'df7c98daf732cbc735646e0fa92ca3ae9689a681952d3783acb7c7b1cae7e9f5'),
-    ):
+    pinned = (
+        ((BASE, 'df7c98daf732cbc735646e0fa92ca3ae9689a681952d3783acb7c7b1cae7e9f5'),
+         (CANDIDATE, '193f43e03f0e754c39cfb73e04ac1e0032f8f632e6d06b5d1b675f67c834a594'))
+        if options.s37_thin_ahb else
+        ((BASE, 'b56b7abacd6f1e1a9f1ba2e453d2038b73eec15cd5cf5d5160eb582876194455'),
+         (CANDIDATE, 'df7c98daf732cbc735646e0fa92ca3ae9689a681952d3783acb7c7b1cae7e9f5'))
+    )
+    for path, digest in pinned:
         if hashlib.sha256(path.read_bytes()).hexdigest() != digest:
             raise RuntimeError('private Xwayland binary not pinned: ' + str(path))
     LOGS.mkdir(parents=True, exist_ok=True)

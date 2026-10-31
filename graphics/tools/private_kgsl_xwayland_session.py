@@ -43,6 +43,10 @@ PRIVATE_XWAYLANDS = {
         'S36_KGSL_ROOTFUL_AHB_DIRECT_VKIMAGE',
         'df7c98daf732cbc735646e0fa92ca3ae9689a681952d3783acb7c7b1cae7e9f5',
     ),
+    ROOT / '.source/gpu-stage1/s37-thin-ahb/runtime/Xwayland': (
+        'S37_KGSL_THIN_HEIGHT_DRI3_AHB_FD0',
+        '193f43e03f0e754c39cfb73e04ac1e0032f8f632e6d06b5d1b675f67c834a594',
+    ),
 }
 
 

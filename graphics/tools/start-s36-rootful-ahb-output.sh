@@ -13,6 +13,7 @@ S30="$ROOT/.source/gpu-stage1/s30-min-extent/runtime/Xwayland"
 S31="$ROOT/.source/gpu-stage1/s31-resize-continuity/runtime/Xwayland"
 S32="$ROOT/.source/gpu-stage1/s32-no-blank-present/runtime/Xwayland"
 S36="$ROOT/.source/gpu-stage1/s36-ahb-output/runtime/Xwayland"
+S37="$ROOT/.source/gpu-stage1/s37-thin-ahb/runtime/Xwayland"
 declare -a approved=(
     "$S16|f52749b892b4da97f69644eadfaf9c644228b0a3af4a86a13cd792a85a035701"
     "$S28|cd1071681188234615ceb75a95ceea73eba89afacd70a5a51dd460f3f67256e7"
@@ -21,17 +22,20 @@ declare -a approved=(
     "$S31|73acf8472faf1e5b91b5f4e998c32ed3322d30fc68e7b0683eef62b6a9c1fe90"
     "$S32|b56b7abacd6f1e1a9f1ba2e453d2038b73eec15cd5cf5d5160eb582876194455"
     "$S36|df7c98daf732cbc735646e0fa92ca3ae9689a681952d3783acb7c7b1cae7e9f5"
+    "$S37|193f43e03f0e754c39cfb73e04ac1e0032f8f632e6d06b5d1b675f67c834a594"
 )
 mode=""
 dry_run=0
 while (($#));do
     case "$1" in
         --restart) [[ -z "$mode" ]] || exit 2;mode=s36 ;;
+        --s37-thin-ahb) [[ -z "$mode" ]] || exit 2;mode=s37 ;;
+        --restore-s36) [[ -z "$mode" ]] || exit 2;mode=s36 ;;
         --restore-s32) [[ -z "$mode" ]] || exit 2;mode=s32 ;;
         --restore-s30) [[ -z "$mode" ]] || exit 2;mode=s30 ;;
         --restore-s16) [[ -z "$mode" ]] || exit 2;mode=s16 ;;
         --dry-run) dry_run=1 ;;
-        *) echo 'Usage: bash graphics/tools/start-s36-rootful-ahb-output.sh --restart|--restore-s32|--restore-s30|--restore-s16 [--dry-run]' >&2;exit 2 ;;
+        *) echo 'Usage: bash graphics/tools/start-s36-rootful-ahb-output.sh --restart|--s37-thin-ahb|--restore-s36|--restore-s32|--restore-s30|--restore-s16 [--dry-run]' >&2;exit 2 ;;
     esac
     shift
 done
@@ -59,6 +63,7 @@ case "$mode" in
     s30) target="$S30" ;;
     s32) target="$S32" ;;
     s36) target="$S36" ;;
+    s37) target="$S37" ;;
 esac
 if ((dry_run));then
     echo "S36_DRY_RUN_MODE=$mode"
@@ -88,11 +93,22 @@ common=(
     GALLIUM_DRIVER=freedreno
 )
 case "$mode" in
+    s37)
+        env -u S28_KGSL_RESIZE_PRESERVE -u S29_KGSL_NATIVE_RESIZE \
+            -u S30_KGSL_STABLE_FRAME -u S31_KGSL_RESIZE_CONTENT_POLICY \
+            -u S30_KGSL_TINY_AHB_FD0 -u S32_KGSL_NO_BLANK_PRESENT \
+            -u S36_KGSL_ROOT_AHB_OUTPUT -u S37_KGSL_THIN_AHB_FD0 \
+            -u S30_DIAG_TINY_AHB -u S37_DIAG_THIN_AHB -u S30_TRACE_STABLE \
+            -u S31_RESIZE_DIAG -u S32_KGSL_SKIP_REPLAY \
+            "${common[@]}" S30_KGSL_TINY_AHB_FD0=1 \
+            S32_KGSL_NO_BLANK_PRESENT=1 S36_KGSL_ROOT_AHB_OUTPUT=1 \
+            S37_KGSL_THIN_AHB_FD0=1 \
+            awstart --restart --direct --no-topapp ;;
     s36)
         env -u S28_KGSL_RESIZE_PRESERVE -u S29_KGSL_NATIVE_RESIZE \
             -u S30_KGSL_STABLE_FRAME -u S31_KGSL_RESIZE_CONTENT_POLICY \
             -u S30_KGSL_TINY_AHB_FD0 -u S32_KGSL_NO_BLANK_PRESENT \
-            -u S36_KGSL_ROOT_AHB_OUTPUT -u S30_DIAG_TINY_AHB \
+            -u S36_KGSL_ROOT_AHB_OUTPUT -u S37_KGSL_THIN_AHB_FD0 -u S37_DIAG_THIN_AHB -u S30_DIAG_TINY_AHB \
             -u S30_TRACE_STABLE -u S31_RESIZE_DIAG -u S32_KGSL_SKIP_REPLAY \
             "${common[@]}" S30_KGSL_TINY_AHB_FD0=1 \
             S32_KGSL_NO_BLANK_PRESENT=1 S36_KGSL_ROOT_AHB_OUTPUT=1 \
@@ -100,7 +116,7 @@ case "$mode" in
     s32)
         env -u S28_KGSL_RESIZE_PRESERVE -u S29_KGSL_NATIVE_RESIZE \
             -u S30_KGSL_STABLE_FRAME -u S31_KGSL_RESIZE_CONTENT_POLICY \
-            -u S36_KGSL_ROOT_AHB_OUTPUT -u S30_DIAG_TINY_AHB \
+            -u S36_KGSL_ROOT_AHB_OUTPUT -u S37_KGSL_THIN_AHB_FD0 -u S37_DIAG_THIN_AHB -u S30_DIAG_TINY_AHB \
             -u S30_TRACE_STABLE -u S31_RESIZE_DIAG -u S32_KGSL_SKIP_REPLAY \
             "${common[@]}" S30_KGSL_TINY_AHB_FD0=1 \
             S32_KGSL_NO_BLANK_PRESENT=1 \
@@ -108,7 +124,7 @@ case "$mode" in
     s30)
         env -u S28_KGSL_RESIZE_PRESERVE -u S29_KGSL_NATIVE_RESIZE \
             -u S31_KGSL_RESIZE_CONTENT_POLICY -u S32_KGSL_NO_BLANK_PRESENT \
-            -u S36_KGSL_ROOT_AHB_OUTPUT -u S30_DIAG_TINY_AHB \
+            -u S36_KGSL_ROOT_AHB_OUTPUT -u S37_KGSL_THIN_AHB_FD0 -u S37_DIAG_THIN_AHB -u S30_DIAG_TINY_AHB \
             -u S30_TRACE_STABLE -u S31_RESIZE_DIAG -u S32_KGSL_SKIP_REPLAY \
             "${common[@]}" S30_KGSL_STABLE_FRAME=1 \
             S30_KGSL_TINY_AHB_FD0=1 \
@@ -117,7 +133,7 @@ case "$mode" in
         env -u S28_KGSL_RESIZE_PRESERVE -u S29_KGSL_NATIVE_RESIZE \
             -u S30_KGSL_STABLE_FRAME -u S30_KGSL_TINY_AHB_FD0 \
             -u S31_KGSL_RESIZE_CONTENT_POLICY -u S32_KGSL_NO_BLANK_PRESENT \
-            -u S36_KGSL_ROOT_AHB_OUTPUT -u S30_DIAG_TINY_AHB \
+            -u S36_KGSL_ROOT_AHB_OUTPUT -u S37_KGSL_THIN_AHB_FD0 -u S37_DIAG_THIN_AHB -u S30_DIAG_TINY_AHB \
             -u S30_TRACE_STABLE -u S31_RESIZE_DIAG -u S32_KGSL_SKIP_REPLAY \
             "${common[@]}" awstart --restart --direct --no-topapp ;;
 esac

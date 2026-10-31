@@ -894,3 +894,24 @@ testing; S32 and S36 Zink demo FPS were similar. No user XFCE restart,
 APK or system driver change; all previous project binaries remain
 SHA256-pinned. Opt-in S36 launch and S32/S30 rollback are documented in
 `graphics/docs/gpu-s36-direct-rootful-ahb-output.md`.
+
+**GPU-S37 confirmed S36 `vkcube` thin-height DRI3 crash correction
+(2026-10-31):** User video and live private Xwayland log showed Vulkan
+WSI `BadMatch 11` and client exit `-11` after repeated 267×19 and
+826×8 window resizes. S30's Qualcomm gralloc FD tie workaround only
+covered width ≤64. The real S26U narrow-height 267×20 AHB has two
+distinct-inode native FDs with identical sizes (both 28672 bytes), so
+the old heuristic rejected them. S37 adds a **separately opted-in**
+strict BGRA8 two-FD equal-size/different-inode override for height 1–128,
+small backing and fd0 plausible pitch/length; neither installed Vulkan
+nor the S36 AHB root output are changed. An exact on-device negative
+control reproduced the failure, and S37's positive isolated Xfwm4
+test then survived **39 thin-height resizes**, imported fd0 and restored
+vkcube animation (21/22 changing frame hashes). Legacy S30 small-width
+and Mesa Zink GLX tests remained functional. This is a fix for the
+**identified DRI3 image import crash only** — Android-visible colored
+gear trails, intermittent GPU stutter and resize-edge artifacts remain
+unverified/unresolved. S36 and older private binaries are immutable,
+system GPU drivers and user XFCE unchanged; S37 is opt-in with S36/S32
+rollback, **not default**. Notes and manual acceptance commands:
+`graphics/docs/gpu-s37-thin-height-dri3-ahb-crash.md`.
