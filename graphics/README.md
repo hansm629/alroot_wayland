@@ -809,3 +809,26 @@ and a never-redrawing Xfwm4 test remains unresolved. S30 is **not**
 the `awstart` default; physical Android user validation is still needed.
 Existing Xwayland, GPU drivers, XFCE/IME and APK remain untouched.
 Instructions: `graphics/docs/gpu-s30-tiny-ahb-and-stable-present.md`.
+
+**GPU-S31 adaptive resize/Present-extent cleanup (2026-10-31):** User
+videos of the S30 Xfwm4 desktop show a clipped blue `glxgears` gear,
+bouncing previous-frame geometry and a thin horizontal black band inside
+the resized `vkcube` window. Real KGSL Xwayland Present diagnostics
+confirmed **window 900×720 / client DRI3 pixmap 350×252** during dragging,
+and the inverse (huge old pixmap into a small new window). S31 keeps S30's
+tiny AHB import and genuine DRI3 source protection but **does not show
+last-frame content at a wildly mismatched size**. It limits native 1:1
+preservation to ~10% geometry delta, fills the new background otherwise,
+and after a mismatched real Present GPU-clears only the uncovered strips
+or hides a stale grossly mismatched scene on the Xorg-owned window.
+Testing on the real S26U using *isolated* Xfwm4/Vulkan Wrapper + Zink:
+gentle 45-step `vkcube` drag showed **215/215 center content samples** and
+zero black right/bottom-edge observations; abrupt 39-step Vulkan and
+Zink changes survived and restored fresh Vulkan animation (21 changing
+hashes in 22 post-resize samples). Abrupt drags can briefly show a plain
+background instead of the misleading giant previous gear; **no physical
+Android smoothness claim** until user visual acceptance. S31 is a
+separately pinned opt-in Xwayland binary, has explicit S30 rollback,
+preserves S16/S28/S29/S30, Termux-X11, user XFCE/IME, Android helper APK,
+GPU libraries and original drivers. Build/test/manual commands:
+`graphics/docs/gpu-s31-adaptive-resize-and-present-extent.md`.

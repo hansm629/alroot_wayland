@@ -216,6 +216,37 @@ PASS; a never-Presenting synthetic window under Xfwm4 and rare black
 edges are still unresolved. User physical-screen acceptance is pending.
 See `graphics/docs/gpu-s30-tiny-ahb-and-stable-present.md`.
 
+### S31 adaptive GPU frame retention and Present size-gap clearing (opt-in)
+
+`kgsl/0008-kgsl-adaptive-resize-present-extent.patch` applies after
+S30's `0007` **only** to a separate private Adreno KGSL Xwayland.
+`S31_KGSL_RESIZE_CONTENT_POLICY=3` permits native-pixel reuse only if
+client/window dimensions are sufficiently close (~10%). It does not
+bilinearly stretch a previous frame or tile old gear pixels. On an XCB
+Present **copy** with a stale source pixmap, it GPU-clears the uncovered
+right/bottom region; a grossly mismatched source is instead replaced by
+the client's last-known background color until the next valid Present.
+The Xorg-owned window is the only destination; the client's imported
+DRI3 GPU image is **never modified**. Existing S30 tiny Qualcomm AHB
+2-FD fallback is retained. This is not end-to-end zero-copy.
+
+```bash
+bash graphics/tools/build-s31-kgsl-resize-continuity.sh
+bash graphics/tools/test-s31-build-and-scope.sh
+python3 graphics/tools/test-s31-resize-continuity.py --pattern gentle --demo vkcube --wm
+python3 graphics/tools/test-s31-resize-continuity.py --pattern abrupt --demo zink --wm
+```
+
+S31 is **not** promoted into the normal `awstart` or regular private
+Xwayland builder, which refuses experimental source overlays early.
+The pinned S30 binary and all earlier private/system binaries remain
+available. The native Termux `start-s31-kgsl-resize-continuity.sh
+--restart` explicitly switches the project XFCE, while `--restore-s30`
+rolls back. Physical user-screen acceptance is still required: abrupt
+resizes may momentarily show the background rather than stretched/cropped
+old client content. See
+`graphics/docs/gpu-s31-adaptive-resize-and-present-extent.md`.
+
 `S17_MATRIX_MODE=smoke bash graphics/tools/test-s17-zink-matrix.sh` checks
 Termux wrapper + Zink, Termux Turnip + Zink and Debian Turnip + Zink on
 isolated Xwayland, validating runtime execution, AHB/ABI branch, X11

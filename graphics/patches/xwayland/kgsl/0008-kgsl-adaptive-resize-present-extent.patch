@@ -1,0 +1,206 @@
+--- a/hw/xwayland/xwayland-window.c
++++ b/hw/xwayland/xwayland-window.c
+@@ -1799,8 +1799,10 @@
+ {
+     const char *opt = getenv("S29_KGSL_NATIVE_RESIZE");
+     const char *s30 = getenv("S30_KGSL_STABLE_FRAME");
++    const char *s31 = getenv("S31_KGSL_RESIZE_CONTENT_POLICY");
+     if ((!opt || opt[0] != '1' || opt[1] != '\0') &&
+-        (!s30 || s30[0] != '1' || s30[1] != '\0'))
++        (!s30 || s30[0] != '1' || s30[1] != '\0') &&
++        (!s31 || !((s31[0] == '1' || s31[0] == '2' || s31[0] == '3') && !s31[1])))
+         return FALSE;
+     if (xwl_screen->rootless || !xwl_screen->glamor ||
+         !xwl_glamor_is_kgsl_surfaceless(xwl_screen) ||
+@@ -1826,11 +1828,23 @@
+ static Bool
+ s29_preserve_native_pixmap(PixmapPtr old_pix, DrawablePtr dst_drawable)
+ {
++    const char *s31 = getenv("S31_KGSL_RESIZE_CONTENT_POLICY");
++    /* S31 policy 1: fill background only. Policy 2: old 1:1 top-left.
++     * Policy 3: old 1:1 centered ONLY if dimensions remain within 10%.
++     * A large resize must not display a huge, clipped old GLX gear or
++     * pretend the old Vulkan cube rendered at the new window extent. */
++    const int policy = s31 && !s31[1] &&
++                       (s31[0] == '1' || s31[0] == '2' || s31[0] == '3') ? s31[0] - '0' : 0;
++    /* S30 did not paint new surfaces narrower than 30px, leaving the
++     * previously reported black strip during rapid tiny resize. With S31
++     * adaptive/background mode, clearing even a 1px-wide target is safe:
++     * only a 1x1 solid texel is repeated, never the stale client scene. */
++    const int min_target = policy == 1 || policy == 3 ? 1 : 30;
+     if (!old_pix || !dst_drawable ||
+         &old_pix->drawable == dst_drawable ||
+         old_pix->drawable.depth != dst_drawable->depth ||
+         old_pix->drawable.width < 30 || old_pix->drawable.height < 30 ||
+-        dst_drawable->width < 30 || dst_drawable->height < 30 ||
++        dst_drawable->width < min_target || dst_drawable->height < min_target ||
+         old_pix->drawable.width > 1920 || old_pix->drawable.height > 1080 ||
+         dst_drawable->width > 1920 || dst_drawable->height > 1080)
+         return FALSE;
+@@ -1878,14 +1892,20 @@
+          * the next real Vulkan Present replaces the placeholder. */
+         const int sw = old_pix->drawable.width, sh = old_pix->drawable.height;
+         const int dw = dst_drawable->width, dh = dst_drawable->height;
+-        const int sx = sw > dw ? (sw - dw) / 2 : 0;
+-        const int sy = sh > dh ? (sh - dh) / 2 : 0;
+-        const int dx = dw > sw ? (dw - sw) / 2 : 0;
+-        const int dy = dh > sh ? (dh - sh) / 2 : 0;
+-        const unsigned cw = sw < dw ? sw : dw;
+-        const unsigned ch = sh < dh ? sh : dh;
+-        CompositePicture(PictOpSrc, src, NULL, dst,
+-                         sx, sy, 0, 0, dx, dy, cw, ch);
++        const Bool s31_compatible =
++            policy != 3 ||
++            (abs(sw - dw) <= (sw / 10 > 12 ? sw / 10 : 12) &&
++             abs(sh - dh) <= (sh / 10 > 12 ? sh / 10 : 12));
++        if (policy != 1 && s31_compatible) {
++            const int sx = policy == 2 ? 0 : (sw > dw ? (sw - dw) / 2 : 0);
++            const int sy = policy == 2 ? 0 : (sh > dh ? (sh - dh) / 2 : 0);
++            const int dx = policy == 2 ? 0 : (dw > sw ? (dw - sw) / 2 : 0);
++            const int dy = policy == 2 ? 0 : (dh > sh ? (dh - sh) / 2 : 0);
++            const unsigned cw = sw < dw ? sw : dw;
++            const unsigned ch = sh < dh ? sh : dh;
++            CompositePicture(PictOpSrc, src, NULL, dst,
++                             sx, sy, 0, 0, dx, dy, cw, ch);
++        }
+         copied = TRUE;
+     }
+     if (dst) FreePicture(dst, 0);
+@@ -1899,7 +1919,111 @@
+ s30_stable_enabled(void)
+ {
+     const char *opt = getenv("S30_KGSL_STABLE_FRAME");
+-    return opt && opt[0] == '1' && !opt[1];
++    const char *s31 = getenv("S31_KGSL_RESIZE_CONTENT_POLICY");
++    return (opt && opt[0] == '1' && !opt[1]) ||
++           (s31 && (s31[0] == '1' || s31[0] == '2' || s31[0] == '3') && !s31[1]);
++}
++
++/* An X11 Vulkan/GLX client may still Present an older-size source pixmap
++ * during continuous XFWM4 configure/resize. Present's copy updates only
++ * the source rectangle; the uncovered right/bottom part can retain stale
++ * black pixels (the horizontal black bar in the user's vkcube video).
++ * Draw ONLY those uncovered strips on the Xorg-owned WINDOW drawable:
++ * never alter the client DRI3 image or replace its genuinely new content.
++ * Uses a GPU sampled 1x1 texel, no CPU pixel readback, no scaling. */
++void
++xwl_window_s31_fill_uncovered_present(WindowPtr window, PixmapPtr source)
++{
++    ScreenPtr screen;
++    struct xwl_screen *xwl_screen;
++    PixmapPtr bg;
++    GCPtr gc;
++    PicturePtr fill = NULL, dst = NULL;
++    PictFormatPtr format;
++    XID repeat = RepeatNormal;
++    int error = 0, w, h, sw, sh;
++    Bool stale_extent;
++
++    if (!window || !source || !s30_stable_enabled())
++        return;
++    const char *s31 = getenv("S31_KGSL_RESIZE_CONTENT_POLICY");
++    if (!s31 || s31[0] != '3' || s31[1])
++        return;
++    screen = window->drawable.pScreen;
++    xwl_screen = xwl_screen_get(screen);
++    if (!s28_is_optin_xcb_gpu_window(window, xwl_screen))
++        return;
++    w = window->drawable.width;
++    h = window->drawable.height;
++    sw = source->drawable.width;
++    sh = source->drawable.height;
++    /* Present can copy a 350x252 old swapchain while XFWM4's window is
++     * already 900x720. Conversely it can paste a huge old GLX texture
++     * into a tiny new window, clipping the blue/red gear at the top.
++     * Those images are not valid at the new viewport geometry. */
++    stale_extent = abs(sw - w) > (w / 10 > 12 ? w / 10 : 12) ||
++                   abs(sh - h) > (h / 10 > 12 ? h / 10 : 12);
++    if (w < 1 || h < 1 || w > 4096 || h > 4096 ||
++        sw < 1 || sh < 1 || (!stale_extent && sw >= w && sh >= h) ||
++        source->drawable.depth != window->drawable.depth ||
++        (window->drawable.depth != 24 && window->drawable.depth != 32))
++        return;
++    if (getenv("S31_RESIZE_DIAG")) {
++        static unsigned logged;
++        if (logged < 18) {
++            ++logged;
++            ErrorF("S31_PRESENT_EXTENT win=0x%lx window=%dx%d source=%dx%d stale=%d\n",
++                   (unsigned long)window->drawable.id, w, h, sw, sh,
++                   stale_extent);
++        }
++    }
++
++    format = PictureMatchFormat(screen, window->drawable.depth,
++                window->drawable.depth == 32 ? PICT_a8r8g8b8 : PICT_x8r8g8b8);
++    if (!format)
++        return;
++    bg = (*screen->CreatePixmap)(screen, 1, 1, window->drawable.depth,
++                                  CREATE_PIXMAP_USAGE_SCRATCH);
++    if (!bg)
++        return;
++    gc = GetScratchGC(window->drawable.depth, screen);
++    if (!gc)
++        goto done;
++    ValidateGC(&bg->drawable, gc);
++    (void)(*gc->ops->CopyArea)(&source->drawable, &bg->drawable, gc,
++                              sw > 2 ? 2 : 0, sh > 2 ? 2 : 0,
++                              1, 1, 0, 0);
++    FreeScratchGC(gc);
++
++    fill = CreatePicture(0, &bg->drawable, format,
++                         CPRepeat, &repeat, serverClient, &error);
++    dst = CreatePicture(0, &window->drawable, format,
++                        0, NULL, serverClient, &error);
++    if (fill && dst) {
++        ValidatePicture(fill);
++        ValidatePicture(dst);
++        if (stale_extent) {
++            /* Do not expose a massive clipped gear or a little stale
++             * cube at the wrong coordinates. The next valid Present
++             * updates normally, without GPU-side interpolation. */
++            CompositePicture(PictOpSrc, fill, NULL, dst,
++                             0, 0, 0, 0, 0, 0, w, h);
++        } else {
++            if (sw < w)
++                CompositePicture(PictOpSrc, fill, NULL, dst,
++                                 0, 0, 0, 0, sw, 0, w - sw, h);
++            if (sh < h)
++                CompositePicture(PictOpSrc, fill, NULL, dst,
++                                 0, 0, 0, 0, 0, sh,
++                                 sw < w ? sw : w, h - sh);
++        }
++    }
++    if (dst)
++        FreePicture(dst, 0);
++    if (fill)
++        FreePicture(fill, 0);
++done:
++    screen->DestroyPixmap(bg);
+ }
+ 
+ static struct s30_stable_frame *
+--- a/hw/xwayland/xwayland-window.h
++++ b/hw/xwayland/xwayland-window.h
+@@ -127,6 +127,9 @@
+ #ifdef XWL_HAS_GLAMOR
+ /* S30: drop resize snapshot only after new actual DRI3 content arrives. */
+ void xwl_window_s30_real_present(WindowPtr window);
++/* S31: after a resize-mismatched real Present copy, GPU-clear only the
++ * uncovered strips on the Xorg-owned window, preserving client content. */
++void xwl_window_s31_fill_uncovered_present(WindowPtr window, PixmapPtr pixmap);
+ #endif
+ void xwl_window_update_surface_window(struct xwl_window *xwl_window);
+ 
+--- a/hw/xwayland/xwayland-present.c
++++ b/hw/xwayland/xwayland-present.c
+@@ -1189,6 +1189,10 @@
+ 
+         present_execute_copy(vblank, crtc_msc);
+ #ifdef XWL_HAS_GLAMOR
++        /* A source pixmap smaller than the newly resized window leaves
++         * uncovered strips. S31 opt-in paints only those, after the real
++         * copy, never touching the freshly rendered client DRI3 image. */
++        xwl_window_s31_fill_uncovered_present(window, vblank->pixmap);
+         /* The real client render was copied successfully; the next
+          * resize may capture fresh content rather than a placeholder. */
+         xwl_window_s30_real_present(window);
