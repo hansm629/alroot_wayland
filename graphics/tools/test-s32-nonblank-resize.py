@@ -88,7 +88,7 @@ def end_process(proc, group=False):
 
 
 def one_run(mode, demo, seconds, with_wm, tree, sampler, status_before,
-            pattern="gentle"):
+            pattern="gentle", audit_composite_move=False):
     sizes = SIZE_PATTERNS[pattern]
     prefix_tmp = PREFIX / 'tmp'
     xdir = prefix_tmp / '.X11-unix'
@@ -217,6 +217,23 @@ def one_run(mode, demo, seconds, with_wm, tree, sampler, status_before,
             if '_MESA_DRV(STRING)' not in marker.stdout:
                 raise RuntimeError('private XCB Vulkan WSI marker not advertised')
 
+            if audit_composite_move:
+                # Entirely separate 1920x1080 rootful Xwayland + xfwm4,
+                # with the SAME project-private KGSL executable/Wrapper.
+                # Only this demo's XID is moved between two far-apart
+                # positions: the ROOT COMPOSITOR's vacated old position,
+                # not the app center, is checked for old gear pixels.
+                program = OUT / 'runtime/s35-xcomposite-move-trail'
+                result = subprocess.run([str(program), xid, '22'],
+                                        env=client_env, capture_output=True,
+                                        text=True, timeout=18)
+                print(result.stdout.strip(), flush=True)
+                if result.stderr:
+                    print('S35_COMPOSITE_AUDIT_STDERR=' + result.stderr[-240:])
+                if result.returncode:
+                    raise RuntimeError('S35 composite trail audit did not pass')
+                return 0
+
             if demo == 'vkcube':
                 sample_log = stack.enter_context((LOGS / (label + '-corners.log')).open('w'))
                 observer = subprocess.Popen(
@@ -332,9 +349,13 @@ def main():
     p.add_argument('--seconds', type=int, default=8)
     p.add_argument('--pattern', choices=tuple(SIZE_PATTERNS), default='gentle',
                    help='gentle drags, abrupt aspect changes or 1px extreme')
+    p.add_argument('--audit-composite-move-trails', action='store_true',
+                   help='sample the isolated Xfwm4 COMPOSITED OVERLAY after glxgears movement')
     options = p.parse_args()
     if not 3 <= options.seconds <= 35:
         p.error('duration must be 3..35 seconds per case')
+    if options.audit_composite_move_trails and (options.demo != 'zink' or not options.wm):
+        p.error('--audit-composite-move-trails requires --demo zink --wm')
     if not CANDIDATE.is_file() or not BASE.is_file() or not ICD.is_file():
         raise RuntimeError('missing pinned S31/S32 private Xwayland or S26 Wrapper')
     if not (STATE / 'runtime/wayland-0').is_socket():
@@ -360,13 +381,22 @@ def main():
                         str(ROOT / 'graphics/tests' / source), '-lX11',
                         '-o', str(output)], check=True, timeout=30)
 
+    if options.audit_composite_move_trails:
+        subprocess.run(['clang', '--target=aarch64-linux-android35', '-O2',
+                        '-std=gnu11', '-Wall', '-Wextra', '-Werror',
+                        str(ROOT / 'graphics/tests/s35-xcomposite-move-trail.c'),
+                        '-lX11', '-lXcomposite',
+                        '-o', str(OUT / 'runtime/s35-xcomposite-move-trail')],
+                       check=True, timeout=30)
+
     status = subprocess.check_output(['awstart', '--status'], text=True, timeout=8)
     modes = (options.mode,)
     outcomes = {}
     for mode in modes:
         outcomes[mode] = one_run(mode, options.demo, options.seconds,
                                  options.wm, tree, sampler, status,
-                                 pattern=options.pattern)
+                                 pattern=options.pattern,
+                                 audit_composite_move=options.audit_composite_move_trails)
     print('S32_PHYSICAL_ANDROID_FLICKER=USER_VISUAL_TEST_REQUIRED', flush=True)
     return 0
 

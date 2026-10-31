@@ -853,3 +853,22 @@ residual black-edge samples/cropping remain. S32 is a separate pinned
 candidate with **S30 rollback**, no automatic XFCE restart or default
 promotion, and no Termux-X11, driver, APK or user desktop changes.
 Details: `graphics/docs/gpu-s32-nonblank-present-continuity.md`.
+
+**GPU-S35 composited-screen/Android-output root-cause audit (2026-10-31):**
+The user still observed S32 gear trailing and cube stalls/black borders.
+We stopped adding old-image clearing patches and measured the *actual*
+Xfwm4 XComposite overlay, rootful Xwayland GPU export/frame callback,
+and Android helper Vulkan presentation. An isolated Xfwm4 `glxgears`
+screen-move test found **no ghost gear pixels at vacated coordinates**
+after 15/50/100ms across 22 moves, with new-location gear colors present
+22/22. S33 output timings showed ~8ms frame callbacks plus ~1–2ms of
+GPU export; the Android helper logged ~88fps screen copies during a
+rapid-resize window against a 120Hz display, and confirmed that this
+desktop traverses `LINEAR DMA-BUF -> Vulkan VkBuffer GPU-copy`, not
+direct VkImage zero-copy. `forcesync`, disabling snapshots and a speculative
+single-extra-output-commit S34 experiment were rejected because they
+did not safely improve both content and output timings. No new renderer,
+APK, driver, default or XFCE change was promoted. The investigation is
+**unresolved** until actual Android SurfaceView/panel content and buffer
+fences are correlated with X11. Read-only test and evidence:
+`graphics/docs/gpu-s35-resize-display-pipeline-incident.md`.
