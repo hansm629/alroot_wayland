@@ -28,9 +28,13 @@ echo 'PASS: CLI diagnostics without altering pre-existing session'
 help_output="$(awstart --help)"
 normal_preview="$(awstart --dry-run)"
 direct_preview="$(awstart --direct --dry-run)"
-grep -q 'Start helper + XFCE4' <<< "$help_output"
-grep -q 'profile=xfce-labwc' <<< "$normal_preview"
+legacy_preview="$(awstart --profile xfce-labwc --dry-run)"
+activity_preview="$(awstart --topapp --dry-run)"
+grep -q 'Start helper + direct XFCE4' <<< "$help_output"
+grep -q 'profile=xfce-shm-direct, spawn=Termux-shell' <<< "$normal_preview"
 grep -q 'profile=xfce-shm-direct' <<< "$direct_preview"
+grep -q 'profile=xfce-labwc' <<< "$legacy_preview"
+grep -q 'spawn=helper-Activity' <<< "$activity_preview"
 if awstart --profile unsupported --dry-run >/dev/null 2>&1; then
     echo 'FAIL: launcher accepted an unapproved profile' >&2; exit 1
 fi

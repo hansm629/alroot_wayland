@@ -9,6 +9,9 @@ LOGS="$STATE/logs"
 export TMPDIR="$PREFIX/tmp"
 mkdir -p "$STATE" "$LOGS"
 chmod 700 "$STATE" "$LOGS"
+graphics_policy="$HOME/alroot_wayland/termux/graphics-defaults.sh"
+[[ -r "$graphics_policy" ]] || { echo "Missing graphics defaults policy: $graphics_policy" >&2; exit 1; }
+source "$graphics_policy"
 
 # Non-sensitive action diagnostics: when a session is terminated unexpectedly
 # we need to distinguish an explicit stop request from a client/server crash.
@@ -146,7 +149,7 @@ x11_desktop_ready() {
 }
 
 xfce_start() {
-    local display="$1"
+    local display="$1" profile="$2"
     mkdir -p "$STATE/xfce-config" "$STATE/xfce-cache"
     # One-time profile snapshot: never write into the original settings.
     local config_name
@@ -156,7 +159,10 @@ xfce_start() {
         fi
     done
     # Project-only XFCE panel integration: Termux:API battery + Plank launcher.
+    local -a profile_options=()
+    [[ "$profile" != xfce-shm-direct ]] || profile_options+=(--s42-terminal)
     "$PREFIX/bin/python3" "$HOME/alroot_wayland/termux/configure-xfce-profile.py" \
+        "${profile_options[@]}" \
         > "$LOGS/profile.log" 2>&1
     "$PREFIX/bin/bash" "$HOME/alroot_wayland/tools/install-alroot-proot-shims.sh" \
         >> "$LOGS/profile.log" 2>&1
@@ -198,6 +204,12 @@ xfce_start() {
             export ALROOT_FCITX_BRIDGE_SOCKET="$STATE/ipc/ime-fcitx.sock"
         fi
         export DESKTOP_SESSION=xfce XDG_CURRENT_DESKTOP=XFCE
+        # Apply inside the desktop child, after the Activity's sanitized
+        # environment and the server renderer selection. D-Bus activation
+        # and subsequently launched native clients inherit this baseline.
+        if [[ "$profile" == xfce-shm-direct ]]; then
+            alroot_s42_apply_client "$PREFIX"
+        fi
         unset WAYLAND_DISPLAY DBUS_SESSION_BUS_ADDRESS SESSION_MANAGER
         export NO_AT_BRIDGE=1
         # Separate process group so explicit stop can target this session's
@@ -271,10 +283,9 @@ start_xwayland() {
         fi
     fi
     printf '%s %s\n' "$guest_w" "$guest_h" > "$STATE/x11-geometry"
-    # GPU backend selection is session-wide, never XFCE-only. The default
-    # global Termux Xwayland stays untouched until a private GPU build has
-    # passed framebuffer import and presentation tests. This opt-in path can
-    # support any Xwayland desktop, irrespective of its window-manager.
+    # Xwayland's KGSL renderer is selected independently from the installed
+    # Vulkan Wrapper/Zink desktop client policy. The validated server route
+    # supports the rootful desktop and retains its framebuffer import path.
     local xwayland_binary="$PREFIX/bin/Xwayland" candidate="" glamor=""
     local -a xwayland_gpu_args=()
     if [[ -n "${ALROOT_XWAYLAND_BINARY:-}" ]]; then
@@ -358,8 +369,8 @@ start_session() {
     # The helper Activity clears caller environment variables before
     # starting the Termux session. Consume a trusted, one-shot private
     # marker to carry *only* our hard-coded, prevalidated KGSL Xwayland
-    # profile across the foreground Activity process boundary. Never
-    # enable a GPU backend from the ordinary/default awstart invocation.
+    # profile across the foreground Activity process boundary. This explicit
+    # old-stage marker takes precedence over the S42 default server choice.
     local s25_marker="$STATE/control/s25-kgsl-topapp-once" s25_mode="" s25_age=0
     if [[ -e "$s25_marker" || -L "$s25_marker" ]]; then
         if [[ "$profile" != xfce-shm-direct || -L "$s25_marker" ||
@@ -399,6 +410,10 @@ start_session() {
         export GALLIUM_DRIVER=freedreno
         echo '[S25] ONE-SHOT private KGSL Xwayland selected from foreground helper; default path unchanged'
     fi
+    # The Activity intentionally discards the caller's environment. Resolve
+    # defaults here as well as in awstart's pre-stop preflight.
+    alroot_s42_select_server "$HOME/alroot_wayland" "$profile"
+    alroot_s42_preflight "$HOME/alroot_wayland" "$PREFIX" "$profile" || return 1
     # Refuse to attach to an unexpected nested socket from a previous session.
     local path
     for path in "$RUNTIME"/wayland-*; do
@@ -522,7 +537,7 @@ start_session() {
     fi
     echo "IME route requested: $preferred_ime (XTEST fallback available)"
     ime_start "$(cat "$STATE/display")"
-    xfce_start "$(cat "$STATE/display")"
+    xfce_start "$(cat "$STATE/display")" "$profile"
     clipboard_start "$(cat "$STATE/display")"
     sleep .6
     if ! alive xfce; then
@@ -658,6 +673,9 @@ case "${1:-}" in
             echo 'x11_desktop: INCOMPLETE (X11 window-manager/desktop/panel not verified)'
         fi
         [[ ! -f "$STATE/profile" ]] || echo "profile: $(cat "$STATE/profile")"
+        if alive xfce; then
+            alroot_s42_client_status "$(cut -d' ' -f1 "$STATE/xfce.pid")"
+        fi
         [[ ! -f "$STATE/display" ]] || echo "X DISPLAY: $(cat "$STATE/display")"
         ;;
     stop)

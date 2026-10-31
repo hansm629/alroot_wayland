@@ -34,6 +34,20 @@ IFS= read -r display < "$STATE/display"
 export DISPLAY="$display"
 export XAUTHORITY="$STATE/Xauthority"
 export PATH="$STATE/bin:$PREFIX/bin:$PREFIX/bin/applets"
+# S42 installs a Bionic desktop baseline. Guest launchers retain their own
+# glibc graphics policy; a modern VK_DRIVER_FILES inherited from the desktop
+# must not override the guest launcher's VK_ICD_FILENAMES selection.
+if [[ "${ALROOT_CLIENT_GRAPHICS:-}" == wrapper-zink ]]; then
+    # Preserve an explicit guest ICD outside the Bionic prefix. In
+    # particular, clear inherited VK_DRIVER_FILES when a caller supplied
+    # only a guest VK_ICD_FILENAMES override, so it can take effect.
+    case "${VK_DRIVER_FILES:-}" in "$PREFIX/"*) unset VK_DRIVER_FILES ;; esac
+    case "${VK_ICD_FILENAMES:-}" in "$PREFIX/"*) unset VK_ICD_FILENAMES ;; esac
+    [[ "${MESA_LOADER_DRIVER_OVERRIDE:-}" != zink ]] || unset MESA_LOADER_DRIVER_OVERRIDE
+    [[ "${GALLIUM_DRIVER:-}" != zink ]] || unset GALLIUM_DRIVER
+    unset LIBGL_KOPPER_DRI2 S24_WRAPPER_XCB_AHB_PAD_HEIGHT S26_WRAPPER_XCB_RETRY_TRANSIENT
+    unset ALROOT_CLIENT_GRAPHICS
+fi
 case "$role" in
     mpd)
         # mpd uses env -i and binds native HOME at /root. Pass the rootfs

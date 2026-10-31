@@ -4,6 +4,8 @@
 Builds a pinned diagnostic from an isolated S39 source copy, then runs one
 isolated S39/WM session. Default S41 requires filled-edge row equality; --s26
 requires the observed source-padding difference as a negative control.
+Paired --icd/--wrapper-sha256 arguments validate a package candidate with the
+same filled-edge expectation, reusing the pinned diagnostic without rebuilding.
 The original source/build/installed vkcube are read-only inputs. No user
 windows are searched or resized; no ICD or installed program is replaced.
 """
@@ -45,9 +47,15 @@ S41_SHA = '21fdc1624cf35f957947e1e73813a6e3fbbcbb168eb18ce6bca2f96c0b03f11a'
 CASES = ((301, 304), (302, 304), (303, 304), (300, 301), (301, 302))
 
 
-def selected_icd(s26):
-    path = (base.ICD if s26 else OUT / 'runtime/wrapper_icd.private.json').resolve(strict=True)
-    if path.parent.name != 'runtime' or not path.is_relative_to((base.ROOT / '.source/gpu-stage1').resolve()):
+def selected_icd(s26, custom_icd=None, wrapper_sha256=None):
+    if bool(custom_icd) != bool(wrapper_sha256) or (s26 and custom_icd):
+        raise RuntimeError('custom ICD/hash must be paired and cannot be combined with --s26')
+    path = (custom_icd or (base.ICD if s26 else OUT / 'runtime/wrapper_icd.private.json')).resolve(strict=True)
+    private = (base.ROOT / '.source').resolve()
+    if custom_icd:
+        if not path.is_relative_to(private) and path != base.PREFIX / 'share/vulkan/icd.d/wrapper_icd.aarch64.json':
+            raise RuntimeError('custom ICD must be private project data or the canonical installed Wrapper ICD')
+    elif path.parent.name != 'runtime' or not path.is_relative_to((base.ROOT / '.source/gpu-stage1').resolve()):
         raise RuntimeError('ICD must remain inside the private project runtime')
     icd_identity = base.identity(path)
     data = json.loads(path.read_text())
@@ -55,10 +63,29 @@ def selected_icd(s26):
     if not isinstance(raw, str) or not raw: raise RuntimeError('invalid ICD library_path')
     library = Path(raw)
     wrapper = (library if library.is_absolute() else path.parent / library).resolve(strict=True)
-    if wrapper != path.parent / 'libvulkan_wrapper.so': raise RuntimeError('ICD/library directory mismatch')
-    wrapper_identity = base.identity(wrapper, S26_SHA if s26 else S41_SHA)
+    if custom_icd:
+        if not wrapper.is_relative_to(private) and wrapper != base.PREFIX / 'lib/libvulkan_wrapper.so':
+            raise RuntimeError('custom Wrapper must be private project data or the canonical installed library')
+    elif wrapper != path.parent / 'libvulkan_wrapper.so':
+        raise RuntimeError('ICD/library directory mismatch')
+    wrapper_identity = base.identity(wrapper, wrapper_sha256 or (S26_SHA if s26 else S41_SHA))
     normalized = None if library.is_absolute() else {**data, 'ICD': {**data['ICD'], 'library_path': str(wrapper)}}
     return path, icd_identity, wrapper_identity, normalized
+
+
+def reuse_diagnostic():
+    """Keep accepted private artifacts read-only during package validation."""
+    manifest = DIAG / 'build-manifest.json'
+    receipt = json.loads(manifest.read_text())
+    build.pinned(ORIGINAL, 'b396d52524270fce6791bbc32648eb7ac05104986f0dcce3e264399b18503059')
+    build.pinned(PATCH, PATCH_SHA)
+    build.pinned(SOURCE, SOURCE_SHA)
+    receipt['binary'] = base.identity(CLIENT, CLIENT_SHA, executable=True)
+    receipt['reused_pinned_diagnostic'] = True
+    receipt['original_build_manifest'] = base.identity(manifest)
+    inputs = {Path(p) for p in receipt['unchanged_inputs']} | {ORIGINAL, PATCH, SOURCE, CLIENT, manifest}
+    receipt['unchanged_inputs'] = {str(p.resolve(strict=True)): base.sha256(p) for p in sorted(inputs)}
+    return receipt
 
 
 def build_diagnostic():
@@ -189,17 +216,26 @@ def parse_observation(text, logical_h, target_h):
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--s26', action='store_true', help='S26 negative control: require observed differing source padding')
+    parser.add_argument('--icd', type=Path, help='private or canonical installed package-candidate ICD')
+    parser.add_argument('--wrapper-sha256', help='exact SHA256 of the candidate Wrapper library')
     args = parser.parse_args()
+    if bool(args.icd) != bool(args.wrapper_sha256):
+        parser.error('--icd and --wrapper-sha256 must be supplied together')
+    if args.s26 and args.icd:
+        parser.error('--s26 cannot be combined with a custom ICD')
+    if args.wrapper_sha256 and not re.fullmatch(r'[0-9a-f]{64}', args.wrapper_sha256):
+        parser.error('--wrapper-sha256 must be 64 lowercase hexadecimal characters')
     args.expect_filled, args.expect_uninitialized = not args.s26, args.s26
     server_identity = base.identity(base.S39, base.S39_SHA, executable=True)
-    icd, icd_identity, wrapper, normalized = selected_icd(args.s26)
-    build_receipt = build_diagnostic()
+    icd, icd_identity, wrapper, normalized = selected_icd(args.s26, args.icd, args.wrapper_sha256)
+    build_receipt = reuse_diagnostic() if args.icd else build_diagnostic()
     client = base.identity(CLIENT, CLIENT_SHA, executable=True)
     interposer = base.identity(base.INTERPOSER)
     if not (base.STATE / 'runtime/wayland-0').is_socket():
         raise RuntimeError('existing Wayland host socket unavailable')
     before = base.user_session()
-    logdir = OUT / 'logs' / ('gpu-proof-' + time.strftime('%Y%m%d-%H%M%S') + '-' + str(os.getpid()))
+    proof_out = base.ROOT / '.source/gpu-stage1/s42-default-graphics/ahb-padding' if args.icd else OUT
+    logdir = proof_out / 'logs' / ('gpu-proof-' + time.strftime('%Y%m%d-%H%M%S') + '-' + str(os.getpid()))
     logdir.mkdir(parents=True)
     loader_icd = icd
     if normalized is not None:
@@ -212,6 +248,9 @@ def main():
                'user_session_before': before, 'cases': [], 'logdir': str(logdir),
                'expectation': 'filled' if args.expect_filled else 'source_padding_difference' if args.expect_uninitialized else 'measurement_only',
                'physical_display': 'NOT_MEASURED'}
+    receipt['wrapper_selection'] = {'mode': 'custom_pinned' if args.icd else 's26_control' if args.s26 else 's41_pinned',
+        'requested_icd': str(args.icd) if args.icd else None,
+        'expected_wrapper_sha256': args.wrapper_sha256 or (S26_SHA if args.s26 else S41_SHA)}
     server = wm = app = None
     temporary = None
     failure = None

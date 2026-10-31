@@ -13,12 +13,12 @@ export TMPDIR="$PREFIX/tmp"
 
 usage() {
     cat <<'HELP'
-awstart                           Start helper + XFCE4 (nested Labwc, software client)
-awstart --direct                  Diagnostic: host -> rootful Xwayland -> XFCE4
-awstart --profile xfce-labwc      Explicit normal profile (default)
+awstart                           Start helper + direct XFCE4 (Vulkan Wrapper + Mesa 27 Zink)
+awstart --direct                  Host -> validated rootful Xwayland -> XFCE4 (default)
+awstart --profile xfce-labwc      Explicit legacy nested Labwc profile
 awstart --profile xfce-shm-direct
-awstart --topapp                  Spawn from foreground helper Activity (default)
-awstart --no-topapp               Spawn from Termux shell (CPU policy may differ)
+awstart --topapp                  Explicit foreground helper Activity start (requires inbox acknowledgement)
+awstart --no-topapp               Spawn from Termux shell (default; validated S39 launch mode)
 awstart --no-wait                 Queue request without waiting for session startup
 awstart --status                  Show installed APK and this project's session
 awstart --open                    Reopen helper Activity, do not start a session
@@ -35,8 +35,9 @@ awstart --debug                   Show more launch and status information
 awstart --dry-run                 Preview without opening apps or changing files
 awstart --help                    Display this help
 
-P01 rendering: nested Labwc uses pixman/SHM; Android host still uses Vulkan.
-No Termux-X11 pkill, no global Mesa change, no GPU keep-alive/clock overrides.
+S26U default: installed Vulkan Wrapper + Mesa 27 Zink for Bionic desktop clients.
+Xwayland retains its validated S39 KGSL renderer; the Android host uses Vulkan.
+The nested Labwc profile remains explicit. No GPU keep-alive/clock overrides.
 HELP
 }
 
@@ -95,8 +96,8 @@ open_helper_activity() {
 }
 
 action=start
-profile=xfce-labwc
-topapp=1
+profile=xfce-shm-direct
+topapp=0
 no_wait=0
 debug=0
 dry_run=0
@@ -129,6 +130,15 @@ done
 [[ "$profile" == xfce-labwc || "$profile" == xfce-shm-direct ]] ||
     die "Invalid profile: $profile"
 [[ -r "$CLI" ]] || die "Missing Alroot session CLI: $CLI"
+
+graphics_policy="$PROJECT/termux/graphics-defaults.sh"
+[[ -r "$graphics_policy" ]] || die "Missing graphics defaults policy: $graphics_policy"
+source "$graphics_policy"
+if [[ "$action" == start || "$action" == restart ]]; then
+    alroot_s42_select_server "$PROJECT" "$profile"
+    alroot_s42_preflight "$PROJECT" "$PREFIX" "$profile" ||
+        die 'Installed graphics baseline is not ready; existing desktop was not stopped.'
+fi
 
 # Reject an inconsistent private GPU selection before --restart stops XFCE.
 # Startup uses this same validator in alroot-wayland. Default sessions and
@@ -170,7 +180,12 @@ case "$action" in
     doctor)
         "$CLI" doctor
         app_status
-        msg 'Client renderer: pixman; native Android host: Vulkan (not disabled)'
+        alroot_s42_preflight "$PROJECT" "$PREFIX" "$profile" || exit 1
+        if [[ "$profile" == xfce-shm-direct ]]; then
+            msg 'Default Bionic clients: installed Vulkan Wrapper + Mesa 27 Zink; Xwayland: validated S39 KGSL'
+        else
+            msg 'Explicit nested Labwc profile: pixman compositor; Android host: Vulkan'
+        fi
         exit 0 ;;
     smoke) exec "$PREFIX/bin/bash" "$PROJECT/tests/p01-smoke.sh" ;;
     refresh-diag) exec "$PREFIX/bin/bash" "$PROJECT/tests/p03-fundamentals.sh" ;;
@@ -250,6 +265,10 @@ if grep -q '^xfce: RUNNING ' <<< "$current_status"; then
          grep -q '^labwc: RUNNING ' <<< "$current_status"; }; then
         open_helper_activity
         msg "Already running: $profile. Reopened helper without starting another session."
+        if [[ "$profile" == xfce-shm-direct ]] &&
+           ! grep -qx 'client_graphics: wrapper-zink' <<< "$current_status"; then
+            msg 'The existing session predates the installed graphics defaults; awstart --restart applies them.'
+        fi
         printf '%s\n' "$current_status"
         exit 0
     fi

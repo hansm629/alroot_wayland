@@ -1,7 +1,17 @@
-# Alroot graphics acceleration — capability-first stage 1
+# Alroot graphics acceleration — S26U baseline and stage 1 contracts
 
-This directory holds **isolated, opt-in patches and tests**, not a replacement for
-Termux's installed drivers, Termux-X11 `:0`, or the working Alroot P20 APK.
+This directory holds optional backend adapters, isolated validation, and the
+user-authorized **S42 installed Vulkan Wrapper + Mesa 27 Zink baseline** for
+S26U Termux Bionic XFCE4. S42 defines the direct S39 Xwayland session as the
+`awstart` default while keeping the server renderer separate from client
+driver selection. Package identities, installation/rollback procedures and
+the actual deployment gates are recorded in
+[GPU-S42 installed defaults](docs/gpu-s42-installed-defaults.md).
+
+The stage notes below retain their original evidence and decisions. Statements
+in those notes that global drivers, the APK or defaults were unchanged refer
+to that stage; they do not prohibit the later, explicitly authorized S42
+package/default promotion. They also do not establish S42 runtime acceptance.
 
 ## Non-negotiable contracts
 
@@ -11,10 +21,15 @@ Termux's installed drivers, Termux-X11 `:0`, or the working Alroot P20 APK.
 2. **ANGLE Vulkan-backend EGL/GLES is an EGL implementation**, not a DRM/GBM
    device. A usable ANGLE context does **not** prove that an Xwayland GLAMOR
    render target is exportable to `linux-dmabuf` or an AHB. Probe functionality.
-3. **Preserve Termux-X11 DRI3** for every driver. No changes to `$PREFIX/lib`,
-   `$PREFIX/bin/Xwayland`, `/dev/*`, Vulkan ICD JSON or the Termux-X11 APK from
-   this tree. The Alroot GPU Xwayland binary must be separate and selected
-   only inside the Alroot session (after a private validation).
+3. **Preserve Termux-X11 DRI3** for every driver. S42 authorizes reviewed
+   `.deb` installation of Wrapper, Mesa/Mesa-dev and the accepted demo owner
+   packages into the standard Termux prefix, with exact rollback artifacts.
+   Keep compatibility checks for the shared drivers; intentional replacements
+   are checked against S42 package manifests, not earlier unchanged-file
+   snapshots. `$PREFIX/bin/Xwayland`, `/dev/*` and the Termux-X11 APK are outside
+   this promotion. The Alroot GPU Xwayland binary remains separate, selected
+   only inside the validated Alroot session; this S26U selection does not
+   change the common cross-vendor capability contract.
 4. **Stage 1 is GPU-copy (VkImage), not zero-copy.** A shared buffer imported
    as a VkImage is composited or copied into the Android host swapchain.
    Explicit fence/overhead removal is stage 2; AHB direct scanout is stage 3.

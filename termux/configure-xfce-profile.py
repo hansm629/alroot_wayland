@@ -1,5 +1,6 @@
 #!/data/data/com.termux/files/usr/bin/python3
-"""Modify only the Alroot copy of Xfce: GenMon battery and Plank autostart."""
+"""Modify only Alroot's private Xfce profile and optional S42 terminal policy."""
+import argparse
 import os
 import shutil
 import xml.etree.ElementTree as ET
@@ -9,6 +10,39 @@ HOME = Path("/data/data/com.termux/files/home")
 PROJECT = HOME / "alroot_wayland"
 STATE = HOME / ".alroot-wayland"
 CONFIG = STATE / "xfce-config"
+
+
+def install_s42_terminal():
+    # Xfce Terminal 1.2.0 uses this Xfconf channel. terminalrc is imported
+    # only when the channel is absent, so changing terminalrc is insufficient.
+    relative = Path("xfce4/xfconf/xfce-perchannel-xml/xfce4-terminal.xml")
+    dest = CONFIG / relative
+    source = dest if dest.is_file() else HOME / ".config" / relative
+    if source.is_file():
+        tree = ET.parse(source)
+        root = tree.getroot()
+        if root.tag != "channel" or root.get("name") != "xfce4-terminal":
+            raise RuntimeError("Unexpected private terminal Xfconf channel")
+    else:
+        root = ET.Element("channel", {"name": "xfce4-terminal", "version": "1.0"})
+        tree = ET.ElementTree(root)
+    for name, kind, value in (
+        ("run-custom-command", "bool", "true"),
+        ("custom-command", "string", str(PROJECT / "termux/alroot-terminal-shell.sh")),
+    ):
+        matches = root.findall("./property[@name='" + name + "']")
+        if len(matches) > 1:
+            raise RuntimeError("Duplicate terminal property: " + name)
+        prop = matches[0] if matches else ET.SubElement(root, "property", {"name": name})
+        prop.set("type", kind)
+        prop.set("value", value)
+    dest.parent.mkdir(parents=True, exist_ok=True)
+    pending = dest.with_name(dest.name + ".s42-tmp")
+    tree.write(pending, encoding="UTF-8", xml_declaration=True)
+    pending.chmod(0o600)
+    os.replace(pending, dest)
+    return "S42 default shell hook; other terminal preferences preserved"
+
 
 def mirror_xfce():
     # The first snapshot taken on P01 was never refreshed, so later XFCE
@@ -198,6 +232,10 @@ def install_battery():
 
 
 if __name__ == "__main__":
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--s42-terminal", action="store_true",
+                        help="prepare the private S42 default-terminal shell hook")
+    args = parser.parse_args()
     assert CONFIG.is_dir(), "No isolated config tree"
     print("Alroot XFCE: " + mirror_xfce())
     print("Alroot XFCE Plank: " + install_plank())
@@ -212,3 +250,5 @@ if __name__ == "__main__":
         stale.unlink()
     print("Alroot XFCE battery: native plugin-7, original position/size/settings")
     print("Alroot XFCE sticky notes: " + install_notes())
+    if args.s42_terminal:
+        print("Alroot XFCE terminal: " + install_s42_terminal())
