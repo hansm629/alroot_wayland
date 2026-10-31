@@ -1,0 +1,39 @@
+--- a/src/xdemos/glxgears.c
++++ b/src/xdemos/glxgears.c
+@@ -757,16 +757,31 @@
+ event_loop(Display *dpy, Window win)
+ {
+    while (1) {
+-      int op;
+-      while (!animate || XPending(dpy) > 0) {
++      int width = 0, height = 0;
++      GLboolean resized = GL_FALSE, redraw = GL_FALSE;
++
++      /* Expose must not end an animated batch ahead of newer Configure
++       * events. Apply only the last queued size before rendering a frame. */
++      while (1) {
+          XEvent event;
++         int op;
++         if ((animate || redraw || resized) && XPending(dpy) == 0)
++            break;
+          XNextEvent(dpy, &event);
++         if (event.type == ConfigureNotify) {
++            width = event.xconfigure.width;
++            height = event.xconfigure.height;
++            resized = GL_TRUE;
++            continue;
++         }
+          op = handle_event(dpy, win, &event);
+          if (op == EXIT)
+             return;
+-         else if (op == DRAW)
+-            break;
+-      }
++         if (op == DRAW)
++            redraw = GL_TRUE;
++      }
++      if (resized)
++         reshape(width, height);
+
+       draw_frame(dpy, win);
+    }

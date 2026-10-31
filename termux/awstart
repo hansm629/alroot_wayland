@@ -130,6 +130,25 @@ done
     die "Invalid profile: $profile"
 [[ -r "$CLI" ]] || die "Missing Alroot session CLI: $CLI"
 
+# Reject an inconsistent private GPU selection before --restart stops XFCE.
+# Startup uses this same validator in alroot-wayland. Default sessions and
+# actions that do not start a session keep their existing behavior.
+if [[ ( "$action" == start || "$action" == restart ) &&
+      "${ALROOT_XWAYLAND_DUAL_ABI_FENCE:-0}" == 1 ]]; then
+    gpu_binary="${ALROOT_XWAYLAND_BINARY:-$PREFIX/bin/Xwayland}"
+    gpu_binary="$(realpath -- "$gpu_binary")" ||
+        die 'Cannot resolve private Xwayland; existing desktop was not stopped.'
+    gpu_glamor=""
+    if [[ -n "${ALROOT_XWAYLAND_BINARY:-}" ]]; then
+        gpu_glamor="${ALROOT_XWAYLAND_GLAMOR:-off}"
+    fi
+    gpu_guard="$PROJECT/termux/xwayland-gpu-profile.sh"
+    [[ -r "$gpu_guard" ]] || die "Missing private GPU profile validator: $gpu_guard"
+    source "$gpu_guard"
+    alroot_validate_kgsl_profile "$gpu_binary" "$gpu_glamor" "$PROJECT" ||
+        die 'Invalid private KGSL startup profile; existing desktop was not stopped.'
+fi
+
 case "$action" in
     ime-fcitx|ime-xtest)
         preferred="${action#ime-}"

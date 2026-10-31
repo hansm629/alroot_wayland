@@ -5,7 +5,9 @@ This does NOT show a graphical window in Termux's default DISPLAY=:0.
 The temporary client belongs to the already-running Alroot Wayland helper
 XFCE display (e.g. :94); the user must bring THAT Android Activity forward.
 --coalesced-xcb explicitly selects a pinned private vkcube event-loop build;
-it does not change the default installed vkcube or the S26 wrapper ICD.
+--coalesced-glx selects the pinned private glxgears event-loop build.
+Defaults retain the installed clients. --require-s39 verifies the active
+server and its flags; it never restarts the desktop.
 """
 import argparse
 import hashlib
@@ -27,6 +29,8 @@ S26_ICD = ROOT / '.source/gpu-stage1/s26-wrapper-resize-retry/runtime/wrapper_ic
 GLX27 = ROOT / '.source/gpu-stage27-pr25/mesa-private/glx-runtime/lib'
 S39_COALESCED_VKCUBE = ROOT / '.source/gpu-stage1/s39-live-resize/runtime/vkcube.coalesced'
 S39_COALESCED_SHA256 = '0050e7126c8d096cd14a7e0b1026b7063f898e33eb7be5b80116991cee57c208'
+S40_COALESCED_GLXGEARS = ROOT / '.source/gpu-stage1/s40-demo-events/runtime/glxgears.coalesced'
+S40_COALESCED_GLX_SHA256 = '4f5444726d455d522ebaf37b17760febc028db4f6653dcd237517913c836e086'
 
 
 def file_sha256(path):
@@ -67,24 +71,38 @@ def run():
                         help='Opt-in S26 private XCB transient-import retry (default retains S24 binary)')
     parser.add_argument('--coalesced-xcb', action='store_true',
                         help='Explicit private vkcube XCB Configure batching; requires vulkan and --s26')
+    parser.add_argument('--coalesced-glx', action='store_true',
+                        help='Explicit private glxgears event batching; requires zink and --s26')
+    parser.add_argument('--require-s39', action='store_true',
+                        help='Require the validated S39 Xwayland server and flags without restarting XFCE')
     parser.add_argument('--auto-resize', action='store_true',
                         help='move and resize only this demo, then leave it open for manual testing')
     args = parser.parse_args()
     if args.coalesced_xcb and (args.demo != 'vulkan' or not args.s26):
         parser.error('--coalesced-xcb requires demo vulkan and --s26')
+    if args.coalesced_glx and (args.demo != 'zink' or not args.s26):
+        parser.error('--coalesced-glx requires demo zink and --s26')
     icd = S26_ICD if args.s26 else ICD
     if not icd.is_file() or not (icd.parent / 'libvulkan_wrapper.so').is_file():
         raise RuntimeError('missing private wrapper ICD; build the requested route first')
     pid, display = require_session()
     private_xwayland = validate_private_kgsl_xwayland(pid, display)
+    if args.require_s39 and private_xwayland != 'S39_KGSL_RESIZE_ORIGIN_ROOT_POOL':
+        raise RuntimeError('S39 Xwayland is required (active: ' + private_xwayland +
+                           '). Use a separate native Termux shell: '
+                           'bash graphics/tools/start-s39-live-resize.sh --restart')
     env = os.environ.copy()
     original_display = env.get('DISPLAY', 'unset')
     for key in ('WAYLAND_DISPLAY', 'LD_PRELOAD', 'LIBGL_ALWAYS_SOFTWARE',
                 'MESA_LOADER_DRIVER_OVERRIDE', 'GALLIUM_DRIVER', 'LIBGL_DRIVERS_PATH',
                 'S26_WRAPPER_TEST_FAIL_PIXMAP_ONCE', 'S26_WRAPPER_XCB_RETRY_TRANSIENT',
                 'S39_WRAPPER_XCB_CHECK_BEFORE_ACK', 'S39_WSI_TRACE',
-                'S39_VULKAN_TRACE', 'S39_VULKAN_TRACE_FILE'):
+                'S39_VULKAN_TRACE', 'S39_VULKAN_TRACE_FILE',
+                'S40_VKCUBE_TRACE', 'S40_GLXGEARS_TRACE'):
         env.pop(key, None)
+    for key in list(env):
+        if key.startswith('S40_') and ('TRACE' in key or 'DIAG' in key):
+            env.pop(key, None)
     env.update(DISPLAY=display, XAUTHORITY=str(STATE / 'Xauthority'),
                VK_DRIVER_FILES=str(icd), VK_ICD_FILENAMES=str(icd),
                S24_WRAPPER_XCB_AHB_PAD_HEIGHT='1')
@@ -107,8 +125,13 @@ def run():
                    LIBGL_DRIVERS_PATH=str(GLX27 / 'dri'),
                    MESA_LOADER_DRIVER_OVERRIDE='zink', GALLIUM_DRIVER='zink',
                    LIBGL_KOPPER_DRI2='1')
-        client = PREFIX / 'bin/glxgears'
-        client_label = 'INSTALLED_GLXGEARS_ZINK'
+        client = S40_COALESCED_GLXGEARS if args.coalesced_glx else PREFIX / 'bin/glxgears'
+        client_label = ('PRIVATE_GLXGEARS_EVENTS_COALESCED' if args.coalesced_glx
+                        else 'INSTALLED_GLXGEARS_ZINK')
+        if not client.is_file() or not os.access(client, os.X_OK):
+            raise RuntimeError('selected glxgears executable is missing or not executable')
+        if args.coalesced_glx and file_sha256(client) != S40_COALESCED_GLX_SHA256:
+            raise RuntimeError('private coalesced glxgears hash mismatch; refusing unknown client')
         command = [str(client)]
 
     client_sha256 = file_sha256(client)
@@ -120,7 +143,8 @@ def run():
     print('S24_VISUAL_CLIENT_EXECUTABLE=' + str(client), flush=True)
     print('S24_VISUAL_CLIENT_SHA256=' + client_sha256, flush=True)
     print('S24_VISUAL_CLIENT_PATCH=' +
-          ('VKCUBE_XCB_CONFIGURE_BATCH_ONLY' if args.coalesced_xcb else 'NONE_SELECTED'), flush=True)
+          ('VKCUBE_XCB_CONFIGURE_BATCH_ONLY' if args.coalesced_xcb else
+           'GLXGEARS_EXPOSE_CONFIGURE_BATCH_ONLY' if args.coalesced_glx else 'NONE_SELECTED'), flush=True)
     print('S24_VISUAL_PRIVATE_XWAYLAND=' + private_xwayland, flush=True)
     print('S24_VISUAL_TARGET=ALROOT_WAYLAND_HELPER_XFCE_' + display, flush=True)
     print('S24_VISUAL_CALLER_DISPLAY=' + original_display, flush=True)
