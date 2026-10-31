@@ -12,6 +12,17 @@ generic) WORK="$ROOT/.source/gpu-stage1/xwayland" ;;
 kgsl) WORK="$ROOT/.source/gpu-stage1/xwayland-kgsl" ;;
 *) echo "ALROOT_XWAYLAND_VARIANT must be generic or kgsl" >&2; exit 2 ;;
 esac
+# Reject the experimental source overlay BEFORE applying ANY original
+# Termux/KGSL patch. Otherwise a pinned 0001/0002 source hunk may fail
+# first, or an earlier patch might mutate the source unexpectedly. The
+# original S16/S27 binary must never be rebuilt from S28/S29/S30 source.
+if [[ "${ALROOT_XWAYLAND_VARIANT:-generic}" == kgsl &&
+      -f "$WORK/source/hw/xwayland/xwayland-window.c" ]] &&
+   grep -Eq 'S28_KGSL_RESIZE_PRESERVE|S29_KGSL_NATIVE_RESIZE|S30_KGSL_STABLE_FRAME' \
+      "$WORK/source/hw/xwayland/xwayland-window.c"; then
+    echo 'BLOCKED: S28/S29/S30 private overlay active; use a separate private build helper to protect S16/S27 Xwayland.' >&2
+    exit 2
+fi
 mkdir -p "$WORK"
 tarball="$WORK/xwayland-$VERSION.tar.xz"
 if [[ ! -s "$tarball" ]]; then
@@ -55,8 +66,9 @@ if [[ "${ALROOT_XWAYLAND_VARIANT:-generic}" == kgsl ]]; then
         # The S28 GPU resize-preservation experiment is separately linked,
         # never part of the existing opt-in KGSL server build.
         if [[ "$private" == *"0005-kgsl-gpu-window-resize-frame-preserve.patch" ||
-              "$private" == *"0006-kgsl-native-pixel-resize-preserve.patch" ]]; then
-            echo 'S28/S29 GPU resize-preserve patches are separate opt-in candidates.'
+              "$private" == *"0006-kgsl-native-pixel-resize-preserve.patch" ||
+              "$private" == *"0007-kgsl-tiny-ahb-stable-xcb-present.patch" ]]; then
+            echo 'S28/S29/S30 GPU resize-preserve patches are separate opt-in candidates.'
             continue
         fi
         # The private wrapper AHB import adapter is a zero-context patch
@@ -79,8 +91,8 @@ if [[ "${ALROOT_XWAYLAND_VARIANT:-generic}" == kgsl ]]; then
     done
 fi
 if [[ "${ALROOT_XWAYLAND_VARIANT:-generic}" == kgsl ]] &&
-   grep -Eq 'S28_KGSL_RESIZE_PRESERVE|S29_KGSL_NATIVE_RESIZE' "$WORK/source/hw/xwayland/xwayland-window.c"; then
-    echo 'BLOCKED: S28/S29 private overlay active; use the corresponding separate build helper to protect S16/S27 Xwayland.' >&2
+   grep -Eq 'S28_KGSL_RESIZE_PRESERVE|S29_KGSL_NATIVE_RESIZE|S30_KGSL_STABLE_FRAME' "$WORK/source/hw/xwayland/xwayland-window.c"; then
+    echo 'BLOCKED: S28/S29/S30 private overlay active; use the corresponding separate build helper to protect S16/S27 Xwayland.' >&2
     exit 2
 fi
 export CFLAGS='-fcommon -fPIC -DFNDELAY=O_NDELAY -Wno-int-to-pointer-cast -Wno-implicit-function-declaration'

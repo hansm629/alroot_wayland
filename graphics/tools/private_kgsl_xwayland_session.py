@@ -27,6 +27,10 @@ PRIVATE_XWAYLANDS = {
         'S29_KGSL_NATIVE_RESIZE',
         '3e2d56bc05ad9d91a5b96a9c93e5eccd8ce6a65493ae3317afd94c1094d6ff2c',
     ),
+    ROOT / '.source/gpu-stage1/s30-min-extent/runtime/Xwayland': (
+        'S30_KGSL_STABLE_FRAME_TINY_AHB_FD0',
+        '4caed8ebbf30a7ace6f4b252ab72b0b17a8c8d2c4524c1d77bf787d942d4ea31',
+    ),
 }
 
 

@@ -180,6 +180,42 @@ reduced but not eradicated; synthetic no-Present Xfwm4 still exposes a
 lower black region. **Physical Android visual testing is required.**
 See `graphics/docs/gpu-s29-pixel-exact-vulkan-resize.md`.
 
+### S30 tiny AHB & genuine Present-safe KGSL frame (candidate only)
+
+`kgsl/0007-kgsl-tiny-ahb-stable-xcb-present.patch` is applied **after**
+S29's 0006 patch, exclusively for a separately linked S30 private
+Xwayland. It addresses two different real S29 regressions: 1×98/40×98
+AHB DRI3 `BadMatch` when both Qualcomm gralloc native FDs have identical
+rounded size, and a stale Xwayland resize placeholder overriding genuine
+client DRI3 Present pixmaps or being repeatedly cropped from the
+full-screen rootful pixmap.
+
+The size-tie FD[0] import is opt-in (`S30_KGSL_TINY_AHB_FD0=1`) and only
+permitted for BGRA8, width 1–64, **two distinct FDs with the same valid
+size** on the tested S26U KGSL path. For Vulkan-resize placeholders,
+`S30_KGSL_STABLE_FRAME=1` enables a single GPU-sampled **window-local**
+frame that survives multiple resize notifications, never paints over a
+real imported DRI3 image, and is discarded only after actual client
+flip/copy Present. GPU copy remains; this is not zero-copy.
+
+```sh
+bash graphics/tools/build-s30-kgsl-stable-resize.sh
+bash graphics/tools/test-s30-build-and-scope.sh
+python3 graphics/tools/test-s30-native-stable-frame.py
+python3 graphics/tools/test-s30-extreme-resize.py --mode baseline --wm --expect-baseline-failure
+python3 graphics/tools/test-s30-extreme-resize.py --mode candidate --wm --seconds 8
+```
+
+The ordinary private KGSL builder rejects S28/S29/S30 overlays **before
+any patching**. The S30 binary is SHA256-pinned, retains all older
+project-private servers unchanged, and is selected only with an
+**explicit** native Termux `start-s30-kgsl-stable-resize.sh --restart`.
+Use `--restore-s29` to roll back. Isolated Xfwm4+Vulkan and Zink
+survival, animation after extreme resizes, and native-pixel geometry
+PASS; a never-Presenting synthetic window under Xfwm4 and rare black
+edges are still unresolved. User physical-screen acceptance is pending.
+See `graphics/docs/gpu-s30-tiny-ahb-and-stable-present.md`.
+
 `S17_MATRIX_MODE=smoke bash graphics/tools/test-s17-zink-matrix.sh` checks
 Termux wrapper + Zink, Termux Turnip + Zink and Debian Turnip + Zink on
 isolated Xwayland, validating runtime execution, AHB/ABI branch, X11

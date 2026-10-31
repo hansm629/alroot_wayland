@@ -1,0 +1,392 @@
+--- a/hw/xwayland/xwayland-glamor-gbm.c
++++ b/hw/xwayland/xwayland-glamor-gbm.c
+@@ -670,6 +670,17 @@
+ }
+ 
+ Bool
++xwl_glamor_kgsl_is_dri3_pixmap(PixmapPtr pixmap)
++{
++#ifdef DRI3
++    struct xwl_pixmap *private_pixmap = pixmap ? xwl_pixmap_get(pixmap) : NULL;
++    return private_pixmap && private_pixmap->kgsl_dri3_import;
++#else
++    return FALSE;
++#endif
++}
++
++Bool
+ xwl_glamor_kgsl_refresh_dri3_pixmap(PixmapPtr pixmap)
+ {
+ #ifdef DRI3
+@@ -1446,10 +1457,20 @@
+ 
+     expected = (uint64_t)desc.stride * desc.height * 4;
+     tolerance = expected / 2 > 65536 ? expected / 2 : 65536;
++    if (getenv("S30_DIAG_TINY_AHB") && width <= 64) {
++        ErrorF("S30_AHB_TINY_DIAG logical=%ux%u physical=%ux%u stride=%u expected=%llu tol=%llu nfd=%d\n",
++               width, height, desc.width, desc.height, desc.stride,
++               (unsigned long long)expected, (unsigned long long)tolerance, handle->numFds);
++    }
+     for (int i = 0; i < handle->numFds; ++i) {
+         struct stat st = {0};
+         if (handle->data[i] < 0 || fstat(handle->data[i], &st) || st.st_size <= 0)
+             continue;
++        if (getenv("S30_DIAG_TINY_AHB") && width <= 64) {
++            ErrorF("S30_AHB_FD_DIAG fdindex=%d fsize=%llu mode=0%o ino=%llu\n", i,
++                   (unsigned long long)st.st_size, (unsigned)st.st_mode,
++                   (unsigned long long)st.st_ino);
++        }
+         uint64_t bytes = (uint64_t)st.st_size;
+         if (bytes < expected || bytes - expected > tolerance)
+             continue;
+@@ -1461,6 +1482,32 @@
+             selected = -1;
+         }
+     }
++    /* S30/S26U diagnostic opt-in ONLY: Qualcomm gralloc exports an image
++     * DMA-BUF at native_handle fd[0] and a metadata FD at fd[1]. For tiny
++     * BGRA allocations, BOTH may be rounded to the identical page-sized
++     * st_size, so the old size-only heuristic refuses the image even
++     * though its actual image FD is valid. Restrict this override to the
++     * diagnosed 2-fd, size-tied, small-image KGSL AHB case. Never select
++     * an arbitrary fd for a 3+-fd handle, unknown format or non-tie. */
++    const char *s30_tiny = getenv("S30_KGSL_TINY_AHB_FD0");
++    if (selected < 0 && s30_tiny && s30_tiny[0] == '1' && !s30_tiny[1] &&
++        desc.format == 5 && width >= 1 && width <= 64 &&
++        handle->numFds == 2 && handle->data[0] >= 0 && handle->data[1] >= 0) {
++        struct stat img = {0}, meta = {0};
++        if (!fstat(handle->data[0], &img) && !fstat(handle->data[1], &meta) &&
++            img.st_size >= (off_t)expected &&
++            (uint64_t)img.st_size - expected <= tolerance &&
++            img.st_size == meta.st_size && img.st_ino != meta.st_ino) {
++            selected = 0;
++            static Bool s30_tiny_reported;
++            if (!s30_tiny_reported) {
++                s30_tiny_reported = TRUE;
++                ErrorF("S30_KGSL_TINY_AHB_FD0_USED width=%u height=%u bytes=%llu expected=%llu\n",
++                       width, height, (unsigned long long)img.st_size,
++                       (unsigned long long)expected);
++            }
++        }
++    }
+     if (selected < 0) {
+         ErrorF("S16 AHB DRI3 no unambiguous linear-sized DMA-BUF fd\n");
+         goto done;
+--- a/hw/xwayland/xwayland-glamor-gbm.h
++++ b/hw/xwayland/xwayland-glamor-gbm.h
+@@ -44,6 +44,9 @@
+ Bool xwl_glamor_is_kgsl_surfaceless(struct xwl_screen *xwl_screen);
+ void xwl_glamor_kgsl_refresh_wl_buffer(PixmapPtr pixmap);
+ Bool xwl_glamor_kgsl_refresh_dri3_pixmap(PixmapPtr pixmap);
++/* S30: distinguish a real imported client GPU buffer from an Xorg-owned
++ * window backing pixmap. XID owner checks alone are not sufficient. */
++Bool xwl_glamor_kgsl_is_dri3_pixmap(PixmapPtr pixmap);
+ 
+ /* Explicit buffer synchronization points */
+ Bool xwl_glamor_gbm_set_syncpts(struct xwl_window *xwl_window, PixmapPtr pixmap);
+--- a/hw/xwayland/xwayland-window.c
++++ b/hw/xwayland/xwayland-window.c
+@@ -73,6 +73,15 @@
+ static DevPrivateKeyRec xwl_window_private_key;
+ static DevPrivateKeyRec xwl_wm_window_private_key;
+ static DevPrivateKeyRec xwl_damage_private_key;
++#ifdef XWL_HAS_GLAMOR
++/* S30: stable GPU snapshot per Vulkan window until a REAL DRI3 Present.
++ * Never snapshot the output of an earlier resize placeholder. */
++static DevPrivateKeyRec s30_stable_frame_key;
++struct s30_stable_frame {
++    PixmapPtr pixmap;
++};
++static void s30_drop_frame(WindowPtr window);
++#endif
+ static const char *xwl_surface_tag = "xwl-surface";
+ 
+ static Bool xwl_window_attach_buffer(struct xwl_window *);
+@@ -1762,6 +1771,11 @@
+     struct xwl_window *xwl_window = xwl_window_from_window(window);
+     Bool ret;
+ 
++#ifdef XWL_HAS_GLAMOR
++    if (getenv("S30_KGSL_STABLE_FRAME"))
++        s30_drop_frame(window);
++#endif
++
+     screen->UnrealizeWindow = xwl_screen->UnrealizeWindow;
+     ret = (*screen->UnrealizeWindow) (window);
+     xwl_screen->UnrealizeWindow = screen->UnrealizeWindow;
+@@ -1784,8 +1798,11 @@
+ s28_is_optin_xcb_gpu_window(WindowPtr window, struct xwl_screen *xwl_screen)
+ {
+     const char *opt = getenv("S29_KGSL_NATIVE_RESIZE");
+-    if (!opt || opt[0] != '1' || opt[1] != '\0' ||
+-        xwl_screen->rootless || !xwl_screen->glamor ||
++    const char *s30 = getenv("S30_KGSL_STABLE_FRAME");
++    if ((!opt || opt[0] != '1' || opt[1] != '\0') &&
++        (!s30 || s30[0] != '1' || s30[1] != '\0'))
++        return FALSE;
++    if (xwl_screen->rootless || !xwl_screen->glamor ||
+         !xwl_glamor_is_kgsl_surfaceless(xwl_screen) ||
+         window == window->drawable.pScreen->root)
+         return FALSE;
+@@ -1877,6 +1894,106 @@
+     screen->DestroyPixmap(background);
+     return copied;
+ }
++
++static Bool
++s30_stable_enabled(void)
++{
++    const char *opt = getenv("S30_KGSL_STABLE_FRAME");
++    return opt && opt[0] == '1' && !opt[1];
++}
++
++static struct s30_stable_frame *
++s30_get_frame(WindowPtr window)
++{
++    return dixLookupPrivate(&window->devPrivates, &s30_stable_frame_key);
++}
++
++static void
++s30_drop_frame(WindowPtr window)
++{
++    struct s30_stable_frame *frame = s30_get_frame(window);
++    if (!frame)
++        return;
++    if (getenv("S30_TRACE_STABLE"))
++        ErrorF("S30_FRAME_DROP win=0x%lx snap=%p\n",
++               (unsigned long)window->drawable.id, (void *)frame->pixmap);
++    dixSetPrivate(&window->devPrivates, &s30_stable_frame_key, NULL);
++    if (frame->pixmap)
++        window->drawable.pScreen->DestroyPixmap(frame->pixmap);
++    free(frame);
++}
++
++/* No content from a resize placeholder is ever a source for the next
++ * placeholder. Invalidate only when a TRUE Vulkan DRI3 Present completes. */
++void
++xwl_window_s30_real_present(WindowPtr window)
++{
++    if (s30_stable_enabled())
++        s30_drop_frame(window);
++}
++
++static PixmapPtr
++s30_capture_stable_frame(WindowPtr window, DrawablePtr old_drawable)
++{
++    struct s30_stable_frame *frame;
++    ScreenPtr screen = window->drawable.pScreen;
++    unsigned width, height;
++    GCPtr gc;
++
++    if (!s30_stable_enabled() || !old_drawable)
++        return NULL;
++    frame = s30_get_frame(window);
++    if (frame && frame->pixmap) {
++        if (getenv("S30_TRACE_STABLE"))
++            ErrorF("S30_CAPTURE_REUSE win=0x%lx snap=%p\n",
++                   (unsigned long)window->drawable.id, (void *)frame->pixmap);
++        return frame->pixmap;
++    }
++
++    /* GetWindowPixmap(window) can be the whole 1920x1080 root backing
++     * pixmap in rootful Xwayland! Read the WINDOW drawable in its own
++     * local coordinates instead, otherwise a 200x140 client captures
++     * wallpaper pixels and the actual cube/gear is lost off-center. */
++    width = old_drawable->width;
++    height = old_drawable->height;
++    if (width < 30 || height < 30 || width > 1920 || height > 1080 ||
++        (old_drawable->depth != 24 && old_drawable->depth != 32))
++        return NULL;
++    if (getenv("S30_TRACE_STABLE"))
++        ErrorF("S30_CAPTURE_NEW win=0x%lx oldpix=0x%lx old=%ux%u imported=%d\n",
++               (unsigned long)window->drawable.id,
++               (unsigned long)old_drawable->id, width, height,
++               old_drawable->type == DRAWABLE_PIXMAP &&
++               xwl_glamor_kgsl_is_dri3_pixmap((PixmapPtr)old_drawable));
++
++    if (!frame) {
++        frame = calloc(1, sizeof(*frame));
++        if (!frame)
++            return NULL;
++        dixSetPrivate(&window->devPrivates, &s30_stable_frame_key, frame);
++    }
++    frame->pixmap = (*screen->CreatePixmap)(screen, width, height,
++                                            old_drawable->depth,
++                                            CREATE_PIXMAP_USAGE_SCRATCH);
++    if (!frame->pixmap)
++        return NULL;
++
++    gc = GetScratchGC(frame->pixmap->drawable.depth, screen);
++    if (!gc) {
++        screen->DestroyPixmap(frame->pixmap);
++        frame->pixmap = NULL;
++        return NULL;
++    }
++    ValidateGC(&frame->pixmap->drawable, gc);
++    (void)(*gc->ops->CopyArea)(old_drawable,
++                              &frame->pixmap->drawable, gc,
++                              0, 0, width, height, 0, 0);
++    FreeScratchGC(gc);
++    if (getenv("S30_TRACE_STABLE"))
++        ErrorF("S30_CAPTURE_DONE win=0x%lx snap=%p\n",
++               (unsigned long)window->drawable.id, (void *)frame->pixmap);
++    return frame->pixmap;
++}
+ #endif
+ 
+ void
+@@ -1891,6 +2008,17 @@
+     old_pixmap = (*screen->GetWindowPixmap) (window);
+     xwl_screen = xwl_screen_get(screen);
+ 
++#ifdef XWL_HAS_GLAMOR
++    /* Snapshot BEFORE replacing a redirected client-window backing. */
++    if (s30_stable_enabled() &&
++        s28_is_optin_xcb_gpu_window(window, xwl_screen) &&
++        old_pixmap && pixmap &&
++        (old_pixmap->drawable.width != pixmap->drawable.width ||
++         old_pixmap->drawable.height != pixmap->drawable.height) &&
++        !xwl_glamor_kgsl_is_dri3_pixmap(pixmap))
++        (void)s30_capture_stable_frame(window, &window->drawable);
++#endif
++
+     screen->SetWindowPixmap = xwl_screen->SetWindowPixmap;
+     (*screen->SetWindowPixmap) (window, pixmap);
+     xwl_screen->SetWindowPixmap = screen->SetWindowPixmap;
+@@ -1904,8 +2032,34 @@
+     if (s28_is_optin_xcb_gpu_window(window, xwl_screen) &&
+         old_pixmap && pixmap &&
+         (old_pixmap->drawable.width != pixmap->drawable.width ||
+-         old_pixmap->drawable.height != pixmap->drawable.height))
+-        (void)s29_preserve_native_pixmap(old_pixmap, &pixmap->drawable);
++         old_pixmap->drawable.height != pixmap->drawable.height)) {
++        if (s30_stable_enabled()) {
++            /* Xorg Present's pixmap flip also enters SetWindowPixmap.
++             * The destination can be the CLIENT'S genuine DRI3 GPU image:
++             * the old S29 wrote an outdated frame over this fresh image.
++             * Never write into a client-owned pixmap. */
++            if (getenv("S30_TRACE_STABLE"))
++                ErrorF("S30_SET_PIXMAP win=0x%lx old=0x%lx:%dx%d new=0x%lx:%dx%d new_imported=%d\n",
++                    (unsigned long)window->drawable.id,
++                    (unsigned long)old_pixmap->drawable.id,
++                    old_pixmap->drawable.width, old_pixmap->drawable.height,
++                    (unsigned long)pixmap->drawable.id,
++                    pixmap->drawable.width, pixmap->drawable.height,
++                    xwl_glamor_kgsl_is_dri3_pixmap(pixmap));
++            if (!xwl_glamor_kgsl_is_dri3_pixmap(pixmap)) {
++                struct s30_stable_frame *cached = s30_get_frame(window);
++                PixmapPtr stable = cached ? cached->pixmap : NULL;
++                if (stable) {
++                    Bool drawn = s29_preserve_native_pixmap(stable, &pixmap->drawable);
++                    if (getenv("S30_TRACE_STABLE"))
++                        ErrorF("S30_SET_PIXMAP_FILL win=0x%lx drawn=%d\n",
++                               (unsigned long)window->drawable.id, drawn);
++                }
++            }
++        } else {
++            (void)s29_preserve_native_pixmap(old_pixmap, &pixmap->drawable);
++        }
++    }
+ #endif
+ 
+     if (!RegionNotEmpty(&window->winSize))
+@@ -2072,6 +2226,13 @@
+             }
+         }
+     }
++    /* Use the single saved pre-resize *real* frame across a whole drag.
++     * Even if resized to 1px, do not recursively snapshot that 1px area
++     * and shrink the cube/gear again on the next ConfigureNotify. */
++    if (s30_stable_enabled() &&
++        s28_is_optin_xcb_gpu_window(window, xwl_screen) &&
++        (s28_old_width != width || s28_old_height != height))
++        (void)s30_capture_stable_frame(window, &window->drawable);
+ #endif
+     screen->ResizeWindow = xwl_screen->ResizeWindow;
+     screen->ResizeWindow(window, x, y, width, height, sib);
+@@ -2079,6 +2240,23 @@
+     screen->ResizeWindow = xwl_resize_window;
+ 
+ #ifdef XWL_HAS_GLAMOR
++    if (s30_stable_enabled() &&
++        s28_is_optin_xcb_gpu_window(window, xwl_screen)) {
++        struct s30_stable_frame *stable = s30_get_frame(window);
++        PixmapPtr target = screen->GetWindowPixmap(window);
++        if (getenv("S30_TRACE_STABLE"))
++            ErrorF("S30_RESIZE_DONE win=0x%lx target=%p imported=%d has_snap=%d size=%ux%u\n",
++                   (unsigned long)window->drawable.id, (void *)target,
++                   xwl_glamor_kgsl_is_dri3_pixmap(target),
++                   stable && stable->pixmap, width, height);
++        if (stable && stable->pixmap && target &&
++            !xwl_glamor_kgsl_is_dri3_pixmap(target)) {
++            Bool drawn = s29_preserve_native_pixmap(stable->pixmap, &window->drawable);
++            if (getenv("S30_TRACE_STABLE"))
++                ErrorF("S30_RESIZE_FILL win=0x%lx drawn=%d\n",
++                       (unsigned long)window->drawable.id, drawn);
++        }
++    }
+     if (s28_prior_frame) {
+         (void)s29_preserve_native_pixmap(s28_prior_frame, &window->drawable);
+         screen->DestroyPixmap(s28_prior_frame);
+@@ -2174,6 +2352,11 @@
+     struct xwl_window *xwl_window = xwl_window_get(window);
+     Bool ret;
+ 
++#ifdef XWL_HAS_GLAMOR
++    if (s30_stable_enabled())
++        s30_drop_frame(window);
++#endif
++
+     if (xwl_screen->present)
+         xwl_present_cleanup(window);
+ 
+@@ -2309,6 +2492,10 @@
+ Bool
+ xwl_window_init(void)
+ {
++#ifdef XWL_HAS_GLAMOR
++    if (!dixRegisterPrivateKey(&s30_stable_frame_key, PRIVATE_WINDOW, 0))
++        return FALSE;
++#endif
+     if (!dixRegisterPrivateKey(&xwl_window_private_key, PRIVATE_WINDOW, 0))
+         return FALSE;
+ 
+--- a/hw/xwayland/xwayland-window.h
++++ b/hw/xwayland/xwayland-window.h
+@@ -124,6 +124,10 @@
+ void xwl_window_rootful_update_fullscreen(struct xwl_window *xwl_window,
+                                           struct xwl_output *xwl_output);
+ void xwl_window_set_window_pixmap(WindowPtr window, PixmapPtr pixmap);
++#ifdef XWL_HAS_GLAMOR
++/* S30: drop resize snapshot only after new actual DRI3 content arrives. */
++void xwl_window_s30_real_present(WindowPtr window);
++#endif
+ void xwl_window_update_surface_window(struct xwl_window *xwl_window);
+ 
+ void xwl_window_leave_output(struct xwl_window *xwl_window,
+--- a/hw/xwayland/xwayland-present.c
++++ b/hw/xwayland/xwayland-present.c
+@@ -1132,6 +1132,11 @@
+                 vblank->pixmap->screen_y = old_pixmap->screen_y;
+ #endif
+                 present_set_tree_pixmap(toplvl_window, old_pixmap, vblank->pixmap);
++#ifdef XWL_HAS_GLAMOR
++                /* The flip pixmap is the client's real Vulkan image.
++                 * It must not be overwritten by a stale resize frame. */
++                xwl_window_s30_real_present(window);
++#endif
+ 
+                 if (toplvl_window == screen->root &&
+                     screen->GetScreenPixmap(screen) == old_pixmap)
+@@ -1183,6 +1188,11 @@
+ #endif
+ 
+         present_execute_copy(vblank, crtc_msc);
++#ifdef XWL_HAS_GLAMOR
++        /* The real client render was copied successfully; the next
++         * resize may capture fresh content rather than a placeholder. */
++        xwl_window_s30_real_present(window);
++#endif
+         assert(!vblank->queued);
+ 
+         /* Set the copy_executed field, so this will fall through to present_execute_post next time */

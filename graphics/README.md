@@ -786,3 +786,26 @@ Android APK, source XFCE/IME and S16/S28 executables are preserved.
 Manual physical-screen user acceptance **still required**; do not promote
 to default. Build, tests, exact pinned session validation and explicit
 S28 rollback: `graphics/docs/gpu-s29-pixel-exact-vulkan-resize.md`.
+
+**GPU-S30 S29 crash/frozen-frame recovery (2026-10-31):** The user's real
+S29 `vkcube` recording includes a `SIGSEGV` after repeated AHB-backed
+DRI3 `BadMatch` on **1×98** resize. The same fault is reproducible on
+disposable Xwayland even at **40×98**: Qualcomm tiny BGRA8 gralloc
+exposes two different FDs with the same rounded file size and the S16
+size-based selector rejects their tie. An opt-in **S26U KGSL-only**
+two-FD/size-tie fallback selects the validated image FD[0]. Separately,
+the S29 `SetWindowPixmap` path could overwrite a **new real DRI3 Present**
+with a stale frame or capture the entire rootful 1920×1080 backing
+instead of the window-local drawable, causing freeze and progressive
+cropping. S30 distinguishes actually imported DRI3 GPU buffers, takes
+one stable **window-local** GPU snapshot across consecutive resizes and
+drops it after the next *real* flip/copy Present. Isolated S26U Xfwm4
+`vkcube` survived widths **1, 8, 40**, then returned to 500×500 and
+displayed **21 changing content hashes in 22 samples**. Mesa27 Zink
+`glxgears` also survived 38 tiny resizes. 25-step synthetic native-pixel
+geometry recovery passes; the S29 negative control fails as expected.
+There are still black-edge observations with extremely small windows,
+and a never-redrawing Xfwm4 test remains unresolved. S30 is **not**
+the `awstart` default; physical Android user validation is still needed.
+Existing Xwayland, GPU drivers, XFCE/IME and APK remain untouched.
+Instructions: `graphics/docs/gpu-s30-tiny-ahb-and-stable-present.md`.
