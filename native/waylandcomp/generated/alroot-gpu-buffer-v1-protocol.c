@@ -32,6 +32,7 @@
 #endif
 
 extern const struct wl_interface wl_buffer_interface;
+extern const struct wl_interface wl_surface_interface;
 
 static const struct wl_interface *alroot_gpu_buffer_v1_types[] = {
 	&wl_buffer_interface,
@@ -43,16 +44,24 @@ static const struct wl_interface *alroot_gpu_buffer_v1_types[] = {
 	NULL,
 	NULL,
 	NULL,
+	&wl_surface_interface,
+	&wl_buffer_interface,
+	NULL,
+	&wl_surface_interface,
+	&wl_buffer_interface,
 };
 
 static const struct wl_message alroot_gpu_buffer_v1_requests[] = {
 	{ "destroy", "", alroot_gpu_buffer_v1_types + 0 },
 	{ "create_buffer", "nhuu", alroot_gpu_buffer_v1_types + 0 },
 	{ "create_buffer_with_format", "2nhuuu", alroot_gpu_buffer_v1_types + 4 },
+	{ "set_acquire_fence", "3ooh", alroot_gpu_buffer_v1_types + 9 },
+	{ "set_acquire_ready", "3oo", alroot_gpu_buffer_v1_types + 12 },
 };
 
 WL_PRIVATE const struct wl_interface alroot_gpu_buffer_v1_interface = {
-	"alroot_gpu_buffer_v1", 2,
-	3, alroot_gpu_buffer_v1_requests,
+	"alroot_gpu_buffer_v1", 3,
+	5, alroot_gpu_buffer_v1_requests,
 	0, NULL,
 };
+

@@ -4,6 +4,7 @@
 #include <poll.h>
 #include <stdint.h>
 #include <stdlib.h>
+#include <string.h>
 #include <unistd.h>
 #include <wayland-server.h>
 #include "alroot-gpu-buffer-v1-server-protocol.h"
@@ -15,6 +16,7 @@
  * Do not assume support on Mali, PowerVR, Xclipse, or every Adreno model. */
 #define ALROOT_AHB_BGRA8_FORMAT ALROOT_GPU_BUFFER_V1_FORMAT_BGRA8888
 static int g_bgra8_import_supported;
+static uint32_t g_gpu_protocol_version;
 
 static int probe_bgra8_import(void) {
     AHardwareBuffer_Desc desc = {
@@ -217,16 +219,26 @@ static void gpu_manager_create_with_format(struct wl_client *client,
     gpu_manager_create_common(client,manager,id,socket,width,height,format,1);
 }
 
+static void gpu_manager_acquire_fence(struct wl_client *client, struct wl_resource *manager,
+                                      struct wl_resource *surface, struct wl_resource *buffer, int fd) {
+    alroot_gpu_set_acquire(client, manager, surface, buffer, fd, 0);
+}
+static void gpu_manager_acquire_ready(struct wl_client *client, struct wl_resource *manager,
+                                      struct wl_resource *surface, struct wl_resource *buffer) {
+    alroot_gpu_set_acquire(client, manager, surface, buffer, -1, 1);
+}
 static const struct alroot_gpu_buffer_v1_interface gpu_manager_impl = {
     .destroy = gpu_manager_destroy,
     .create_buffer = gpu_manager_create,
     .create_buffer_with_format = gpu_manager_create_with_format,
+    .set_acquire_fence = gpu_manager_acquire_fence,
+    .set_acquire_ready = gpu_manager_acquire_ready,
 };
 
 static void gpu_manager_bind(struct wl_client *client, void *data,
                              uint32_t version, uint32_t id) {
     (void)data;
-    const uint32_t highest=g_bgra8_import_supported?2u:1u;
+    const uint32_t highest=g_gpu_protocol_version;
     if (version > highest) version = highest;
     struct wl_resource *resource = wl_resource_create(
         client, &alroot_gpu_buffer_v1_interface, (int)version, id);
@@ -243,7 +255,10 @@ void alroot_gpu_buffer_init(struct wl_display *display) {
         return;
     }
     g_bgra8_import_supported=probe_bgra8_import();
-    const uint32_t protocol_version=g_bgra8_import_supported?2u:1u;
+    const char *sync_setting = getenv("S45_AHB_EXPLICIT_SYNC");
+    int explicit_sync = (!sync_setting || strcmp(sync_setting, "0")) && vkp_can_wait_sync_fd();
+    const uint32_t protocol_version=g_bgra8_import_supported?(explicit_sync?3u:2u):1u;
+    g_gpu_protocol_version = protocol_version;
     if (!wl_global_create(display, &alroot_gpu_buffer_v1_interface,
                           (int)protocol_version,
                           NULL, gpu_manager_bind)) {

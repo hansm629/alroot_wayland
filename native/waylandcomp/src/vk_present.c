@@ -15,12 +15,14 @@
 #include <sys/system_properties.h>
 #include <unistd.h>
 #include <errno.h>
+#include <fcntl.h>
 #include <poll.h>
 #include <time.h>
 #include <pthread.h>
 #include <sys/stat.h>
 #include <sys/ioctl.h>
 #include <linux/dma-buf.h>
+#include <linux/sync_file.h>
 #include <stdint.h>
 #include <android/log.h>
 #include <android/hardware_buffer.h>
@@ -50,6 +52,10 @@ struct vkp_image {
     int linear_copy;
     int linear_source_fd;
     VkSemaphore linear_source_wait;
+    unsigned frame_holds;
+    unsigned destroy_pending;
+    unsigned ahb;
+    unsigned explicit_sync;
 };
 
 static ANativeWindow *g_window;
@@ -65,7 +71,9 @@ static uint32_t g_qfam;
 static VkCommandPool g_pool;
 #define MAX_PRESENTS (1 + VKP_FG_MAX_GENERATIONS)
 static VkCommandBuffer g_cmds[MAX_PRESENTS];
-static VkSemaphore g_acqs[MAX_PRESENTS], g_rnds[MAX_PRESENTS];
+static VkSemaphore g_acqs[MAX_PRESENTS];
+/* Present waits are owned by swapchain images, not by frame-generation slots. */
+static VkSemaphore *g_rnds;
 static VkFence g_fence;
 static int g_swap_extra;
 #define SCENE_FMT VK_FORMAT_R8G8B8A8_UNORM
@@ -107,6 +115,55 @@ static int g_black_state;
 
 static PFN_vkImportSemaphoreFdKHR g_import_sem_fd;
 static VkSemaphore g_wait_sem;
+static int g_sync_fd_importable;
+static PFN_vkGetFenceFdKHR g_get_fence_fd;
+static struct vkp_s47_stats g_s47_stats;
+static int g_s47_options_ready, g_s47_profile;
+
+static void s47_options(void) {
+    if (g_s47_options_ready) return;
+    const char *enabled = getenv("S47_HOST_OVERHEAD");
+    const char *profile = getenv("S47_HOST_STATS");
+    g_s47_stats.enabled = !enabled || strcmp(enabled, "1") == 0;
+    g_s47_profile = profile && strcmp(profile, "1") == 0;
+    g_s47_options_ready = 1;
+}
+int vkp_s47_enabled(void) { s47_options(); return g_s47_stats.enabled; }
+int vkp_s47_profile_enabled(void) { s47_options(); return g_s47_profile; }
+void vkp_s47_get_stats(struct vkp_s47_stats *out) { s47_options(); *out = g_s47_stats; }
+#define S47_COUNT(field) do { if (g_s47_profile) g_s47_stats.field++; } while (0)
+
+/* One command/resource generation may be submitted at a time. These arrays
+ * are retained between frames; semaphore payloads are imported again only
+ * after the previous frame has completed (or before any submission). */
+static struct {
+    struct vkp_image **images;
+    VkSemaphore *source_sems;
+    VkSemaphore *wait_sems;
+    VkPipelineStageFlags *wait_stages;
+    unsigned capacity, image_count, source_count;
+    int active, waits_counted;
+} g_sources;
+static struct {
+    int pending, failed, async, drawn, base_black, rebuild;
+    int exported, completion_fd, completion_broken, sources_submitted;
+    int64_t started_ns;
+} g_frame;
+/* Single-inflight scene recording owns this scratch until its barriers have
+ * been copied into the command buffer. Keep capacity across ordinary frames. */
+static VkImageMemoryBarrier *g_scene_barriers;
+static unsigned g_scene_barrier_capacity;
+
+int vkp_frame_pending(void) { return g_frame.pending; }
+int vkp_frame_completion_fd(void) {
+    return g_frame.pending && g_frame.exported && !g_frame.completion_broken ?
+        g_frame.completion_fd : -1;
+}
+int vkp_frame_completion_exported(void) { return g_frame.pending && g_frame.exported; }
+int vkp_frame_sources_submitted(void) {
+    return g_frame.pending && !g_frame.failed && !g_frame.completion_broken &&
+        g_frame.async && g_frame.sources_submitted;
+}
 
 /* The Xwayland EGL producer can finish its own queue but that alone does
  * not give the Android Vulkan consumer a cross-API wait. Linux's standard
@@ -170,9 +227,234 @@ static void perf_add(int64_t *sum, int64_t *max, unsigned *count, int64_t d) {
 }
 static VkResult timed_wait(VkFence fence, uint64_t timeout) {
     int64_t t0 = perf_now();
+    S47_COUNT(fence_wait_calls);
     VkResult r = g_vk.WaitForFences(g_dev, 1, &fence, VK_TRUE, timeout);
     perf_add(&g_perf.wait_ns, &g_perf.wait_max_ns, &g_perf.waits, perf_now() - t0);
     return r;
+}
+
+/* 1 complete, 0 still pending, -1 invalid/error. A readable eventfd/socket
+ * must never be accepted as a successful sync_file fallback. */
+static int sync_fd_status(int fd) {
+    if (fd < 0) return -1;
+    struct sync_file_info info = {0};
+    int rc;
+    do { rc = ioctl(fd, SYNC_IOC_FILE_INFO, &info); } while (rc < 0 && errno == EINTR);
+    if (rc < 0 || info.status < 0) return -1;
+    return info.status > 0 ? 1 : 0;
+}
+
+static int source_storage_reserve(unsigned wanted) {
+    if (wanted <= g_sources.capacity) return 0;
+    /* A malformed/absurd draw list must fail without dropping any waits. */
+    if (wanted > 4097) return -1;
+    unsigned cap = g_sources.capacity ? g_sources.capacity : 16;
+    while (cap < wanted) cap *= 2;
+    struct vkp_image **images = calloc(cap, sizeof(*images));
+    VkSemaphore *sems = calloc(cap, sizeof(*sems));
+    VkSemaphore *waits = calloc(cap + VKP_MAX_LINEAR_GPU_WAITS + 2, sizeof(*waits));
+    VkPipelineStageFlags *stages = calloc(cap + VKP_MAX_LINEAR_GPU_WAITS + 2, sizeof(*stages));
+    if (!images || !sems || !waits || !stages) {
+        free(images); free(sems); free(waits); free(stages);
+        return -1;
+    }
+    if (g_sources.capacity) {
+        memcpy(images, g_sources.images, g_sources.image_count * sizeof(*images));
+        memcpy(sems, g_sources.source_sems, g_sources.capacity * sizeof(*sems));
+    }
+    free(g_sources.images); free(g_sources.source_sems);
+    free(g_sources.wait_sems); free(g_sources.wait_stages);
+    g_sources.images = images; g_sources.source_sems = sems;
+    g_sources.wait_sems = waits; g_sources.wait_stages = stages;
+    g_sources.capacity = cap;
+    return 0;
+}
+
+static int scene_barrier_reserve(unsigned wanted) {
+    if (wanted <= g_scene_barrier_capacity) return 0;
+    if (wanted > 4097) return -1;
+    unsigned cap = g_scene_barrier_capacity ? g_scene_barrier_capacity : 16;
+    while (cap < wanted) cap *= 2;
+    VkImageMemoryBarrier *bars = realloc(g_scene_barriers, cap * sizeof(*bars));
+    if (!bars) return -1;
+    g_scene_barriers = bars;
+    g_scene_barrier_capacity = cap;
+    return 0;
+}
+
+/* Validate predictable failures and reserve CPU storage without importing a
+ * fence or pinning a source. In particular, an unavailable swapchain image
+ * must not make us duplicate/import/destroy every source fence on each retry. */
+static int source_preflight(const struct vkp_draw *draws, int n) {
+    if (n < 0 || n > 4096 || (n && !draws)) return -1;
+    for (int i = 0; i < n; ++i)
+        if (draws[i].img && draws[i].has_acquire_fence && draws[i].acquire_fence_fd < 0)
+            return -1;
+    return source_storage_reserve((unsigned)n + 1);
+}
+
+static int source_hold(struct vkp_image *img) {
+    if (!img) return 0;
+    for (unsigned i = 0; i < g_sources.image_count; ++i)
+        if (g_sources.images[i] == img) return 0;
+    if (source_storage_reserve(g_sources.image_count + 1) != 0) return -1;
+    img->frame_holds++;
+    g_sources.images[g_sources.image_count++] = img;
+    return 0;
+}
+
+/* Call only when no submitted queue command still uses this source set. */
+static void source_release_all(void) {
+    if (!g_sources.waits_counted) {
+        /* Aborted before submission: release temporary payloads immediately.
+         * Successful queue waits restore the permanent payload and keep the
+         * idle semaphore objects available for the next source generation. */
+        for (unsigned i = 0; i < g_sources.source_count; ++i) {
+            g_vk.DestroySemaphore(g_dev, g_sources.source_sems[i], NULL);
+            g_sources.source_sems[i] = VK_NULL_HANDLE;
+        }
+    }
+    for (unsigned i = 0; i < g_sources.image_count; ++i) {
+        struct vkp_image *img = g_sources.images[i];
+        if (img->frame_holds) img->frame_holds--;
+        if (!img->frame_holds && img->destroy_pending) vkp_image_destroy(img);
+    }
+    g_sources.image_count = g_sources.source_count = 0;
+    g_sources.active = g_sources.waits_counted = 0;
+}
+
+static int source_prepare_preflighted(const struct vkp_draw *draws, int n) {
+    if (g_frame.pending || g_sources.active) return VKP_RENDER_RETRY;
+    g_sources.active = 1;
+    for (int i = 0; i < n; ++i) {
+        struct vkp_image *img = draws[i].img;
+        if (source_hold(img) != 0) { source_release_all(); return -1; }
+        if (img && img->ahb && draws[i].external_ownership) img->explicit_sync = 1;
+        if (!img || !draws[i].has_acquire_fence) continue;
+        const int fd = draws[i].acquire_fence_fd;
+        if (fd < 0) { source_release_all(); return -1; }
+        int repeated = 0;
+        for (int j = 0; j < i; ++j)
+            if (draws[j].img == img && draws[j].has_acquire_fence &&
+                draws[j].acquire_fence_fd == fd &&
+                draws[j].acquire_serial == draws[i].acquire_serial) { repeated = 1; break; }
+        if (repeated) continue;
+        VkResult imported = VK_ERROR_INVALID_EXTERNAL_HANDLE;
+        if (vkp_can_wait_sync_fd()) {
+            VkSemaphore *sem = &g_sources.source_sems[g_sources.source_count];
+            VkSemaphoreCreateInfo sci = {.sType = VK_STRUCTURE_TYPE_SEMAPHORE_CREATE_INFO};
+            if (!*sem) {
+                VkSemaphore created = VK_NULL_HANDLE;
+                if (g_vk.CreateSemaphore(g_dev, &sci, NULL, &created) != VK_SUCCESS) {
+                    source_release_all(); return -1;
+                }
+                *sem = created;
+            }
+            const int copy = fcntl(fd, F_DUPFD_CLOEXEC, 0);
+            if (copy >= 0) {
+                VkImportSemaphoreFdInfoKHR ii = {
+                    .sType = VK_STRUCTURE_TYPE_IMPORT_SEMAPHORE_FD_INFO_KHR,
+                    .semaphore = *sem, .flags = VK_SEMAPHORE_IMPORT_TEMPORARY_BIT,
+                    .handleType = VK_EXTERNAL_SEMAPHORE_HANDLE_TYPE_SYNC_FD_BIT, .fd = copy};
+                imported = g_import_sem_fd(g_dev, &ii);
+                if (imported != VK_SUCCESS) close(copy);
+            }
+        }
+        if (imported == VK_SUCCESS) { g_sources.source_count++; continue; }
+        g_perf.acquire_import_failures++;
+        const int ready = sync_fd_status(fd);
+        if (ready == 1) continue;
+        source_release_all();
+        return ready == 0 ? VKP_RENDER_RETRY : -1;
+    }
+    return 0;
+}
+
+static int source_prepare(const struct vkp_draw *draws, int n) {
+    if (g_frame.pending || g_sources.active) return VKP_RENDER_RETRY;
+    if (source_preflight(draws, n) != 0) return -1;
+    return source_prepare_preflighted(draws, n);
+}
+
+static uint32_t source_submit_waits(VkSemaphore first, int include_sources) {
+    uint32_t count = 0;
+    if (first) {
+        g_sources.wait_sems[count] = first;
+        g_sources.wait_stages[count++] = VK_PIPELINE_STAGE_ALL_COMMANDS_BIT;
+    }
+    if (include_sources) {
+        for (unsigned j = 0; j < g_linear_gpu_wait_count; ++j) {
+            g_sources.wait_sems[count] = g_linear_gpu_waits[j];
+            g_sources.wait_stages[count++] = VK_PIPELINE_STAGE_ALL_COMMANDS_BIT;
+        }
+        for (unsigned j = 0; j < g_sources.source_count; ++j) {
+            g_sources.wait_sems[count] = g_sources.source_sems[j];
+            g_sources.wait_stages[count++] = VK_PIPELINE_STAGE_ALL_COMMANDS_BIT;
+        }
+    }
+    return count;
+}
+
+static void source_note_submitted(void) {
+    if (!g_sources.waits_counted) {
+        g_perf.gpu_acquire_waits += g_sources.source_count;
+        g_sources.waits_counted = 1;
+    }
+}
+
+/* Both ends of the external ownership pair use GENERAL -> GENERAL. Layout
+ * transitions belong to this queue and must not be combined with ownership:
+ * the producer and consumer can use different local image layouts. Keep each
+ * step in a separate barrier command so its dependency scope orders the next.
+ */
+static void record_source_acquires(VkCommandBuffer cmd) {
+    const VkImageSubresourceRange range = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1};
+    for (unsigned i = 0; i < g_sources.image_count; ++i) {
+        struct vkp_image *img = g_sources.images[i];
+        if (!img->explicit_sync) continue;
+        VkImageMemoryBarrier acquire = {
+            .sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER,
+            .oldLayout = VK_IMAGE_LAYOUT_GENERAL, .newLayout = VK_IMAGE_LAYOUT_GENERAL,
+            .srcQueueFamilyIndex = VK_QUEUE_FAMILY_FOREIGN_EXT, .dstQueueFamilyIndex = g_qfam,
+            .image = img->image, .subresourceRange = range,
+            .dstAccessMask = VK_ACCESS_MEMORY_READ_BIT | VK_ACCESS_MEMORY_WRITE_BIT};
+        g_vk.CmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, VK_PIPELINE_STAGE_ALL_COMMANDS_BIT,
+                                0, 0, NULL, 0, NULL, 1, &acquire);
+        VkImageMemoryBarrier local = {
+            .sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER,
+            .oldLayout = VK_IMAGE_LAYOUT_GENERAL, .newLayout = VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
+            .srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED, .dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+            .image = img->image, .subresourceRange = range,
+            .srcAccessMask = VK_ACCESS_MEMORY_READ_BIT | VK_ACCESS_MEMORY_WRITE_BIT,
+            .dstAccessMask = VK_ACCESS_TRANSFER_READ_BIT};
+        g_vk.CmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_ALL_COMMANDS_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT,
+                                0, 0, NULL, 0, NULL, 1, &local);
+    }
+}
+
+static void record_source_releases(VkCommandBuffer cmd) {
+    const VkImageSubresourceRange range = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1};
+    for (unsigned i = 0; i < g_sources.image_count; ++i) {
+        struct vkp_image *img = g_sources.images[i];
+        if (!img->explicit_sync) continue;
+        VkImageMemoryBarrier local = {
+            .sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER,
+            .oldLayout = VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, .newLayout = VK_IMAGE_LAYOUT_GENERAL,
+            .srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED, .dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+            .image = img->image, .subresourceRange = range,
+            .srcAccessMask = VK_ACCESS_TRANSFER_READ_BIT | VK_ACCESS_SHADER_READ_BIT,
+            .dstAccessMask = VK_ACCESS_MEMORY_READ_BIT | VK_ACCESS_MEMORY_WRITE_BIT};
+        g_vk.CmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_ALL_COMMANDS_BIT, VK_PIPELINE_STAGE_ALL_COMMANDS_BIT,
+                                0, 0, NULL, 0, NULL, 1, &local);
+        VkImageMemoryBarrier release = {
+            .sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER,
+            .oldLayout = VK_IMAGE_LAYOUT_GENERAL, .newLayout = VK_IMAGE_LAYOUT_GENERAL,
+            .srcQueueFamilyIndex = g_qfam, .dstQueueFamilyIndex = VK_QUEUE_FAMILY_FOREIGN_EXT,
+            .image = img->image, .subresourceRange = range,
+            .srcAccessMask = VK_ACCESS_MEMORY_READ_BIT | VK_ACCESS_MEMORY_WRITE_BIT};
+        g_vk.CmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_ALL_COMMANDS_BIT, VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT,
+                                0, 0, NULL, 0, NULL, 1, &release);
+    }
 }
 
 static struct { VkImage img; VkDeviceMemory mem; int w, h; } g_scene;
@@ -197,6 +479,7 @@ static PFN_vkSetHdrMetadataEXT g_set_hdr_metadata;
 static uint32_t g_swap_md_identity;
 static int g_surface_formats_said;
 static const char *vk_result_name(VkResult r);
+static void device_lost(const char *where);
 
 static pthread_mutex_t g_req_lock = PTHREAD_MUTEX_INITIALIZER;
 static ANativeWindow *g_req_window;
@@ -257,18 +540,24 @@ static void reset_sync(void) {
     VkSemaphoreCreateInfo semci = {.sType = VK_STRUCTURE_TYPE_SEMAPHORE_CREATE_INFO};
     for (int k = 0; k < MAX_PRESENTS; k++) {
         if (g_acqs[k]) g_vk.DestroySemaphore(g_dev, g_acqs[k], NULL);
-        if (g_rnds[k]) g_vk.DestroySemaphore(g_dev, g_rnds[k], NULL);
         g_vk.CreateSemaphore(g_dev, &semci, NULL, &g_acqs[k]);
-        g_vk.CreateSemaphore(g_dev, &semci, NULL, &g_rnds[k]);
     }
 }
 
 static void destroy_swapchain(void) {
+    if (g_frame.pending) return; /* deferred by window/renderer busy guards */
     g_base_black = 0;
     if (g_dev_state != 1) return;
+    S47_COUNT(device_idle_calls);
+    S47_COUNT(reconfigure_idle_calls);
     g_vk.DeviceWaitIdle(g_dev);
     reset_sync();
-    for (uint32_t i = 0; i < g_nimg; i++) blendp_forget_image(g_images[i]);
+    if (g_images) for (uint32_t i = 0; i < g_nimg; i++) blendp_forget_image(g_images[i]);
+    if (g_rnds) {
+        for (uint32_t i = 0; i < g_nimg; ++i)
+            if (g_rnds[i]) g_vk.DestroySemaphore(g_dev, g_rnds[i], NULL);
+        free(g_rnds); g_rnds = NULL;
+    }
     if (g_swapchain) g_vk.DestroySwapchainKHR(g_dev, g_swapchain, NULL);
     g_swapchain = VK_NULL_HANDLE;
     g_swap_md_identity = 0;
@@ -316,6 +605,7 @@ int vkp_wait_window_request(int timeout_ms) {
 }
 
 int vkp_apply_window_request(void) {
+    if (g_frame.pending || g_sources.active) return 0;
     ANativeWindow *w;
     pthread_mutex_lock(&g_req_lock);
     if (!g_req_pending) { pthread_mutex_unlock(&g_req_lock); return 0; }
@@ -459,8 +749,39 @@ static int has_ext(VkExtensionProperties *e, uint32_t n, const char *name) {
     return 0;
 }
 
+static int s47_fence_export_supported(VkExtensionProperties *exts, uint32_t count) {
+    if (!g_s47_stats.enabled || !has_ext(exts, count, VK_KHR_EXTERNAL_FENCE_FD_EXTENSION_NAME) ||
+        !g_vk.GetPhysicalDeviceExternalFenceProperties) return 0;
+    const VkPhysicalDeviceExternalFenceInfo info = {
+        .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_EXTERNAL_FENCE_INFO,
+        .handleType = VK_EXTERNAL_FENCE_HANDLE_TYPE_SYNC_FD_BIT};
+    VkExternalFenceProperties props = {.sType = VK_STRUCTURE_TYPE_EXTERNAL_FENCE_PROPERTIES};
+    g_vk.GetPhysicalDeviceExternalFenceProperties(g_pd, &info, &props);
+    return !!(props.externalFenceFeatures & VK_EXTERNAL_FENCE_FEATURE_EXPORTABLE_BIT) &&
+        !!(props.compatibleHandleTypes & VK_EXTERNAL_FENCE_HANDLE_TYPE_SYNC_FD_BIT);
+}
+
+static VkResult s47_create_completion_fence(void) {
+    const VkExportFenceCreateInfo export_fence = {
+        .sType = VK_STRUCTURE_TYPE_EXPORT_FENCE_CREATE_INFO,
+        .handleTypes = VK_EXTERNAL_FENCE_HANDLE_TYPE_SYNC_FD_BIT};
+    VkFenceCreateInfo fci = {.sType = VK_STRUCTURE_TYPE_FENCE_CREATE_INFO,
+                            .pNext = g_get_fence_fd ? &export_fence : NULL};
+    VkResult result = g_vk.CreateFence(g_dev, &fci, NULL, &g_fence);
+    if (result != VK_SUCCESS && g_get_fence_fd) {
+        /* Unsupported/export-allocation failures retain the old query path. */
+        alroot_log("perf", "S47 host exportable fence unavailable (%d); keeping native fence polling", result);
+        g_get_fence_fd = NULL;
+        fci.pNext = NULL;
+        result = g_vk.CreateFence(g_dev, &fci, NULL, &g_fence);
+    }
+    g_s47_stats.completion_capable = result == VK_SUCCESS && g_get_fence_fd != NULL;
+    return result;
+}
+
 static int dev_init(void) {
     if (g_dev_state != 0) return g_dev_state == 1 ? 0 : -1;
+    s47_options();
 
     if (vk_loader_open(g_driver_path, g_library_name, g_native_lib_dir) != 0) {
         LOGE("present: vk_loader_open failed"); g_dev_state = -1; return -1;
@@ -525,7 +846,7 @@ static int dev_init(void) {
 
     static const char *const import_exts[4] = {"VK_KHR_external_memory_fd", "VK_EXT_external_memory_dma_buf",
                                                "VK_EXT_image_drm_format_modifier", "VK_KHR_image_format_list"};
-    const char *dev_exts[9] = {VK_KHR_SWAPCHAIN_EXTENSION_NAME};
+    const char *dev_exts[10] = {VK_KHR_SWAPCHAIN_EXTENSION_NAME};
     uint32_t n_dev_exts = 1;
     uint32_t ne = 0;
     g_vk.EnumerateDeviceExtensionProperties(g_pd, NULL, &ne, NULL);
@@ -546,6 +867,16 @@ static int dev_init(void) {
     }
     const int want_sem_fd = has_ext(exts, ne, VK_KHR_EXTERNAL_SEMAPHORE_FD_EXTENSION_NAME);
     if (want_sem_fd) dev_exts[n_dev_exts++] = VK_KHR_EXTERNAL_SEMAPHORE_FD_EXTENSION_NAME;
+    if (want_sem_fd && g_vk.GetPhysicalDeviceExternalSemaphoreProperties) {
+        const VkPhysicalDeviceExternalSemaphoreInfo info = {
+            .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_EXTERNAL_SEMAPHORE_INFO,
+            .handleType = VK_EXTERNAL_SEMAPHORE_HANDLE_TYPE_SYNC_FD_BIT};
+        VkExternalSemaphoreProperties props = {.sType = VK_STRUCTURE_TYPE_EXTERNAL_SEMAPHORE_PROPERTIES};
+        g_vk.GetPhysicalDeviceExternalSemaphoreProperties(g_pd, &info, &props);
+        g_sync_fd_importable = !!(props.externalSemaphoreFeatures & VK_EXTERNAL_SEMAPHORE_FEATURE_IMPORTABLE_BIT);
+    }
+    const int want_fence_fd = s47_fence_export_supported(exts, ne);
+    if (want_fence_fd) dev_exts[n_dev_exts++] = VK_KHR_EXTERNAL_FENCE_FD_EXTENSION_NAME;
     /* The cloud player's decoded frames arrive as AHardwareBuffers (vkp_image_from_ahb). */
     g_ahb_import = has_ext(exts, ne, VK_ANDROID_EXTERNAL_MEMORY_ANDROID_HARDWARE_BUFFER_EXTENSION_NAME) &&
                    has_ext(exts, ne, VK_EXT_QUEUE_FAMILY_FOREIGN_EXTENSION_NAME);
@@ -575,7 +906,9 @@ static int dev_init(void) {
     }
     vk_loader_load_device(g_dev);
     g_vk.GetDeviceQueue(g_dev, g_qfam, 0, &g_queue);
-    if (want_sem_fd) {
+    if (want_fence_fd)
+        g_get_fence_fd = (PFN_vkGetFenceFdKHR)g_vk.GetDeviceProcAddr(g_dev, "vkGetFenceFdKHR");
+    if (want_sem_fd && g_sync_fd_importable) {
         g_import_sem_fd = (PFN_vkImportSemaphoreFdKHR)g_vk.GetDeviceProcAddr(g_dev, "vkImportSemaphoreFdKHR");
         VkSemaphoreCreateInfo wsci = {.sType = VK_STRUCTURE_TYPE_SEMAPHORE_CREATE_INFO};
         if (!g_import_sem_fd || g_vk.CreateSemaphore(g_dev, &wsci, NULL, &g_wait_sem) != VK_SUCCESS) {
@@ -601,8 +934,12 @@ static int dev_init(void) {
                                        .commandPool = g_pool,
                                        .level = VK_COMMAND_BUFFER_LEVEL_PRIMARY, .commandBufferCount = MAX_PRESENTS};
     g_vk.AllocateCommandBuffers(g_dev, &cai, g_cmds);
-    VkFenceCreateInfo fci = {.sType = VK_STRUCTURE_TYPE_FENCE_CREATE_INFO};
-    g_vk.CreateFence(g_dev, &fci, NULL, &g_fence);
+    VkResult fence_result = s47_create_completion_fence();
+    if (fence_result != VK_SUCCESS) {
+        LOGE("present: vkCreateFence failed (%d)", fence_result);
+        g_dev_state = -1;
+        return -1;
+    }
 
     vkp_effects_bind_device(g_dev, g_pd, &g_memprops);
     vkp_cardboard_bind_device(g_dev, &g_memprops);
@@ -611,6 +948,7 @@ static int dev_init(void) {
     g_dev_state = 1;
     reset_sync();
     init_black_image();
+    if (g_dev_state != 1) return -1;
     vkp_framegen_device_ready(g_dev, g_queue, g_qfam, fg_features != NULL);
     return 0;
 }
@@ -824,7 +1162,15 @@ static int swap_init_locked(void) {
     }
     g_vk.GetSwapchainImagesKHR(g_dev, g_swapchain, &g_nimg, NULL);
     g_images = calloc(g_nimg, sizeof(VkImage));
-    g_vk.GetSwapchainImagesKHR(g_dev, g_swapchain, &g_nimg, g_images);
+    g_rnds = calloc(g_nimg, sizeof(*g_rnds));
+    if (!g_nimg || !g_images || !g_rnds ||
+        g_vk.GetSwapchainImagesKHR(g_dev, g_swapchain, &g_nimg, g_images) != VK_SUCCESS) return -1;
+    VkSemaphoreCreateInfo semci = {.sType = VK_STRUCTURE_TYPE_SEMAPHORE_CREATE_INFO};
+    for (uint32_t i = 0; i < g_nimg; ++i) {
+        VkSemaphore created = VK_NULL_HANDLE;
+        if (g_vk.CreateSemaphore(g_dev, &semci, NULL, &created) != VK_SUCCESS) return -1;
+        g_rnds[i] = created;
+    }
 
     alroot_log("gpu", "screen output %ux%u, %u buffers, vsync%s", g_extent.width, g_extent.height, g_nimg,
                g_swap_extra ? " (frame generation: several presents per frame)" : "");
@@ -885,11 +1231,21 @@ static void init_black_image(void) {
     g_vk.EndCommandBuffer(cmd);
     VkSubmitInfo si = {.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO, .commandBufferCount = 1, .pCommandBuffers = &cmd};
     g_vk.ResetFences(g_dev, 1, &g_fence);
-    if (g_vk.QueueSubmit(g_queue, 1, &si, g_fence) == VK_SUCCESS &&
-        g_vk.WaitForFences(g_dev, 1, &g_fence, VK_TRUE, 1000000000ULL) == VK_SUCCESS)
+    VkResult submitted = g_vk.QueueSubmit(g_queue, 1, &si, g_fence);
+    /* One-time device initialization may block, but must not leave the
+     * shared command buffer pending after a timed initialization failure. */
+    VkResult completed = submitted;
+    if (submitted == VK_SUCCESS) {
+        S47_COUNT(fence_wait_calls);
+        S47_COUNT(startup_fence_wait_calls);
+        completed = g_vk.WaitForFences(g_dev, 1, &g_fence, VK_TRUE, UINT64_MAX);
+    }
+    if (completed == VK_SUCCESS)
         g_black_state = 1;
-    else
+    else {
+        if (completed == VK_ERROR_DEVICE_LOST) device_lost("black-image initialization");
         alroot_log("gpu", "letterbox black image unavailable: the whole output is cleared every copy-path frame");
+    }
 }
 
 static int record_bars_clear(VkCommandBuffer cmd, VkImage img, const VkImageBlit *covered) {
@@ -1318,7 +1674,11 @@ struct vkp_image *vkp_image_import_dmabuf(int fd, uint32_t drm_format, uint64_t 
 }
 
 void vkp_wait_idle(void) {
-    if (g_dev && g_vk.DeviceWaitIdle) g_vk.DeviceWaitIdle(g_dev);
+    if (g_dev && g_vk.DeviceWaitIdle) {
+        S47_COUNT(device_idle_calls);
+        S47_COUNT(shutdown_idle_calls);
+        g_vk.DeviceWaitIdle(g_dev);
+    }
 }
 
 struct vkp_image *vkp_image_from_ahb(AHardwareBuffer *ahb) {
@@ -1343,6 +1703,7 @@ struct vkp_image *vkp_image_from_ahb(AHardwareBuffer *ahb) {
     struct vkp_image *img = calloc(1, sizeof(*img));
     if (!img) return NULL;
     img->w = (int)desc.width; img->h = (int)desc.height; img->dmabuf = 1; img->fmt = fp.format; img->sampled = 1;
+    img->ahb = 1;
     VkExternalMemoryImageCreateInfo ext = {
         .sType = VK_STRUCTURE_TYPE_EXTERNAL_MEMORY_IMAGE_CREATE_INFO,
         .handleTypes = VK_EXTERNAL_MEMORY_HANDLE_TYPE_ANDROID_HARDWARE_BUFFER_BIT_ANDROID};
@@ -1425,7 +1786,7 @@ struct vkp_image *vkp_image_create_shm(int w, int h) {
 }
 
 void vkp_image_upload_shm(struct vkp_image *img, const void *data, int stride) {
-    if (!img || !img->map || !data) return;
+    if (!img || !img->map || !data || img->frame_holds) return;
     size_t rowbytes = (size_t)img->w * 4;
     if ((size_t)stride < rowbytes) rowbytes = (size_t)stride;
     for (int y = 0; y < img->h; y++)
@@ -1435,9 +1796,11 @@ void vkp_image_upload_shm(struct vkp_image *img, const void *data, int stride) {
 
 int vkp_image_width(const struct vkp_image *img) { return img ? img->w : 0; }
 int vkp_image_height(const struct vkp_image *img) { return img ? img->h : 0; }
+int vkp_image_busy(const struct vkp_image *img) { return img && img->frame_holds != 0; }
 
 void vkp_image_destroy(struct vkp_image *img) {
     if (!img) return;
+    if (img->frame_holds) { img->destroy_pending = 1; return; }
     if (g_dev) {
         blendp_forget_image(img->image);
         if (img->map) g_vk.UnmapMemory(g_dev, img->mem);
@@ -1724,11 +2087,11 @@ static void record_screen_blit(VkCommandBuffer cmd, VkImage src, int src_w, int 
                             0, 0, NULL, 0, NULL, 1, &b_present);
 }
 
-static int acquire_image(int k, int first, uint32_t *img, VkResult *ar_out) {
+static int acquire_image(int k, int first, uint64_t timeout, uint32_t *img, VkResult *ar_out) {
     for (int attempt = 0; ; attempt++) {
         if (!g_swapchain && (!first || swap_init() != 0)) return -1;
         const int64_t t_acq = perf_now();
-        VkResult ar = g_vk.AcquireNextImageKHR(g_dev, g_swapchain, 1000000000ULL, g_acqs[k], VK_NULL_HANDLE, img);
+        VkResult ar = g_vk.AcquireNextImageKHR(g_dev, g_swapchain, timeout, g_acqs[k], VK_NULL_HANDLE, img);
         perf_add(&g_perf.acquire_ns, &g_perf.acquire_max_ns, &g_perf.acquires, perf_now() - t_acq);
         if (ar == VK_SUCCESS || ar == VK_SUBOPTIMAL_KHR) { *ar_out = ar; return 0; }
         if (ar == VK_ERROR_DEVICE_LOST) { device_lost("acquire"); return -1; }
@@ -1738,8 +2101,11 @@ static int acquire_image(int k, int first, uint32_t *img, VkResult *ar_out) {
             if (first && attempt == 0) continue;
             return -1;
         }
+        if (ar == VK_TIMEOUT || ar == VK_NOT_READY) {
+            if (!timeout) { g_perf.async_retries++; return VKP_RENDER_RETRY; }
+            return -1;
+        }
         alroot_log("error", "present: acquire %d failed (%s %d)", k, vk_result_name(ar), (int)ar);
-        if (ar == VK_TIMEOUT || ar == VK_NOT_READY) return -1;
         destroy_swapchain();
         return -1;
     }
@@ -1754,6 +2120,7 @@ int vkp_render_plain(int scene_w, int scene_h) {
 }
 
 static void check_surface_changed(void) {
+    if (g_frame.pending) return;
     if (!g_swapchain || !g_surface || g_dev_state != 1) return;
     const int64_t now = perf_now();
     if (now - g_surface_checked_ns < 100000000LL) return;
@@ -1770,6 +2137,7 @@ static void check_surface_changed(void) {
 }
 
 int vkp_base_black(int scene_w, int scene_h) {
+    if (g_frame.pending || g_sources.active) return VKP_RENDER_RETRY;
     vkp_apply_window_request();
     if (vkp_quest_layer_presentation()) {
         if (vkp_update_map(scene_w, scene_h) != 0) return -1;
@@ -1790,7 +2158,9 @@ void vkp_perf_take(struct vkp_perf *out) {
     memset(&g_perf, 0, sizeof(g_perf));
 }
 
-int vkp_can_wait_sync_fd(void) { return g_import_sem_fd != NULL && g_wait_sem != VK_NULL_HANDLE; }
+int vkp_can_wait_sync_fd(void) {
+    return g_sync_fd_importable && g_import_sem_fd != NULL && g_wait_sem != VK_NULL_HANDLE;
+}
 
 static int take_wait_fd(int fd) {
     if (fd < 0) return 0;
@@ -1812,7 +2182,139 @@ static int take_wait_fd(int fd) {
     int r;
     do { r = poll(&p, 1, 100); } while (r < 0 && errno == EINTR);
     close(fd);
-    return r == 0 ? -1 : 0;
+    return r > 0 && (p.revents & POLLIN) && !(p.revents & (POLLERR | POLLHUP | POLLNVAL)) ? 0 : -1;
+}
+
+static int host_async_enabled(void) {
+    static int enabled = -1;
+    if (enabled < 0) {
+        const char *value = getenv("S45_HOST_ASYNC");
+        enabled = !value || strcmp(value, "0") != 0;
+        alroot_log("perf", "S45_HOST_ASYNC=%s single_inflight=1 completion=%s",
+                   enabled && g_vk.GetFenceStatus && vkp_can_wait_sync_fd() ? "ACTIVE" : "OFF",
+                   g_get_fence_fd ? "SYNC_FD" : "GetFenceStatus");
+    }
+    return enabled && g_vk.GetFenceStatus && vkp_can_wait_sync_fd();
+}
+
+static int scene_async_allowed(int allow_async, int n, const struct vkp_hdr_frame *hf,
+                               int fx, int fg, int cb) {
+    /* Empty SDR scenes use the same command/fence generation as populated
+     * scenes. Let the compositor's existing frame event retire their clear;
+     * waiting here stalled the event loop when the last window disappeared.
+     * Explicit synchronous helpers and special presentation routes retain
+     * their contracts. The S46 comparison keeps its original n > 0 policy. */
+    return allow_async && !g_plain_frame &&
+           (n > 0 || (n == 0 && vkp_s47_enabled())) &&
+           !hf && !fx && !fg && !cb && !vkp_quest_layer_presentation() &&
+           host_async_enabled();
+}
+
+static enum vkp_frame_poll_result frame_retire(void) {
+    const int failed = g_frame.failed;
+    const int drawn = g_frame.drawn;
+    const int rebuild = g_frame.rebuild;
+    if (g_frame.async) {
+        S47_COUNT(async_retired);
+        if (g_frame.sources_submitted && !failed) S47_COUNT(source_proof_frames);
+        perf_add(&g_perf.async_ns, &g_perf.async_max_ns, &g_perf.async_completed,
+                 perf_now() - g_frame.started_ns);
+    }
+    if (!failed) g_base_black = g_frame.base_black;
+    if (g_frame.exported && g_frame.completion_fd >= 0) close(g_frame.completion_fd);
+    memset(&g_frame, 0, sizeof(g_frame));
+    source_release_all();
+    if (rebuild) destroy_swapchain();
+    if (!failed && drawn && !g_first_frame_done) {
+        g_first_frame_done = 1;
+        alroot_on_first_frame();
+    }
+    return failed ? VKP_FRAME_FAILED : VKP_FRAME_COMPLETE;
+}
+
+enum vkp_frame_poll_result vkp_frame_poll(void) {
+    if (!g_frame.pending) return VKP_FRAME_IDLE;
+    g_perf.async_polls++;
+    if (g_dev_state == -2 || g_frame.completion_broken) return VKP_FRAME_FAILED;
+    if (g_frame.exported) {
+        /* SYNC_FD export has copy transference: it RESET the native fence.
+         * Never query or wait that new empty payload for this generation. */
+        if (g_frame.completion_fd < 0) return frame_retire();
+        struct pollfd p = {.fd = g_frame.completion_fd, .events = POLLIN};
+        int result;
+        S47_COUNT(completion_fd_polls);
+        do { result = poll(&p, 1, 0); } while (result < 0 && errno == EINTR);
+        if (!result) return VKP_FRAME_PENDING;
+        S47_COUNT(completion_fd_queries);
+        int status = result > 0 && !(p.revents & POLLNVAL) ? sync_fd_status(p.fd) : -1;
+        if (!status) return VKP_FRAME_PENDING;
+        if (status < 0) {
+            S47_COUNT(completion_errors);
+            g_frame.failed = g_frame.completion_broken = 1;
+            return VKP_FRAME_FAILED; /* submitted reads stay pinned */
+        }
+        return frame_retire();
+    }
+    if (!g_vk.GetFenceStatus) return VKP_FRAME_FAILED;
+    S47_COUNT(native_fence_polls);
+    VkResult result = g_vk.GetFenceStatus(g_dev, g_fence);
+    if (result == VK_NOT_READY) return VKP_FRAME_PENDING;
+    if (result != VK_SUCCESS) {
+        S47_COUNT(completion_errors);
+        g_frame.failed = 1;
+        if (result == VK_ERROR_DEVICE_LOST) device_lost("frame retirement");
+        /* Do not pretend a failed status query completed submitted reads. */
+        return VKP_FRAME_FAILED;
+    }
+    return frame_retire();
+}
+
+/* The fence-bearing submission must already have succeeded. On timeout the
+ * work remains pinned and blocks command reuse until the event loop retires
+ * it. A failed/pending frame must not generate presentation callbacks. */
+static int finish_gpu_work(uint64_t timeout, int async, int failed, int drawn, int base_black) {
+    g_frame.pending = 1;
+    g_frame.failed = failed;
+    g_frame.async = async;
+    g_frame.drawn = drawn;
+    g_frame.base_black = base_black;
+    g_frame.started_ns = perf_now();
+    g_frame.exported = g_frame.completion_broken = 0;
+    g_frame.completion_fd = -1;
+    g_frame.sources_submitted = async && !failed && g_sources.waits_counted && g_sources.image_count > 0;
+    if (async) {
+        g_perf.async_frames++;
+        S47_COUNT(async_submitted);
+        if (g_get_fence_fd && g_dev_state != -2) {
+            const VkFenceGetFdInfoKHR info = {.sType = VK_STRUCTURE_TYPE_FENCE_GET_FD_INFO_KHR,
+                .fence = g_fence, .handleType = VK_EXTERNAL_FENCE_HANDLE_TYPE_SYNC_FD_BIT};
+            int fd = -1;
+            S47_COUNT(export_attempts);
+            VkResult result = g_get_fence_fd(g_dev, &info, &fd);
+            if (result == VK_SUCCESS) {
+                g_frame.exported = 1;
+                g_frame.completion_fd = fd;
+                if (fd >= 0) S47_COUNT(export_fds); else S47_COUNT(export_ready);
+                if (fd < -1 || (fd >= 0 && fcntl(fd, F_SETFD, FD_CLOEXEC) != 0)) {
+                    S47_COUNT(completion_errors);
+                    g_frame.failed = g_frame.completion_broken = 1;
+                }
+            } else {
+                S47_COUNT(export_errors);
+                /* OOM guarantees an unaffected payload; keep the old
+                 * nonblocking VkFence fallback. Unknown errors are not proof
+                 * that export left its payload attached: quarantine them. */
+                if (result != VK_ERROR_OUT_OF_HOST_MEMORY && result != VK_ERROR_OUT_OF_DEVICE_MEMORY)
+                    g_frame.failed = g_frame.completion_broken = 1;
+            }
+        }
+        return g_frame.failed ? -1 : 0;
+    }
+    VkResult result = timed_wait(g_fence, timeout);
+    if (result == VK_SUCCESS) return frame_retire() == VKP_FRAME_COMPLETE ? 0 : -1;
+    g_frame.failed = 1;
+    if (result == VK_ERROR_DEVICE_LOST) device_lost("frame wait");
+    return -1;
 }
 
 static void send_hdr_metadata(const struct alroot_color *c) {
@@ -1849,14 +2351,87 @@ static void send_hdr_metadata(const struct alroot_color *c) {
                c->identity, c->text);
 }
 
+/* Submission failures are exceptional lifecycle drains. Never recycle source
+ * imports or command storage while earlier successful submits may still run. */
+static int render_submit_failed(const char *where, VkResult result, int rebuild) {
+    LOGE("%s: %s", where, vk_result_name(result));
+    if (result != VK_ERROR_DEVICE_LOST) {
+        S47_COUNT(device_idle_calls);
+        S47_COUNT(error_idle_calls);
+    }
+    VkResult idle = result == VK_ERROR_DEVICE_LOST ? result : g_vk.DeviceWaitIdle(g_dev);
+    if (idle == VK_SUCCESS) {
+        source_release_all();
+        if (rebuild) destroy_swapchain();
+    } else {
+        g_frame.pending = g_frame.failed = 1;
+        device_lost(where);
+    }
+    return -1;
+}
+
+/* Source preparation can fail after an image has been acquired. Its binary
+ * acquire semaphore still has to be consumed before either it or the image's
+ * swapchain can be recycled. This exceptional path submits no source reads,
+ * presents no image, and leaves the compositor's original producer FD/use and
+ * callbacks untouched. A successful drain returns the original RETRY/error.
+ *
+ * If submission/wait itself fails, queue-idle alone cannot prove that an
+ * unsubmitted WSI acquire signal was consumed. Quarantine the generation: do
+ * not destroy/reset its synchronization or report a completed host frame. */
+static int discard_acquired_image(int failure) {
+    VkPipelineStageFlags stage = VK_PIPELINE_STAGE_ALL_COMMANDS_BIT;
+    VkSubmitInfo si = {.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO,
+                       .waitSemaphoreCount = 1, .pWaitSemaphores = &g_acqs[0],
+                       .pWaitDstStageMask = &stage};
+    VkResult result = g_vk.ResetFences(g_dev, 1, &g_fence);
+    const char *where = "reset";
+    if (result == VK_SUCCESS) {
+        where = "submit";
+        result = g_vk.QueueSubmit(g_queue, 1, &si, g_fence);
+    }
+    if (result == VK_SUCCESS) {
+        where = "wait";
+        S47_COUNT(cancel_wait_calls);
+        result = timed_wait(g_fence, UINT64_MAX);
+    }
+    if (result != VK_SUCCESS) {
+        memset(&g_frame, 0, sizeof(g_frame));
+        g_frame.pending = g_frame.failed = 1;
+        g_dev_state = -2;
+        g_base_black = 0;
+        alroot_log("error", "acquired-image cancellation %s failed (%s): keeping its synchronization alive; "
+                   "presenting is stopped until the session restarts", where, vk_result_name(result));
+        return -1;
+    }
+    destroy_swapchain();
+    return failure;
+}
+
+static int acquire_scene_sources(const struct vkp_draw *draws, int n, int async,
+                                  uint32_t *img, VkResult *ar) {
+    if (source_preflight(draws, n) != 0 || scene_barrier_reserve((unsigned)n + 1) != 0)
+        return -1;
+    int acquired = acquire_image(0, 1, async ? 0 : 1000000000ULL, img, ar);
+    if (acquired != 0) return acquired;
+    int prepared = source_prepare_preflighted(draws, n);
+    if (prepared != 0) return discard_acquired_image(prepared);
+    return 0;
+}
+
 static int render_impl(int scene_w, int scene_h, const struct vkp_draw *draws, int n,
-                       const struct vkp_hdr_frame *hf, int *how) {
+                       const struct vkp_hdr_frame *hf, int *how, int allow_async) {
     if (how) *how = 0;
+    if (g_frame.pending || g_sources.active) { g_perf.async_retries++; return VKP_RENDER_RETRY; }
     vkp_apply_window_request();
     sc_layer_hide_base();
     check_surface_changed();
     if (g_dev_state == -2) return -1;
     if (dev_init() != 0 || !g_window || scene_w <= 0 || scene_h <= 0) return -1;
+    const int fx = !g_plain_frame && vkp_effects_active();
+    const int fg = !g_plain_frame && vkp_framegen_active();
+    int cb = !g_plain_frame && vkp_cardboard_active();
+    const int async = scene_async_allowed(allow_async, n, hf, fx, fg, cb);
 
     if (g_swapchain && vkp_framegen_extra_images() != g_swap_extra) {
         alroot_log("gpu", "frame generation now wants %d present%s per frame: rebuilding the swapchain",
@@ -1874,16 +2449,14 @@ static int render_impl(int scene_w, int scene_h, const struct vkp_draw *draws, i
 
     uint32_t img = 0;
     VkResult ar;
-    if (acquire_image(0, 1, &img, &ar) != 0) return -1;
+    int acquired = acquire_scene_sources(draws, n, async, &img, &ar);
+    if (acquired != 0) return acquired;
     update_map(scene_w, scene_h);
     if (g_swap_is_hdr && hf && hf->color && hf->color->identity != g_swap_md_identity) {
         g_swap_md_identity = hf->color->identity;
         send_hdr_metadata(hf->color);
     }
 
-    const int fx = !g_plain_frame && vkp_effects_active();
-    const int fg = !g_plain_frame && vkp_framegen_active();
-    int cb = !g_plain_frame && vkp_cardboard_active();
     if (cb && hf) {
         static int said;
         if (!said) { said = 1; alroot_log("cardboard", "HDR frames are shown flat: the cardboard pass is 8-bit only"); }
@@ -1921,9 +2494,10 @@ static int render_impl(int scene_w, int scene_h, const struct vkp_draw *draws, i
     g_vk.BeginCommandBuffer(cmd, &bi);
     blendp_begin_frame();
     record_linear_sources(cmd, draws, n);
+    record_source_acquires(cmd);
     VkImageSubresourceRange range = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1};
 
-    VkImageMemoryBarrier *bars = calloc((size_t)n + 1, sizeof(*bars));
+    VkImageMemoryBarrier *bars = g_scene_barriers;
     int nb = 0;
     bars[nb++] = (VkImageMemoryBarrier){
         .sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER, .oldLayout = VK_IMAGE_LAYOUT_UNDEFINED,
@@ -1937,8 +2511,10 @@ static int render_impl(int scene_w, int scene_h, const struct vkp_draw *draws, i
         for (int j = 0; j < i; j++) if (draws[j].img == im) { seen = 1; break; }
         if (seen || !im) continue;
         if (im->dmabuf) {
+            if (im->explicit_sync) continue; /* acquired above with a separate local layout step */
             bars[nb++] = (VkImageMemoryBarrier){
-                .sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER, .oldLayout = VK_IMAGE_LAYOUT_UNDEFINED,
+                .sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER,
+                .oldLayout = VK_IMAGE_LAYOUT_UNDEFINED,
                 .newLayout = VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
                 .srcQueueFamilyIndex = VK_QUEUE_FAMILY_FOREIGN_EXT, .dstQueueFamilyIndex = g_qfam,
                 .image = im->image, .subresourceRange = range, .dstAccessMask = VK_ACCESS_TRANSFER_READ_BIT};
@@ -1955,8 +2531,6 @@ static int render_impl(int scene_w, int scene_h, const struct vkp_draw *draws, i
     g_vk.CmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_HOST_BIT | VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT |
                                  (pass ? VK_PIPELINE_STAGE_ALL_COMMANDS_BIT : 0),
                             VK_PIPELINE_STAGE_TRANSFER_BIT, 0, 0, NULL, 0, NULL, (uint32_t)nb, bars);
-    free(bars);
-
     VkImage target = pass ? scene_img : g_images[img];
     int covered = 0;
     VkImageBlit cover_blit;
@@ -1998,6 +2572,7 @@ static int render_impl(int scene_w, int scene_h, const struct vkp_draw *draws, i
                     pass ? VK_FILTER_LINEAR : blit_filter);
         drawn++;
     }
+    record_source_releases(cmd);
 
     int ngen = 0;
     VkImage gens[VKP_FG_MAX_GENERATIONS] = {VK_NULL_HANDLE};
@@ -2051,7 +2626,7 @@ static int render_impl(int scene_w, int scene_h, const struct vkp_draw *draws, i
     for (int k = 0; k < presents; k++) {
         if (k > 0) {
             VkResult ark;
-            if (acquire_image(k, 0, &img, &ark) != 0) {
+            if (acquire_image(k, 0, 1000000000ULL, &img, &ark) != 0) {
                 alroot_log("framegen", "present %d/%d: no swapchain image; the frame ends early", k + 1, presents);
                 pr = VK_ERROR_OUT_OF_DATE_KHR;
                 break;
@@ -2064,30 +2639,20 @@ static int render_impl(int scene_w, int scene_h, const struct vkp_draw *draws, i
             g_vk.EndCommandBuffer(ck);
         }
         const int last = (k + 1 == presents);
-        VkSemaphore wait_sems[1 + VKP_MAX_LINEAR_GPU_WAITS];
-        VkPipelineStageFlags wait_stages[1 + VKP_MAX_LINEAR_GPU_WAITS];
-        uint32_t wait_count = 1;
-        wait_sems[0] = g_acqs[k];
-        wait_stages[0] = VK_PIPELINE_STAGE_TRANSFER_BIT;
-        if (k == 0) for (unsigned j = 0; j < g_linear_gpu_wait_count; ++j) {
-            wait_sems[wait_count] = g_linear_gpu_waits[j];
-            wait_stages[wait_count++] = VK_PIPELINE_STAGE_TRANSFER_BIT;
-        }
+        const uint32_t wait_count = source_submit_waits(g_acqs[k], k == 0);
+        VkSemaphore rendered = g_rnds[img];
         VkSubmitInfo si = {.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO,
                            .waitSemaphoreCount = wait_count,
-                           .pWaitSemaphores = wait_sems, .pWaitDstStageMask = wait_stages,
+                           .pWaitSemaphores = g_sources.wait_sems,
+                           .pWaitDstStageMask = g_sources.wait_stages,
                            .commandBufferCount = 1,
-                           .pCommandBuffers = &g_cmds[k], .signalSemaphoreCount = 1, .pSignalSemaphores = &g_rnds[k]};
+                           .pCommandBuffers = &g_cmds[k], .signalSemaphoreCount = 1, .pSignalSemaphores = &rendered};
         VkResult qr = g_vk.QueueSubmit(g_queue, 1, &si, last ? g_fence : VK_NULL_HANDLE);
-        if (qr != VK_SUCCESS) {
-            if (qr == VK_ERROR_DEVICE_LOST) device_lost("submit");
-            else LOGE("present: submit %d/%d failed (%d)", k + 1, presents, (int)qr);
-            if (g_dev_state != -2) destroy_swapchain();
-            return -1;
-        }
+        if (qr != VK_SUCCESS) return render_submit_failed("scene submit", qr, 1);
+        if (k == 0) source_note_submitted();
         fence_submitted = last;
         VkPresentInfoKHR pi = {.sType = VK_STRUCTURE_TYPE_PRESENT_INFO_KHR, .waitSemaphoreCount = 1,
-                               .pWaitSemaphores = &g_rnds[k], .swapchainCount = 1,
+                               .pWaitSemaphores = &rendered, .swapchainCount = 1,
                                .pSwapchains = &g_swapchain, .pImageIndices = &img};
         const int64_t t_pres = perf_now();
         pr = g_vk.QueuePresentKHR(g_queue, &pi);
@@ -2097,35 +2662,27 @@ static int render_impl(int scene_w, int scene_h, const struct vkp_draw *draws, i
     }
     if (!fence_submitted) {
         VkSubmitInfo si = {.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO};
-        g_vk.QueueSubmit(g_queue, 1, &si, g_fence);
+        VkResult qr = g_vk.QueueSubmit(g_queue, 1, &si, g_fence);
+        if (qr != VK_SUCCESS) return render_submit_failed("scene retirement submit", qr, 1);
     }
-    VkResult fr = timed_wait(g_fence, UINT64_MAX);
+    const int failed = pr != VK_SUCCESS && pr != VK_SUBOPTIMAL_KHR;
+    g_frame.rebuild = failed && pr != VK_ERROR_DEVICE_LOST;
+    if (pr == VK_ERROR_DEVICE_LOST) device_lost("present");
+    if (async && n == 0) S47_COUNT(empty_async_frames);
+    int finished = finish_gpu_work(UINT64_MAX, async, failed, drawn,
+                                  (g_plain_frame && n == 0 && !hf) ? 1 : 0);
     if (fg) vkp_framegen_presented(presented_gen);
-    if (fr == VK_ERROR_DEVICE_LOST || pr == VK_ERROR_DEVICE_LOST) { device_lost("present"); return -1; }
-    if (pr == VK_ERROR_OUT_OF_DATE_KHR || pr == VK_ERROR_SURFACE_LOST_KHR) {
-        alroot_log("gpu", "screen surface %s on present: rebuilding the swapchain", vk_result_name(pr));
-        destroy_swapchain();
-        return -1;
-    } else if (pr == VK_SUBOPTIMAL_KHR || ar == VK_SUBOPTIMAL_KHR) {
+    if (finished != 0) return finished;
+    if (pr == VK_SUBOPTIMAL_KHR || ar == VK_SUBOPTIMAL_KHR) {
         static int said;
         if (!said) { said = 1; alroot_log("gpu", "surface reports SUBOPTIMAL (panel rotation); presenting as is"); }
-    } else if (pr != VK_SUCCESS) {
-        alroot_log("error", "present: vkQueuePresentKHR failed (%s %d)", vk_result_name(pr), (int)pr);
-        destroy_swapchain();
-        return -1;
-    }
-
-    g_base_black = (g_plain_frame && n == 0 && !hf) ? 1 : 0;
-
-    if (drawn && !g_first_frame_done) {
-        g_first_frame_done = 1;
-        alroot_on_first_frame();
     }
     if (how) *how = hdr_how;
     return 0;
 }
 
-int vkp_render(int scene_w, int scene_h, const struct vkp_draw *draws, int n) {
+static int render_route(int scene_w, int scene_h, const struct vkp_draw *draws, int n, int allow_async) {
+    if (g_frame.pending || g_sources.active) return VKP_RENDER_RETRY;
     if (vkp_quest_layer_presentation() && !vkp_framegen_active() && !vkp_cardboard_active()) {
         /* The desktop (multiple windows), overlays and an empty scene must also avoid WSI.
          * Merely enabling zero-copy handles only a single fullscreen window and leaves both
@@ -2146,12 +2703,20 @@ int vkp_render(int scene_w, int scene_h, const struct vkp_draw *draws, int n) {
          * must not dismiss the app's loading UI or mark Steam's window as shown. */
         return vkp_base_black(scene_w, scene_h);
     }
-    return render_impl(scene_w, scene_h, draws, n, NULL, NULL);
+    return render_impl(scene_w, scene_h, draws, n, NULL, NULL, allow_async);
+}
+
+int vkp_render(int scene_w, int scene_h, const struct vkp_draw *draws, int n) {
+    return render_route(scene_w, scene_h, draws, n, 1);
+}
+
+int vkp_render_sync(int scene_w, int scene_h, const struct vkp_draw *draws, int n) {
+    return render_route(scene_w, scene_h, draws, n, 0);
 }
 
 int vkp_render_hdr(int scene_w, int scene_h, const struct vkp_draw *draws, int n,
                    const struct vkp_hdr_frame *hf, int *how) {
-    return render_impl(scene_w, scene_h, draws, n, hf, how);
+    return render_impl(scene_w, scene_h, draws, n, hf, how, 0);
 }
 
 
@@ -2178,6 +2743,7 @@ void vkp_signal_first_frame(void) {
 }
 
 int vkp_update_map(int scene_w, int scene_h) {
+    if (g_frame.pending) return VKP_RENDER_RETRY;
     if (g_dev_state == -2 || dev_init() != 0 || !g_window || scene_w <= 0 || scene_h <= 0) return -1;
     if (vkp_quest_layer_presentation()) {
         /* Layer geometry needs the window size, not a Vulkan swapchain. In particular, do
@@ -2211,12 +2777,19 @@ int vkp_map_draw(const struct vkp_draw *d, int out[8]) {
 }
 
 int vkp_blit_image(struct vkp_image *src, struct vkp_image *dst, int wait_fd) {
+    if (g_frame.pending || g_sources.active) return VKP_RENDER_RETRY;
     if (!src || !dst || !dst->blit_dst || g_dev_state == -2 || dev_init() != 0) {
         if (wait_fd >= 0) close(wait_fd);
         return -1;
     }
+    const struct vkp_draw source = {.img = src};
+    if (source_prepare(&source, 1) != 0 || source_hold(dst) != 0) {
+        source_release_all();
+        if (wait_fd >= 0) close(wait_fd);
+        return -1;
+    }
     const int gpu_wait = take_wait_fd(wait_fd);
-    if (gpu_wait < 0) return -1;
+    if (gpu_wait < 0) { source_release_all(); return -1; }
     VkImageSubresourceRange range = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1};
 
     VkCommandBuffer g_cmd = g_cmds[0];
@@ -2226,24 +2799,31 @@ int vkp_blit_image(struct vkp_image *src, struct vkp_image *dst, int wait_fd) {
     g_vk.BeginCommandBuffer(g_cmd, &bi);
     linear_gpu_wait_reset();
     record_linear_buffer_copy(g_cmd, src);
-    VkImageMemoryBarrier acq[2] = {
-        {.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER, .oldLayout = VK_IMAGE_LAYOUT_UNDEFINED,
+    record_source_acquires(g_cmd);
+    VkImageMemoryBarrier acq[2];
+    uint32_t acq_count = 0;
+    if (!src->explicit_sync) {
+        acq[acq_count++] = (VkImageMemoryBarrier){
+         .sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER,
+         .oldLayout = VK_IMAGE_LAYOUT_UNDEFINED,
          .newLayout = VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
          .srcQueueFamilyIndex = src->dmabuf ? VK_QUEUE_FAMILY_FOREIGN_EXT : VK_QUEUE_FAMILY_IGNORED,
          .dstQueueFamilyIndex = src->dmabuf ? g_qfam : VK_QUEUE_FAMILY_IGNORED,
-         .image = src->image, .subresourceRange = range, .dstAccessMask = VK_ACCESS_TRANSFER_READ_BIT},
-        {.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER, .oldLayout = VK_IMAGE_LAYOUT_UNDEFINED,
+         .image = src->image, .subresourceRange = range, .dstAccessMask = VK_ACCESS_TRANSFER_READ_BIT};
+        if (!src->dmabuf) {
+            acq[0].oldLayout = src->in_general ? VK_IMAGE_LAYOUT_GENERAL : VK_IMAGE_LAYOUT_PREINITIALIZED;
+            acq[0].newLayout = VK_IMAGE_LAYOUT_GENERAL;
+            acq[0].srcAccessMask = VK_ACCESS_HOST_WRITE_BIT;
+            src->in_general = 1;
+        }
+    }
+    acq[acq_count++] = (VkImageMemoryBarrier){
+         .sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER, .oldLayout = VK_IMAGE_LAYOUT_UNDEFINED,
          .newLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
          .srcQueueFamilyIndex = VK_QUEUE_FAMILY_FOREIGN_EXT, .dstQueueFamilyIndex = g_qfam,
-         .image = dst->image, .subresourceRange = range, .dstAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT}};
-    if (!src->dmabuf) {
-        acq[0].oldLayout = src->in_general ? VK_IMAGE_LAYOUT_GENERAL : VK_IMAGE_LAYOUT_PREINITIALIZED;
-        acq[0].newLayout = VK_IMAGE_LAYOUT_GENERAL;
-        acq[0].srcAccessMask = VK_ACCESS_HOST_WRITE_BIT;
-        src->in_general = 1;
-    }
+         .image = dst->image, .subresourceRange = range, .dstAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT};
     g_vk.CmdPipelineBarrier(g_cmd, VK_PIPELINE_STAGE_HOST_BIT | VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT,
-                            VK_PIPELINE_STAGE_TRANSFER_BIT, 0, 0, NULL, 0, NULL, 2, acq);
+                            VK_PIPELINE_STAGE_TRANSFER_BIT, 0, 0, NULL, 0, NULL, acq_count, acq);
     int bw = src->w < dst->w ? src->w : dst->w, bh = src->h < dst->h ? src->h : dst->h;
     VkImageBlit blit = {.srcSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1},
                         .srcOffsets = {{0, 0, 0}, {bw, bh, 1}},
@@ -2259,35 +2839,20 @@ int vkp_blit_image(struct vkp_image *src, struct vkp_image *dst, int wait_fd) {
         .srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT};
     g_vk.CmdPipelineBarrier(g_cmd, VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT,
                             0, 0, NULL, 0, NULL, 1, &rel);
+    record_source_releases(g_cmd);
     g_vk.EndCommandBuffer(g_cmd);
 
-    VkSemaphore wait_sems[1 + VKP_MAX_LINEAR_GPU_WAITS];
-    VkPipelineStageFlags wait_stages[1 + VKP_MAX_LINEAR_GPU_WAITS];
-    uint32_t wait_count = 0;
-    if (gpu_wait) {
-        wait_sems[wait_count] = g_wait_sem;
-        wait_stages[wait_count++] = VK_PIPELINE_STAGE_TRANSFER_BIT;
-    }
-    for (unsigned j = 0; j < g_linear_gpu_wait_count; ++j) {
-        wait_sems[wait_count] = g_linear_gpu_waits[j];
-        wait_stages[wait_count++] = VK_PIPELINE_STAGE_TRANSFER_BIT;
-    }
+    const uint32_t wait_count = source_submit_waits(gpu_wait ? g_wait_sem : VK_NULL_HANDLE, 1);
     VkSubmitInfo si = {.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO,
                        .commandBufferCount = 1, .pCommandBuffers = &g_cmd,
                        .waitSemaphoreCount = wait_count,
-                       .pWaitSemaphores = wait_count ? wait_sems : NULL,
-                       .pWaitDstStageMask = wait_count ? wait_stages : NULL};
+                       .pWaitSemaphores = wait_count ? g_sources.wait_sems : NULL,
+                       .pWaitDstStageMask = wait_count ? g_sources.wait_stages : NULL};
     g_vk.ResetFences(g_dev, 1, &g_fence);
     VkResult qr = g_vk.QueueSubmit(g_queue, 1, &si, g_fence);
-    if (qr != VK_SUCCESS) {
-        if (qr == VK_ERROR_DEVICE_LOST) device_lost("layer blit");
-        else LOGE("layer: blit submit failed (%d)", (int)qr);
-        return -1;
-    }
-    VkResult fr = timed_wait(g_fence, 1000000000ULL);
-    if (fr == VK_ERROR_DEVICE_LOST) { device_lost("layer blit"); return -1; }
-    if (fr != VK_SUCCESS) { LOGE("layer: blit fence wait -> %s", vk_result_name(fr)); return -1; }
-    return 0;
+    if (qr != VK_SUCCESS) return render_submit_failed("layer blit", qr, 0);
+    source_note_submitted();
+    return finish_gpu_work(1000000000ULL, 0, 0, 0, g_base_black);
 }
 
 
@@ -2298,6 +2863,7 @@ int vkp_blit_image(struct vkp_image *src, struct vkp_image *dst, int wait_fd) {
 static struct vkp_image *g_rb;
 
 int vkp_image_readback(struct vkp_image *src, uint32_t *out, int max_px) {
+    if (g_frame.pending || g_sources.active) return VKP_RENDER_RETRY;
     if (!src || !out || src->w <= 0 || src->h <= 0 || src->w * src->h > max_px ||
         g_dev_state == -2 || dev_init() != 0)
         return -1;
@@ -2333,6 +2899,10 @@ int vkp_image_readback(struct vkp_image *src, uint32_t *out, int max_px) {
         }
         g_rb = img;
     }
+    const struct vkp_draw source = {.img = src};
+    if (source_prepare(&source, 1) != 0 || source_hold(g_rb) != 0) {
+        source_release_all(); return -1;
+    }
     VkImageSubresourceRange range = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1};
     VkCommandBuffer cmd = g_cmds[0];
     g_vk.ResetCommandBuffer(cmd, 0);
@@ -2341,55 +2911,62 @@ int vkp_image_readback(struct vkp_image *src, uint32_t *out, int max_px) {
     g_vk.BeginCommandBuffer(cmd, &bi);
     linear_gpu_wait_reset();
     record_linear_buffer_copy(cmd, src);
-    VkImageMemoryBarrier acq[2] = {
-        {.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER, .oldLayout = VK_IMAGE_LAYOUT_UNDEFINED,
+    record_source_acquires(cmd);
+    VkImageMemoryBarrier acq[2];
+    uint32_t acq_count = 0;
+    if (!src->explicit_sync) {
+        acq[acq_count++] = (VkImageMemoryBarrier){
+         .sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER,
+         .oldLayout = VK_IMAGE_LAYOUT_UNDEFINED,
          .newLayout = VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
          .srcQueueFamilyIndex = src->dmabuf ? VK_QUEUE_FAMILY_FOREIGN_EXT : VK_QUEUE_FAMILY_IGNORED,
          .dstQueueFamilyIndex = src->dmabuf ? g_qfam : VK_QUEUE_FAMILY_IGNORED,
-         .image = src->image, .subresourceRange = range, .dstAccessMask = VK_ACCESS_TRANSFER_READ_BIT},
-        {.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER, .oldLayout = VK_IMAGE_LAYOUT_UNDEFINED,
+         .image = src->image, .subresourceRange = range, .dstAccessMask = VK_ACCESS_TRANSFER_READ_BIT};
+    }
+    acq[acq_count++] = (VkImageMemoryBarrier){
+         .sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER, .oldLayout = VK_IMAGE_LAYOUT_UNDEFINED,
          .newLayout = VK_IMAGE_LAYOUT_GENERAL, .srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
          .dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED, .image = g_rb->image, .subresourceRange = range,
-         .dstAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT}};
+         .dstAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT};
     g_vk.CmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT,
-                            0, 0, NULL, 0, NULL, 2, acq);
+                            0, 0, NULL, 0, NULL, acq_count, acq);
     VkImageBlit blit = {.srcSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1},
                         .srcOffsets = {{0, 0, 0}, {src->w, src->h, 1}},
                         .dstSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1},
                         .dstOffsets = {{0, 0, 0}, {src->w, src->h, 1}}};
     g_vk.CmdBlitImage(cmd, src->image, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
                       g_rb->image, VK_IMAGE_LAYOUT_GENERAL, 1, &blit, VK_FILTER_NEAREST);
-    VkImageMemoryBarrier done[2] = {
-        {.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER, .oldLayout = VK_IMAGE_LAYOUT_GENERAL,
+    VkImageMemoryBarrier done[2];
+    uint32_t done_count = 0;
+    done[done_count++] = (VkImageMemoryBarrier){
+         .sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER, .oldLayout = VK_IMAGE_LAYOUT_GENERAL,
          .newLayout = VK_IMAGE_LAYOUT_GENERAL, .srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
          .dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED, .image = g_rb->image, .subresourceRange = range,
-         .srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT, .dstAccessMask = VK_ACCESS_HOST_READ_BIT},
-        {.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER, .oldLayout = VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
+         .srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT, .dstAccessMask = VK_ACCESS_HOST_READ_BIT};
+    if (!src->explicit_sync) {
+        done[done_count++] = (VkImageMemoryBarrier){
+         .sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER, .oldLayout = VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
          .newLayout = VK_IMAGE_LAYOUT_GENERAL,
          .srcQueueFamilyIndex = src->dmabuf ? g_qfam : VK_QUEUE_FAMILY_IGNORED,
          .dstQueueFamilyIndex = src->dmabuf ? VK_QUEUE_FAMILY_FOREIGN_EXT : VK_QUEUE_FAMILY_IGNORED,
-         .image = src->image, .subresourceRange = range, .srcAccessMask = VK_ACCESS_TRANSFER_READ_BIT}};
+         .image = src->image, .subresourceRange = range, .srcAccessMask = VK_ACCESS_TRANSFER_READ_BIT};
+    }
     g_vk.CmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_TRANSFER_BIT,
                             VK_PIPELINE_STAGE_HOST_BIT | VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT,
-                            0, 0, NULL, 0, NULL, 2, done);
+                            0, 0, NULL, 0, NULL, done_count, done);
+    record_source_releases(cmd);
     g_vk.EndCommandBuffer(cmd);
-    VkPipelineStageFlags sync_stages[VKP_MAX_LINEAR_GPU_WAITS];
-    for (unsigned j = 0; j < g_linear_gpu_wait_count; ++j)
-        sync_stages[j] = VK_PIPELINE_STAGE_TRANSFER_BIT;
+    const uint32_t wait_count = source_submit_waits(VK_NULL_HANDLE, 1);
     VkSubmitInfo si = {.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO,
         .commandBufferCount = 1, .pCommandBuffers = &cmd,
-        .waitSemaphoreCount = g_linear_gpu_wait_count,
-        .pWaitSemaphores = g_linear_gpu_wait_count ? g_linear_gpu_waits : NULL,
-        .pWaitDstStageMask = g_linear_gpu_wait_count ? sync_stages : NULL};
+        .waitSemaphoreCount = wait_count,
+        .pWaitSemaphores = wait_count ? g_sources.wait_sems : NULL,
+        .pWaitDstStageMask = wait_count ? g_sources.wait_stages : NULL};
     g_vk.ResetFences(g_dev, 1, &g_fence);
     VkResult qr = g_vk.QueueSubmit(g_queue, 1, &si, g_fence);
-    if (qr != VK_SUCCESS) {
-        if (qr == VK_ERROR_DEVICE_LOST) device_lost("cursor readback");
-        return -1;
-    }
-    VkResult fr = timed_wait(g_fence, 1000000000ULL);
-    if (fr == VK_ERROR_DEVICE_LOST) { device_lost("cursor readback"); return -1; }
-    if (fr != VK_SUCCESS) return -1;
+    if (qr != VK_SUCCESS) return render_submit_failed("cursor readback", qr, 0);
+    source_note_submitted();
+    if (finish_gpu_work(1000000000ULL, 0, 0, 0, g_base_black) != 0) return -1;
     for (int y = 0; y < src->h; y++)
         memcpy(out + (size_t)y * src->w, (const uint8_t *)g_rb->map + g_rb->offset + (size_t)y * g_rb->row_pitch,
                (size_t)src->w * 4);
@@ -2418,6 +2995,7 @@ int vkp_pass_begin_hdr(int scene_w, int scene_h, const struct vkp_draw *draws, i
 
 static int pass_begin_impl(int scene_w, int scene_h, const struct vkp_draw *draws, int n,
                            const struct vkp_hdr_frame *hf, int *rw, int *rh) {
+    if (g_frame.pending || (g_sources.active && !g_pass.active)) return VKP_RENDER_RETRY;
     if (g_pass.active) vkp_pass_abort();
     if (vkp_update_map(scene_w, scene_h) != 0) return -1;
     if (hf) {
@@ -2427,6 +3005,8 @@ static int pass_begin_impl(int scene_w, int scene_h, const struct vkp_draw *draw
                        "HDR composition (picture)") != 0)
             return -1;
     } else if (ensure_scene_image(scene_w, scene_h) != 0) return -1;
+    int prepared = source_prepare(draws, n);
+    if (prepared != 0) return prepared;
 
     VkCommandBuffer cmd = g_cmds[0];
     g_vk.ResetCommandBuffer(cmd, 0);
@@ -2435,10 +3015,11 @@ static int pass_begin_impl(int scene_w, int scene_h, const struct vkp_draw *draw
     g_vk.BeginCommandBuffer(cmd, &bi);
     blendp_begin_frame();
     record_linear_sources(cmd, draws, n);
+    record_source_acquires(cmd);
     VkImageSubresourceRange range = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1};
 
     VkImageMemoryBarrier *bars = calloc((size_t)n + 1, sizeof(*bars));
-    if (!bars) { g_vk.EndCommandBuffer(cmd); return -1; }
+    if (!bars) { g_vk.EndCommandBuffer(cmd); source_release_all(); return -1; }
     int nb = 0;
     VkImage scene_img = hf ? g_hdrscene.img : g_scene.img;
     bars[nb++] = (VkImageMemoryBarrier){
@@ -2452,8 +3033,10 @@ static int pass_begin_impl(int scene_w, int scene_h, const struct vkp_draw *draw
         for (int j = 0; j < i; j++) if (draws[j].img == im) { seen = 1; break; }
         if (seen || !im) continue;
         if (im->dmabuf) {
+            if (im->explicit_sync) continue; /* acquired above with a separate local layout step */
             bars[nb++] = (VkImageMemoryBarrier){
-                .sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER, .oldLayout = VK_IMAGE_LAYOUT_UNDEFINED,
+                .sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER,
+                .oldLayout = VK_IMAGE_LAYOUT_UNDEFINED,
                 .newLayout = VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
                 .srcQueueFamilyIndex = VK_QUEUE_FAMILY_FOREIGN_EXT, .dstQueueFamilyIndex = g_qfam,
                 .image = im->image, .subresourceRange = range, .dstAccessMask = VK_ACCESS_TRANSFER_READ_BIT};
@@ -2476,6 +3059,7 @@ static int pass_begin_impl(int scene_w, int scene_h, const struct vkp_draw *draw
         if (compose_hdr(cmd, draws, n, hf, scene_w, scene_h, g_hdrscene.img, HDR_FMT,
                         hf->tonemap ? HDRC_OUT_SDR : HDRC_OUT_PQ) != 0) {
             g_vk.EndCommandBuffer(cmd);
+            source_release_all();
             return -1;
         }
         if (vkp_effects_active()) vkp_effects_set_formats(HDR_FMT, HDR_FMT);
@@ -2495,6 +3079,7 @@ static int pass_begin_impl(int scene_w, int scene_h, const struct vkp_draw *draw
         }
         if (vkp_effects_active()) vkp_effects_set_formats(VK_FORMAT_R8G8B8A8_UNORM, VK_FORMAT_R8G8B8A8_UNORM);
     }
+    record_source_releases(cmd);
 
     int mapped_w = (int)(scene_w * g_map.kx + 0.5f), mapped_h = (int)(scene_h * g_map.ky + 0.5f);
     g_pass.rw = scene_w; g_pass.rh = scene_h;
@@ -2507,16 +3092,18 @@ static int pass_begin_impl(int scene_w, int scene_h, const struct vkp_draw *draw
 }
 
 int vkp_pass_copy_to(struct vkp_image *dst, int wait_fd) {
+    if (g_frame.pending) return VKP_RENDER_RETRY;
     if (!g_pass.active) { if (wait_fd >= 0) close(wait_fd); return -1; }
     g_pass.active = 0;
     VkCommandBuffer cmd = g_cmds[0];
-    if (!dst || !dst->blit_dst || g_dev_state == -2) {
+    if (!dst || !dst->blit_dst || g_dev_state == -2 || source_hold(dst) != 0) {
         if (wait_fd >= 0) close(wait_fd);
         g_vk.EndCommandBuffer(cmd);
+        source_release_all();
         return -1;
     }
     const int gpu_wait = take_wait_fd(wait_fd);
-    if (gpu_wait < 0) { g_vk.EndCommandBuffer(cmd); return -1; }
+    if (gpu_wait < 0) { g_vk.EndCommandBuffer(cmd); source_release_all(); return -1; }
     VkImageSubresourceRange range = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1};
 
     VkImageMemoryBarrier acq = {
@@ -2542,37 +3129,22 @@ int vkp_pass_copy_to(struct vkp_image *dst, int wait_fd) {
                             0, 0, NULL, 0, NULL, 1, &rel);
     g_vk.EndCommandBuffer(cmd);
 
-    VkSemaphore wait_sems[1 + VKP_MAX_LINEAR_GPU_WAITS];
-    VkPipelineStageFlags wait_stages[1 + VKP_MAX_LINEAR_GPU_WAITS];
-    uint32_t wait_count = 0;
-    if (gpu_wait) {
-        wait_sems[wait_count] = g_wait_sem;
-        wait_stages[wait_count++] = VK_PIPELINE_STAGE_TRANSFER_BIT;
-    }
-    for (unsigned j = 0; j < g_linear_gpu_wait_count; ++j) {
-        wait_sems[wait_count] = g_linear_gpu_waits[j];
-        wait_stages[wait_count++] = VK_PIPELINE_STAGE_TRANSFER_BIT;
-    }
+    const uint32_t wait_count = source_submit_waits(gpu_wait ? g_wait_sem : VK_NULL_HANDLE, 1);
     VkSubmitInfo si = {.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO,
                        .commandBufferCount = 1, .pCommandBuffers = &cmd,
                        .waitSemaphoreCount = wait_count,
-                       .pWaitSemaphores = wait_count ? wait_sems : NULL,
-                       .pWaitDstStageMask = wait_count ? wait_stages : NULL};
+                       .pWaitSemaphores = wait_count ? g_sources.wait_sems : NULL,
+                       .pWaitDstStageMask = wait_count ? g_sources.wait_stages : NULL};
     g_vk.ResetFences(g_dev, 1, &g_fence);
     VkResult qr = g_vk.QueueSubmit(g_queue, 1, &si, g_fence);
-    if (qr != VK_SUCCESS) {
-        if (qr == VK_ERROR_DEVICE_LOST) device_lost("layer pass");
-        else LOGE("layer: effects pass submit failed (%d)", (int)qr);
-        return -1;
-    }
-    VkResult fr = timed_wait(g_fence, 1000000000ULL);
-    if (fr == VK_ERROR_DEVICE_LOST) { device_lost("layer pass"); return -1; }
-    if (fr != VK_SUCCESS) { LOGE("layer: effects pass fence wait -> %s", vk_result_name(fr)); return -1; }
-    return 0;
+    if (qr != VK_SUCCESS) return render_submit_failed("layer pass", qr, 0);
+    source_note_submitted();
+    return finish_gpu_work(1000000000ULL, 0, 0, 0, g_base_black);
 }
 
 void vkp_pass_abort(void) {
-    if (!g_pass.active) return;
+    if (g_frame.pending || !g_pass.active) return;
     g_pass.active = 0;
     g_vk.EndCommandBuffer(g_cmds[0]);
+    source_release_all();
 }

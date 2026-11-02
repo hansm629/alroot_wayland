@@ -45,6 +45,7 @@ public final class MainActivity extends Activity implements SurfaceHolder.Callba
     private final Handler main = new Handler(Looper.getMainLooper());
     private InputSurfaceView view;
     private DisplayTiming displayTiming;
+    private TermuxVisibilityBinding termuxVisibility;
     private CursorOverlay cursorOverlay;
     private LinearLayout overlayRoot;
     private Button menuHandle;
@@ -172,6 +173,7 @@ public final class MainActivity extends Activity implements SurfaceHolder.Callba
 
     @Override public void onCreate(Bundle state) {
         super.onCreate(state);
+        termuxVisibility = new TermuxVisibilityBinding(this);
         view = new InputSurfaceView(this);
         view.getHolder().addCallback(this);
         FrameLayout root = new FrameLayout(this);
@@ -275,8 +277,35 @@ public final class MainActivity extends Activity implements SurfaceHolder.Callba
         }, 200);
     }
 
+    @Override protected void onStart() {
+        super.onStart();
+        if (termuxVisibility != null) termuxVisibility.started();
+    }
+
+    @Override protected void onStop() {
+        if (termuxVisibility != null) termuxVisibility.stopped();
+        super.onStop();
+    }
+
+    @Override protected void onPause() {
+        if (termuxVisibility != null) termuxVisibility.resumed(false);
+        super.onPause();
+    }
+
+    @android.annotation.TargetApi(29)
+    @Override public void onTopResumedActivityChanged(boolean isTopResumedActivity) {
+        super.onTopResumedActivityChanged(isTopResumedActivity);
+        if (termuxVisibility != null) termuxVisibility.topResumed(isTopResumedActivity);
+    }
+
+    @Override protected void onNewIntent(Intent intent) {
+        super.onNewIntent(intent);
+        if (termuxVisibility != null) termuxVisibility.note("new_intent");
+    }
+
     @Override protected void onResume() {
         super.onResume();
+        if (termuxVisibility != null) termuxVisibility.resumed(true);
         // Pick up a changed XFCE cursor theme when the helper is reopened,
         // without changing pointer position, capture, input or session state.
         if (cursorOverlay != null) cursorOverlay.refreshXfceStartupCursor();
@@ -530,6 +559,7 @@ public final class MainActivity extends Activity implements SurfaceHolder.Callba
 
     @Override protected void onUserLeaveHint() {
         super.onUserLeaveHint();
+        if (termuxVisibility != null) termuxVisibility.note("user_leave_hint");
         // Android 12+ honors PictureInPictureParams.setAutoEnterEnabled.
         // Pre-S (API 26-30) must explicitly enter when Home is pressed.
         if (Build.VERSION.SDK_INT < 31 && !pipTransitionInProgress &&
@@ -560,6 +590,7 @@ public final class MainActivity extends Activity implements SurfaceHolder.Callba
         if (cursorOverlay != null) cursorOverlay.invalidate();
         android.util.Log.i("AlrootWayland", "PiP changed active=" + inPictureInPictureMode
                 + " compositor service retained=" + HelperService.running);
+        if (termuxVisibility != null) termuxVisibility.note("pip_changed");
     }
 
     private android.content.SharedPreferences prefs() {
@@ -661,6 +692,7 @@ public final class MainActivity extends Activity implements SurfaceHolder.Callba
         attached = holder.getSurface();
         if (displayTiming != null) displayTiming.configureSurface(attached);
         attachIfReady();
+        if (termuxVisibility != null) termuxVisibility.note("surface_created");
     }
 
     @Override public void surfaceChanged(SurfaceHolder holder, int format, int w, int h) {
@@ -671,10 +703,14 @@ public final class MainActivity extends Activity implements SurfaceHolder.Callba
         }
         attachIfReady();
         applyScale();
+        if (termuxVisibility != null) termuxVisibility.note("surface_changed");
     }
 
     private void attachIfReady() {
-        if (attached == null || !attached.isValid() || !HelperService.running) return;
+        if (attached == null || !attached.isValid() || !HelperService.running) {
+            if (termuxVisibility != null) termuxVisibility.display(false, HelperService.running);
+            return;
+        }
         if (activeSurface != attached) {
             WaylandCompositor.nativeSetSurface(attached);
             activeSurface = attached;
@@ -688,11 +724,14 @@ public final class MainActivity extends Activity implements SurfaceHolder.Callba
             vsyncOn = true;
             Choreographer.getInstance().postFrameCallback(vsync);
         }
+        if (termuxVisibility != null) termuxVisibility.display(true, HelperService.running);
     }
 
     @Override public void surfaceDestroyed(SurfaceHolder holder) {
         detach();
         attached = null;
+        if (termuxVisibility != null) termuxVisibility.display(false, HelperService.running);
+        if (termuxVisibility != null) termuxVisibility.note("surface_destroyed");
     }
 
     private void detach() {
@@ -708,6 +747,7 @@ public final class MainActivity extends Activity implements SurfaceHolder.Callba
 
     @Override public void onWindowFocusChanged(boolean hasFocus) {
         super.onWindowFocusChanged(hasFocus);
+        if (termuxVisibility != null) termuxVisibility.focus(hasFocus);
         if (hasFocus && prefs().getBoolean("fullscreen", true))
             restoreWindowSettings();
         if (!hasFocus && view != null) {
@@ -722,6 +762,7 @@ public final class MainActivity extends Activity implements SurfaceHolder.Callba
     }
 
     @Override protected void onDestroy() {
+        if (termuxVisibility != null) termuxVisibility.close();
         if (displayTiming != null) displayTiming.close();
         main.removeCallbacks(cursorPoll);
         main.removeCallbacks(clipboardPoll);

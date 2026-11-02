@@ -35,6 +35,7 @@ extern "C" {
  */
 struct alroot_gpu_buffer_v1;
 struct wl_buffer;
+struct wl_surface;
 
 #ifndef ALROOT_GPU_BUFFER_V1_INTERFACE
 #define ALROOT_GPU_BUFFER_V1_INTERFACE
@@ -59,7 +60,11 @@ struct wl_buffer;
  * tested that its Android gralloc and Vulkan driver can import it.
  * A version-2 global is never advertised without that runtime test.
  * This does not change the legacy version-1 create_buffer contract.
- * Explicit synchronization requires a future version.
+ * Version 3 adds per-commit producer readiness. It is advertised only
+ * when version-2 format support and Vulkan GPU sync_file import are both
+ * available. Storage with explicit readiness is externally owned in
+ * GENERAL layout; the compositor acquires it from FOREIGN, and returns
+ * it to FOREIGN/GENERAL before allowing reuse.
  * @section page_iface_alroot_gpu_buffer_v1_api API
  * See @ref iface_alroot_gpu_buffer_v1.
  */
@@ -83,7 +88,11 @@ struct wl_buffer;
  * tested that its Android gralloc and Vulkan driver can import it.
  * A version-2 global is never advertised without that runtime test.
  * This does not change the legacy version-1 create_buffer contract.
- * Explicit synchronization requires a future version.
+ * Version 3 adds per-commit producer readiness. It is advertised only
+ * when version-2 format support and Vulkan GPU sync_file import are both
+ * available. Storage with explicit readiness is externally owned in
+ * GENERAL layout; the compositor acquires it from FOREIGN, and returns
+ * it to FOREIGN/GENERAL before allowing reuse.
  */
 extern const struct wl_interface alroot_gpu_buffer_v1_interface;
 #endif
@@ -113,12 +122,18 @@ enum alroot_gpu_buffer_v1_error {
 	 * AHB lacks GPU sampling or RGBA8
 	 */
 	ALROOT_GPU_BUFFER_V1_ERROR_UNSUPPORTED_FORMAT = 1,
+	/**
+	 * invalid acquire sync_file, surface, or commit state
+	 */
+	ALROOT_GPU_BUFFER_V1_ERROR_INVALID_SYNC = 2,
 };
 #endif /* ALROOT_GPU_BUFFER_V1_ERROR_ENUM */
 
 #define ALROOT_GPU_BUFFER_V1_DESTROY 0
 #define ALROOT_GPU_BUFFER_V1_CREATE_BUFFER 1
 #define ALROOT_GPU_BUFFER_V1_CREATE_BUFFER_WITH_FORMAT 2
+#define ALROOT_GPU_BUFFER_V1_SET_ACQUIRE_FENCE 3
+#define ALROOT_GPU_BUFFER_V1_SET_ACQUIRE_READY 4
 
 
 /**
@@ -133,6 +148,14 @@ enum alroot_gpu_buffer_v1_error {
  * @ingroup iface_alroot_gpu_buffer_v1
  */
 #define ALROOT_GPU_BUFFER_V1_CREATE_BUFFER_WITH_FORMAT_SINCE_VERSION 2
+/**
+ * @ingroup iface_alroot_gpu_buffer_v1
+ */
+#define ALROOT_GPU_BUFFER_V1_SET_ACQUIRE_FENCE_SINCE_VERSION 3
+/**
+ * @ingroup iface_alroot_gpu_buffer_v1
+ */
+#define ALROOT_GPU_BUFFER_V1_SET_ACQUIRE_READY_SINCE_VERSION 3
 
 /** @ingroup iface_alroot_gpu_buffer_v1 */
 static inline void
@@ -201,6 +224,44 @@ alroot_gpu_buffer_v1_create_buffer_with_format(struct alroot_gpu_buffer_v1 *alro
 			 ALROOT_GPU_BUFFER_V1_CREATE_BUFFER_WITH_FORMAT, &wl_buffer_interface, wl_proxy_get_version((struct wl_proxy *) alroot_gpu_buffer_v1), 0, NULL, socket, width, height, format);
 
 	return (struct wl_buffer *) id;
+}
+
+/**
+ * @ingroup iface_alroot_gpu_buffer_v1
+ *
+ * The fence applies only to the next wl_surface.commit, which must
+ * newly attach the specified native AHB wl_buffer. The producer must
+ * release its writes and storage to external GENERAL ownership before
+ * signalling this sync_file. The compositor waits on the GPU before
+ * accessing it. Replacing uncommitted readiness closes the prior FD.
+ * A commit without a new attachment keeps its existing dependency.
+ * wl_buffer.release is withheld until all committed producer work and
+ * all compositor reads have completed, including discarded commits.
+ * The server owns the received FD. Clients close their local FD after
+ * marshalling. A signalled-export value of -1 is not a Wayland FD;
+ * use set_acquire_ready instead. No readiness request retains the
+ * legacy producer-completed contract for a newly attached buffer.
+ */
+static inline void
+alroot_gpu_buffer_v1_set_acquire_fence(struct alroot_gpu_buffer_v1 *alroot_gpu_buffer_v1, struct wl_surface *surface, struct wl_buffer *buffer, int32_t fd)
+{
+	wl_proxy_marshal_flags((struct wl_proxy *) alroot_gpu_buffer_v1,
+			 ALROOT_GPU_BUFFER_V1_SET_ACQUIRE_FENCE, NULL, wl_proxy_get_version((struct wl_proxy *) alroot_gpu_buffer_v1), 0, surface, buffer, fd);
+}
+
+/**
+ * @ingroup iface_alroot_gpu_buffer_v1
+ *
+ * Same next-commit and buffer-identity contract as set_acquire_fence,
+ * with producer completion already established. Storage still uses
+ * the external FOREIGN/GENERAL ownership contract. This also covers
+ * a successful Vulkan SYNC_FD export returning the signalled value -1.
+ */
+static inline void
+alroot_gpu_buffer_v1_set_acquire_ready(struct alroot_gpu_buffer_v1 *alroot_gpu_buffer_v1, struct wl_surface *surface, struct wl_buffer *buffer)
+{
+	wl_proxy_marshal_flags((struct wl_proxy *) alroot_gpu_buffer_v1,
+			 ALROOT_GPU_BUFFER_V1_SET_ACQUIRE_READY, NULL, wl_proxy_get_version((struct wl_proxy *) alroot_gpu_buffer_v1), 0, surface, buffer);
 }
 
 #ifdef  __cplusplus

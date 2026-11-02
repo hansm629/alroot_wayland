@@ -13,6 +13,8 @@
 #include <errno.h>
 #include <poll.h>
 #include <sys/timerfd.h>
+#include <sys/ioctl.h>
+#include <linux/sync_file.h>
 #include <sys/syscall.h>
 #include <sys/sysmacros.h>
 #include <android/log.h>
@@ -20,6 +22,7 @@
 #include <wayland-server.h>
 
 #include "xdg-shell-server-protocol.h"
+#include "alroot-gpu-buffer-v1-server-protocol.h"
 #include "linux-dmabuf-v1-server-protocol.h"
 #include "sc_layer.h"
 #include "ahb_swapchain.h"
@@ -194,6 +197,7 @@ enum surface_role { ROLE_NONE, ROLE_TOPLEVEL, ROLE_SUBSURFACE, ROLE_DESKTOP, ROL
 #define DAMAGE_RECTS 8
 struct damage_list { int32_t r[DAMAGE_RECTS][4]; int n; };
 
+struct s45_use;
 struct surface {
     struct wl_resource *resource;
     struct wl_list link;
@@ -201,6 +205,10 @@ struct surface {
     struct wl_resource *pending_buffer;
     struct wl_listener pending_buffer_destroy;
     int pending_attach;
+    int pending_s45_set, pending_s45_fd;
+    struct wl_resource *pending_s45_buffer;
+    struct wl_listener pending_s45_destroy;
+    struct s45_use *gpu_use;
     int pending_src_set, pending_dst_set;
     float pending_src[4];
     int pending_dst[2];
@@ -255,6 +263,57 @@ struct surface {
     uint32_t hdr_fmt_logged;
 };
 
+struct s45_use {
+    struct wl_list link;
+    struct dmabuf_buffer *buffer;
+    struct wl_resource *resource;
+    struct wl_listener destroy;
+    struct surface *owner;
+    uint64_t serial;
+    int fd, producer_done, external, retired, paced;
+    unsigned frame_refs;
+    int frame_proven, watch_fallback;
+    struct wl_event_source *producer_source;
+    int64_t since_ns;
+};
+static struct wl_list g_s45_uses, g_s45_free_uses;
+static struct wl_event_source *g_s45_timer;
+static int g_s45_timer_armed;
+static int g_s45_protocol_dirty;
+static struct wl_event_source *g_s47_frame_source, *g_s47_progress_idle;
+static int g_s47_frame_fd = -1, g_s47_frame_fallback, g_s47_frame_terminal;
+static struct {
+    uint64_t frame_watch_adds, frame_watch_callbacks, frame_watch_removes;
+    uint64_t producer_queries, producer_validation_queries, producer_terminal_queries;
+    uint64_t producer_ready_elisions, producer_gpu_proofs;
+    uint64_t producer_watch_adds, producer_watch_callbacks, producer_watch_removes;
+    uint64_t timer_arms, timer_callbacks, progress_idles, watch_errors;
+} g_s47;
+#define S47_HOST_COUNT(field) do { if (vkp_s47_profile_enabled()) g_s47.field++; } while (0)
+static struct {
+    uint64_t next_serial, commits, explicit_commits, releases, invalid_fences;
+    unsigned live, peak, cached, retired;
+} g_s45;
+static struct {
+    int active, successful, copy, hud;
+    int64_t stamp;
+    struct wl_list frames, feedback;
+    struct s45_use **uses;
+    size_t count, capacity;
+} g_s45_frame;
+static void s45_pending_clear(struct surface *s);
+static int s45_latch_pending(struct surface *s, struct wl_client *client, int *fd, int *external);
+static struct s45_use *s45_use_create(struct surface *s, struct dmabuf_buffer *b,
+                                    struct wl_resource *buffer, int fd, int external);
+static int s45_use_ready(struct s45_use *use);
+static void s45_use_activate(struct surface *s, struct s45_use *use);
+static int s45_drop_buffer(struct surface *s, struct dmabuf_buffer *b,
+                          struct wl_resource *buffer, int paced);
+static void s45_release_idle(struct surface *s, struct wl_resource *buffer);
+static void s45_forget_surface(struct surface *s);
+static void s45_arm(void);
+static int s45_on_timer(void *data);
+static void s47_emit_stats(const char *line);
 static struct wl_list g_surfaces;
 static struct wl_list g_toplevels;
 static struct surface *g_desktop;
@@ -385,7 +444,9 @@ static int on_release_timer(int fd, uint32_t mask, void *data) {
     return 0;
 }
 
-static void release_buffer(struct surface *s, struct wl_resource *buffer, int64_t since_ns) {
+/* Return whether this call emitted a protocol event now (a paced enqueue does
+ * not). S45's completion poll can then avoid flushing when it emitted nothing. */
+static int release_buffer(struct surface *s, struct wl_resource *buffer, int64_t since_ns) {
     const int limit = g_fps_limit;
     /* Automatic desktop pacing follows the advertised physical display
      * rate. Measuring a heavily loaded compositor's event-loop wakeups
@@ -395,7 +456,7 @@ static void release_buffer(struct surface *s, struct wl_resource *buffer, int64_
     const int64_t display_interval = mhz >= 30000 && mhz <= 240000
         ? 1000000000000LL / (int64_t)mhz : g_refresh_ns;
     const int64_t interval = limit > 0 ? 1000000000LL / limit : display_interval;
-    if (g_release_unpaced || interval <= 0 || g_release_timer_fd < 0) { wl_buffer_send_release(buffer); perf_note_release(since_ns); return; }
+    if (g_release_unpaced || interval <= 0 || g_release_timer_fd < 0) { wl_buffer_send_release(buffer); perf_note_release(since_ns); return 1; }
     int64_t now = now_ns();
     int capped = 0;
     const int64_t at = alroot_release_deadline_ns(now, s->next_release_ns,
@@ -404,7 +465,7 @@ static void release_buffer(struct surface *s, struct wl_resource *buffer, int64_
     if (capped && limit == 0) g_perf.auto_release_capped++;
     s->next_release_ns = at;
     struct pending_release *pr = calloc(1, sizeof(*pr));
-    if (!pr) { wl_buffer_send_release(buffer); perf_note_release(since_ns); return; }
+    if (!pr) { wl_buffer_send_release(buffer); perf_note_release(since_ns); return 1; }
     pr->buffer = buffer;
     pr->surface = s;
     pr->at_ns = at;
@@ -416,6 +477,7 @@ static void release_buffer(struct surface *s, struct wl_resource *buffer, int64_
     if ((unsigned)s->releases_pending > g_perf.release_max_pending)
         g_perf.release_max_pending = (unsigned)s->releases_pending;
     arm_release_timer();
+    return 0;
 }
 
 
@@ -622,12 +684,14 @@ static void unmap_toplevel(struct surface *s) {
 static void drop_dmabuf(struct surface *s, int paced) {
     if (s->dmabuf) {
         wl_list_remove(&s->dmabuf_destroy.link);
-        if (!ahb_swapchain_defer_release(s->dmabuf_buf, s->dmabuf, s, paced)) {
+        if (!s45_drop_buffer(s, s->dmabuf_buf, s->dmabuf, paced) &&
+            !ahb_swapchain_defer_release(s->dmabuf_buf, s->dmabuf, s, paced)) {
             if (paced) release_buffer(s, s->dmabuf, now_ns());
             else wl_buffer_send_release(s->dmabuf);
         }
         s->dmabuf = NULL;
     }
+    if (s->dmabuf_buf) s45_drop_buffer(s, s->dmabuf_buf, s->dmabuf, paced);
     dmabuf_buffer_unref(s->dmabuf_buf);
     s->dmabuf_buf = NULL;
 }
@@ -723,7 +787,8 @@ static void take_shm(struct surface *s, struct wl_shm_buffer *shm, struct wl_res
     int32_t w = wl_shm_buffer_get_width(shm), h = wl_shm_buffer_get_height(shm);
     int32_t stride = wl_shm_buffer_get_stride(shm);
 
-    if (s->shm_img && (vkp_image_width(s->shm_img) != w || vkp_image_height(s->shm_img) != h)) {
+    if (s->shm_img && (vkp_image_busy(s->shm_img) ||
+        vkp_image_width(s->shm_img) != w || vkp_image_height(s->shm_img) != h)) {
         vkp_image_destroy(s->shm_img);
         s->shm_img = NULL;
     }
@@ -771,7 +836,8 @@ static void take_shm(struct surface *s, struct wl_shm_buffer *shm, struct wl_res
 }
 
 static void take_pixel(struct surface *s, const uint8_t bgra[4], struct wl_resource *buffer) {
-    if (s->shm_img && (vkp_image_width(s->shm_img) != 1 || vkp_image_height(s->shm_img) != 1)) {
+    if (s->shm_img && (vkp_image_busy(s->shm_img) ||
+        vkp_image_width(s->shm_img) != 1 || vkp_image_height(s->shm_img) != 1)) {
         vkp_image_destroy(s->shm_img);
         s->shm_img = NULL;
     }
@@ -1112,7 +1178,7 @@ static void surface_hold_idle(struct surface *s, struct wl_resource *buffer) {
     struct wl_shm_buffer *shm = db ? NULL : wl_shm_buffer_get(buffer);
     int64_t px = db ? (int64_t)db->width * db->height
                : shm ? (int64_t)wl_shm_buffer_get_width(shm) * wl_shm_buffer_get_height(shm) : 0;
-    if (px <= 0 || px > CURSOR_MAX_PX) { wl_buffer_send_release(buffer); return; }
+    if (px <= 0 || px > CURSOR_MAX_PX) { s45_release_idle(s, buffer); return; }
     s->idle_buffer = buffer;
     s->idle_buffer_destroy.notify = on_idle_buffer_destroyed;
     wl_resource_add_destroy_listener(buffer, &s->idle_buffer_destroy);
@@ -1130,12 +1196,14 @@ static struct wl_resource *surface_take_idle(struct surface *s) {
 static void surface_drop_idle(struct surface *s) {
     surface_forget_idle_px(s);
     struct wl_resource *buffer = surface_take_idle(s);
-    if (buffer) wl_buffer_send_release(buffer);
+    if (buffer) s45_release_idle(s, buffer);
 }
 
 static void surface_commit(struct wl_client *c, struct wl_resource *r) {
     struct surface *s = wl_resource_get_user_data(r);
     struct surface *child;
+    int producer_fd = -1, external_ownership = 0;
+    if (!s45_latch_pending(s, c, &producer_fd, &external_ownership)) return;
 
     if (s->xdg_toplevel && !s->toplevel_committed) {
         s->toplevel_committed = 1;
@@ -1165,6 +1233,12 @@ static void surface_commit(struct wl_client *c, struct wl_resource *r) {
         struct dmabuf_buffer *db = get_dmabuf(buffer);
         struct wl_shm_buffer *shm = buffer && !db ? wl_shm_buffer_get(buffer) : NULL;
         uint8_t pixel[4];
+        struct s45_use *new_use = NULL;
+        if (db && !db->ahb_state) {
+            new_use = s45_use_create(s, db, buffer, producer_fd, external_ownership);
+            producer_fd = -1;
+            if (!new_use) { wl_client_post_no_memory(c); return; }
+        } else if (producer_fd >= 0) { close(producer_fd); producer_fd = -1; }
 
         feedback_discard_all(&s->feedback);
 
@@ -1175,13 +1249,22 @@ static void surface_commit(struct wl_client *c, struct wl_resource *r) {
         s->pending_buffer = NULL;
         s->pending_attach = 0;
 
-        surface_drop_idle(s);
+        if (new_use && new_use == s->gpu_use && s->idle_buffer == buffer) {
+            /* Same live content reattached only for geometry: unlink the
+             * old idle listener without retiring the use being retained. */
+            (void)surface_take_idle(s);
+            surface_forget_idle_px(s);
+        } else surface_drop_idle(s);
+        s45_use_activate(s, new_use);
         if (s->role == ROLE_CURSOR) {
             if (!buffer) {
                 cursor_publish_hidden();
+            } else if (db && (vkp_frame_pending() || s45_use_ready(s->gpu_use) == 0)) {
+                surface_hold_idle(s, buffer);
+                s45_arm();
             } else {
-                cursor_publish_buffer(s, buffer);
-                wl_buffer_send_release(buffer);
+                if (s45_use_ready(s->gpu_use) > 0) cursor_publish_buffer(s, buffer);
+                s45_release_idle(s, buffer);
             }
         } else if (s->role == ROLE_NONE) {
             if (buffer) surface_hold_idle(s, buffer);
@@ -1284,6 +1367,7 @@ static void surface_resource_destroy(struct wl_resource *r) {
     }
     if (s->pending_buffer) wl_list_remove(&s->pending_buffer_destroy.link);
     pending_releases_forget_surface(s);
+    s45_forget_surface(s);
     drop_dmabuf(s, 0);
     ahb_swapchain_surface_gone(s);
     vkp_image_destroy(s->shm_img);
@@ -1347,6 +1431,8 @@ static void compositor_create_surface(struct wl_client *c, struct wl_resource *r
     wl_list_init(&s->toplevel_link);
     wl_list_init(&s->pending_buffer_destroy.link);
     wl_list_init(&s->idle_buffer_destroy.link);
+    wl_list_init(&s->pending_s45_destroy.link);
+    s->pending_s45_fd = -1;
     wl_list_insert(&g_surfaces, &s->link);
     wl_resource_set_implementation(s->resource, &surface_impl, s, surface_resource_destroy);
 }
@@ -1774,6 +1860,7 @@ static void bind_output(struct wl_client *c, void *data, uint32_t ver, uint32_t 
 
 
 struct draw_list { struct vkp_draw *d; int n, cap; };
+static struct draw_list g_s45_draw_scratch;
 
 static struct vkp_image *surface_image(struct surface *s) {
     if (!s->has_content) return NULL;
@@ -1812,6 +1899,7 @@ static void add_surface(struct draw_list *dl, struct surface *s, int ox, int oy)
     float sx = 0, sy = 0, sw = (float)s->buf_w, sh = (float)s->buf_h;
     int dw, dh;
 
+    if (s45_use_ready(s->gpu_use) < 0) return;
     if (!img) {
         if (g_zero_copy && alroot_color_hdr_open()) note_hdr_unimported(dl, s, ox, oy);
         return;
@@ -1826,8 +1914,15 @@ static void add_surface(struct draw_list *dl, struct surface *s, int ox, int oy)
         dl->d = d;
         dl->cap = cap;
     }
-    dl->d[dl->n++] = (struct vkp_draw){img, sx, sy, sw, sh, ox, oy, dw, dh,
-                                      surface_translucent(s, dw, dh)};
+    struct s45_use *use = s->gpu_use;
+    dl->d[dl->n++] = (struct vkp_draw){
+        .img=img, .sx=sx, .sy=sy, .sw=sw, .sh=sh, .dx=ox, .dy=oy, .dw=dw, .dh=dh,
+        .blend=surface_translucent(s, dw, dh),
+        .has_acquire_fence=use && !use->producer_done && use->fd >= 0,
+        .acquire_fence_fd=use ? use->fd : -1,
+        .acquire_serial=use ? use->serial : 0,
+        .external_ownership=use && use->external,
+    };
     s->drawn = 1;
 }
 
@@ -1876,6 +1971,7 @@ static void pace_without_output(void) {
 }
 
 static int on_frame_timer(void *data) {
+    if (vkp_frame_pending()) { s45_arm(); return 0; }
     pace_without_output();
     if (vkp_has_window()) schedule_render();
     else if (g_frame_timer) wl_event_source_timer_update(g_frame_timer, 16);
@@ -1885,6 +1981,7 @@ static int on_frame_timer(void *data) {
 static int layer_candidate(const struct draw_list *dl, int scene_w, int scene_h) {
     for (int i = dl->n - 1; i >= 0 && i >= dl->n - 2; i--) {
         const struct vkp_draw *d = &dl->d[i];
+        if (d->external_ownership || d->has_acquire_fence) continue;
         if (d->blend) continue;
         if (!vkp_image_is_dmabuf(d->img)) continue;
         if (d->dx != 0 || d->dy != 0 || d->dw != scene_w || d->dh != scene_h) continue;
@@ -2128,7 +2225,7 @@ static void render_stream(void) {
     struct vkp_draw d = {.img = img, .sx = 0, .sy = 0, .sw = (float)w, .sh = (float)h, .dx = 0, .dy = 0, .dw = w, .dh = h, .blend = 0};
     vkp_apply_window_request();
     sc_layer_hide();
-    int r = vkp_render(w, h, &d, 1);
+    int r = vkp_render_sync(w, h, &d, 1);
     if (r == 0) {
         g_stat_frames++;
         static int first;
@@ -2163,9 +2260,35 @@ void alroot_stream_frame(AHardwareBuffer *ahb) {
 
 unsigned alroot_stream_frames(void) { return atomic_load(&g_stream_frames); }
 
+static void s47_emit_stats(const char *line) {
+    /* The normal log helper has a 512-byte message buffer. Preserve the full
+     * machine-readable record on stderr and in the session log. */
+    fprintf(stderr, "%s\n", line);
+    pthread_mutex_lock(&g_log_lock);
+    if (g_log) { fprintf(g_log, "%s\n", line); fflush(g_log); }
+    pthread_mutex_unlock(&g_log_lock);
+}
+
+#include "alroot_commit_sync.inc"
+
+static int s45_render(int w, int h, const struct vkp_draw *draws, int n) {
+    /* Legacy direct-layer buffer lifetime is unchanged in S45. */
+    struct surface *surface;
+    wl_list_for_each(surface, &g_surfaces, link)
+        if (surface->drawn && surface->dmabuf_buf && surface->dmabuf_buf->ahb_state)
+            return vkp_render_sync(w, h, draws, n);
+    return vkp_render(w, h, draws, n);
+}
+
 static void render_scene(void) {
-    if (atomic_load(&g_stream_on)) { render_stream(); return; }
-    struct draw_list dl = {0};
+    if (vkp_frame_pending()) { g_dirty = 1; s45_arm(); return; }
+    if (atomic_load(&g_stream_on)) {
+        render_stream();
+        if (vkp_frame_pending()) s45_arm();
+        return;
+    }
+    struct draw_list dl = g_s45_draw_scratch;
+    dl.n = 0;
     struct surface *s;
     int w, h;
     const int64_t t_scene = now_ns();
@@ -2195,7 +2318,13 @@ static void render_scene(void) {
         add_tree(&dl, s, s->placed ? s->x : 0, s->placed ? s->y : 0, 0);
     }
 
-    int rendered = 0;
+    if (!s45_prepare_frame((size_t)dl.n)) {
+        g_s45_draw_scratch = dl;
+        g_s45_draw_scratch.n = 0;
+        g_dirty = 1;
+        return;
+    }
+    int rendered = 0, render_result = -1;
     int fx_on = vkp_effects_active();
     int framegen = vkp_framegen_active();
     const int cardboard = vkp_cardboard_active();
@@ -2226,7 +2355,7 @@ static void render_scene(void) {
     if (hdr_route == 2) {
         int how = 0;
         sc_layer_hide();
-        rendered = vkp_render_hdr(w, h, dl.d, dl.n, &hs.hf, &how) == 0;
+        rendered = (render_result = vkp_render_hdr(w, h, dl.d, dl.n, &hs.hf, &how)) == 0;
         copy = 1;
         if (rendered && how == 1) alroot_color_frame_shown(hs.color, ALROOT_HDR_SWAPCHAIN, 0);
         else if (rendered && how == 2) alroot_color_frame_shown(hs.color, ALROOT_HDR_TONEMAPPED, 0);
@@ -2236,10 +2365,14 @@ static void render_scene(void) {
         !ahb_layer_only_candidate(w, h)) {
         /* The complete SDR scene stays on one display layer. Do not hide/re-show GAME
          * on each desktop frame just because it is not a single fullscreen window. */
-        rendered = vkp_render(w, h, dl.d, dl.n) == 0;
+        rendered = (render_result = s45_render(w, h, dl.d, dl.n)) == 0;
     } else if (hdr_route == 0 || hdr_route == 3) {
     const int pass_on = fx_on || framegen;
-    int li = (g_zero_copy && !framegen && !cardboard) ? layer_candidate(&dl, w, h) : -1;
+    int explicit_scene = 0;
+    for (int i = 0; i < dl.n; i++)
+        if (dl.d[i].external_ownership || dl.d[i].has_acquire_fence) explicit_scene = 1;
+    int li = (g_zero_copy && !framegen && !cardboard && !explicit_scene)
+        ? layer_candidate(&dl, w, h) : -1;
     int over = li >= 0 ? dl.n - 1 - li : 0;
     const int fx_blocks = (li >= 0 && fx_on && over > 0);
     if (fx_blocks) { li = -1; over = 0; }
@@ -2259,8 +2392,8 @@ static void render_scene(void) {
             alroot_log("effects", "zero-copy resumed: the game is back on its own display layer");
     }
     struct surface *ls = li >= 0 ? surface_for_image(dl.d[li].img) : NULL;
-    if (li < 0) ls = ahb_layer_only_candidate(w, h);
-    if (li < 0 && !ls) ls = hdr_unimported_fullscreen(&dl, w, h);
+    if (li < 0 && !explicit_scene) ls = ahb_layer_only_candidate(w, h);
+    if (li < 0 && !ls && !explicit_scene) ls = hdr_unimported_fullscreen(&dl, w, h);
     if (cardboard) ls = NULL;
     if (ls && pass_on && li < 0 && !g_zero_copy_fx_skip_said) {
         g_zero_copy_fx_skip_said = 1;
@@ -2284,20 +2417,20 @@ static void render_scene(void) {
             if (ov <= 0) sc_layer_hide_overlay();
             if (ov < 0) {
                 sc_layer_hide();
-                rendered = vkp_render(w, h, dl.d, dl.n) == 0;
+                rendered = (render_result = s45_render(w, h, dl.d, dl.n)) == 0;
                 copy = 1;
                 hdr_copy = "the overlay layer refused the window above it";
             } else {
                 rendered = vkp_base_black(w, h) == 0;
             }
         } else {
-            rendered = vkp_render(w, h, dl.d, dl.n) == 0;
+            rendered = (render_result = s45_render(w, h, dl.d, dl.n)) == 0;
             copy = 1;
             hdr_copy = "its display layer was unavailable this frame";
         }
     } else {
         sc_layer_hide();
-        rendered = vkp_render(w, h, dl.d, dl.n) == 0;
+        rendered = (render_result = s45_render(w, h, dl.d, dl.n)) == 0;
         copy = 1;
         hdr_copy = ov_blocks ? "a window is above it and this display cannot compose a second layer in hardware"
                  : fx_blocks ? "a window is above it and screen effects need the whole scene"
@@ -2308,7 +2441,10 @@ static void render_scene(void) {
     }
     free(hs.is_hdr);
     if (hdr_copy && rendered && alroot_color_hdr_open()) hdr_count_copied(&dl, hdr_copy);
-    if (rendered) {
+    const int pending_frame = vkp_frame_pending();
+    if (pending_frame) {
+        s45_capture_frame(dl.d, dl.n, presented_ns(t_scene), copy, rendered);
+    } else if (rendered) {
         int64_t t = presented_ns(t_scene);
         g_stat_frames++;
         if (g_hud_new) {
@@ -2320,6 +2456,9 @@ static void render_scene(void) {
             else feedback_discard_all(&s->feedback);
         }
         fire_all_frames();
+    } else if (render_result == VKP_RENDER_RETRY) {
+        g_dirty = 1;
+        s45_arm();
     } else {
         pace_without_output();
         if (!g_frame_timer)
@@ -2327,9 +2466,12 @@ static void render_scene(void) {
                                                     on_frame_timer, NULL);
         if (g_frame_timer) wl_event_source_timer_update(g_frame_timer, 16);
     }
-    free(dl.d);
+    g_s45_draw_scratch = dl;
+    g_s45_draw_scratch.n = 0;
+    s45_retire_ready();
     wl_display_flush_clients(g_display);
-    if (rendered && copy) g_perf.copy_scenes++;
+    g_s45_protocol_dirty = 0;
+    if (rendered && copy && !pending_frame) g_perf.copy_scenes++;
     g_perf.scenes++;
     const int64_t scene_ns = now_ns() - t_scene;
     g_perf.scene_ns += scene_ns;
@@ -2368,6 +2510,13 @@ static void on_vsync(int64_t frame_time_ns) {
     }
     g_last_vsync_ns = now;
     g_tick_vsync_ns = frame_time_ns;
+    /* A timer may not yet have observed a fence which completed before this
+     * vsync. Retire it nonblockingly before deciding to skip the whole tick. */
+    if (s45_poll_frame()) {
+        s45_retire_ready();
+        s45_flush_protocol();
+    }
+    if (vkp_frame_pending()) { s45_arm(); return; }
     if (vkp_apply_window_request()) g_dirty = 1;
     if (vkp_effects_sync()) g_dirty = 1;
     if (vkp_cardboard_pose_changed()) g_dirty = 1;
@@ -2395,10 +2544,15 @@ static void pointer_set_cursor(struct wl_client *c, struct wl_resource *r, uint3
     g_cursor_surface = s;
     g_cursor_hx = hx;
     g_cursor_hy = hy;
+    if (s->idle_buffer && get_dmabuf(s->idle_buffer) &&
+        (vkp_frame_pending() || s45_use_ready(s->gpu_use) == 0)) {
+        s45_arm();
+        return;
+    }
     struct wl_resource *buffer = surface_take_idle(s);
     if (buffer) {
-        cursor_publish_buffer(s, buffer);
-        wl_buffer_send_release(buffer);
+        if (s45_use_ready(s->gpu_use) > 0) cursor_publish_buffer(s, buffer);
+        s45_release_idle(s, buffer);
     } else if (g_cursor_shown == s) {
         cursor_publish_shown();
     } else if (s->idle_px) {
@@ -3624,6 +3778,18 @@ static int on_stats_timer(void *data) {
                        PERF_MS(g_perf.release_ns, g_perf.releases), (double)g_perf.release_max_ns / 1e6,
                        g_perf.releases, g_perf.releases_held, drops,
                        g_perf.auto_release_capped, g_perf.release_max_pending);
+        if (vp.async_frames || vp.async_completed || g_s45.commits || g_s45.invalid_fences)
+            alroot_log("perf", "S45_HOST_SYNC async=%u completed=%u polls=%u retries=%u "
+                       "completion=%.2f/%.2fms gpu_acquire=%u import_failed=%u "
+                       "commits=%llu explicit=%llu releases=%llu live=%u peak=%u invalid=%llu",
+                       vp.async_frames, vp.async_completed, vp.async_polls, vp.async_retries,
+                       PERF_MS(vp.async_ns, vp.async_completed), (double)vp.async_max_ns / 1e6,
+                       vp.gpu_acquire_waits, vp.acquire_import_failures,
+                       (unsigned long long)g_s45.commits, (unsigned long long)g_s45.explicit_commits,
+                       (unsigned long long)g_s45.releases, g_s45.live, g_s45.peak,
+                       (unsigned long long)g_s45.invalid_fences);
+        g_s45.commits = g_s45.explicit_commits = g_s45.releases = g_s45.invalid_fences = 0;
+        g_s45.peak = g_s45.live;
 #undef PERF_MS
         memset(&g_perf, 0, sizeof(g_perf));
     }
@@ -3726,6 +3892,17 @@ int alroot_wayland_run(void) {
     g_pointer_internal_motion = 0;
     g_pointer_center_scene_w = g_pointer_center_scene_h = 0;
     wl_list_init(&g_surfaces);
+    wl_list_init(&g_s45_uses);
+    wl_list_init(&g_s45_free_uses);
+    wl_list_init(&g_s45_frame.frames);
+    wl_list_init(&g_s45_frame.feedback);
+    g_s45_frame.active = 0;
+    g_s45_timer = NULL;
+    g_s45_timer_armed = 0;
+    g_s45_protocol_dirty = 0;
+    g_s47_frame_source = g_s47_progress_idle = NULL;
+    g_s47_frame_fd = -1;
+    g_s47_frame_fallback = g_s47_frame_terminal = 0;
     wl_list_init(&g_toplevels);
     wl_list_init(&g_outputs);
     wl_list_init(&g_constraints);
@@ -3801,6 +3978,10 @@ int alroot_wayland_run(void) {
     g_output_announced_refresh_mhz = atomic_load(&g_output_refresh_mhz);
     wl_display_run(display);
 
+    wl_display_destroy_clients(display);
+    s45_shutdown();
+    free(g_s45_draw_scratch.d);
+    memset(&g_s45_draw_scratch, 0, sizeof(g_s45_draw_scratch));
     wl_display_destroy(display);
     g_display = NULL;
     if (g_input_pipe[0] >= 0) close(g_input_pipe[0]);

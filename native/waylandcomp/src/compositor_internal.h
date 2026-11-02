@@ -70,3 +70,8 @@ extern volatile int g_no_render_node;
 
 COMPOSITOR_INTERNAL extern dev_t g_main_device;
 COMPOSITOR_INTERNAL void bind_dmabuf(struct wl_client *c, void *data, uint32_t ver, uint32_t id);
+
+/* S45: fd is owned by this call; ready=1 is the no-FD v3 request. */
+COMPOSITOR_INTERNAL void alroot_gpu_set_acquire(struct wl_client *client,
+    struct wl_resource *manager, struct wl_resource *surface,
+    struct wl_resource *buffer, int fd, int ready);
