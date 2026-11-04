@@ -87,9 +87,12 @@ static int s65_ctl_recv(int fd,uint32_t events,void *unused) {
                  * SurfaceView; use the measured display rate, never system settings. */
                 typedef int32_t (*s65_rate_fn)(ANativeWindow*,float,int8_t,int8_t);
                 s65_rate_fn fn=(s65_rate_fn)dlsym(RTLD_DEFAULT,"ANativeWindow_setFrameRateWithChangeStrategy");
+                /* NDK value for ANATIVEWINDOW_CHANGE_FRAME_RATE_ONLY_IF_SEAMLESS.
+                 * Its enum name is API 31, while this optional function is runtime-resolved. */
+                const int8_t seamless_only = 0;
                 ANativeWindow *w=vkp_window();
                 if(!fn || !w || fn(w,(float)mhz/1000.f,ANATIVEWINDOW_FRAME_RATE_COMPATIBILITY_FIXED_SOURCE,
-                      ANATIVEWINDOW_CHANGE_FRAME_RATE_ONLY_IF_SEAMLESS)!=0)valid=0;
+                      seamless_only)!=0)valid=0;
                 else alroot_wayland_set_output_refresh_rate((int)mhz);
             }
         }else if(s65_private_probe && !s65_ctl.enabled && !strncmp(cmd,"probe-model ",12) &&
