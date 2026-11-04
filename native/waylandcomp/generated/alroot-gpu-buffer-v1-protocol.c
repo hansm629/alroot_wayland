@@ -31,10 +31,12 @@
 #define WL_PRIVATE
 #endif
 
+extern const struct wl_interface alroot_buffer_release_v1_interface;
 extern const struct wl_interface wl_buffer_interface;
 extern const struct wl_interface wl_surface_interface;
 
 static const struct wl_interface *alroot_gpu_buffer_v1_types[] = {
+	NULL,
 	&wl_buffer_interface,
 	NULL,
 	NULL,
@@ -47,21 +49,47 @@ static const struct wl_interface *alroot_gpu_buffer_v1_types[] = {
 	&wl_surface_interface,
 	&wl_buffer_interface,
 	NULL,
+	&wl_surface_interface,
+	&wl_buffer_interface,
+	&alroot_buffer_release_v1_interface,
+	&wl_surface_interface,
+	&wl_buffer_interface,
+	&wl_buffer_interface,
+	NULL,
+	NULL,
+	NULL,
+	NULL,
+	NULL,
+	&alroot_buffer_release_v1_interface,
 	&wl_surface_interface,
 	&wl_buffer_interface,
 };
 
 static const struct wl_message alroot_gpu_buffer_v1_requests[] = {
 	{ "destroy", "", alroot_gpu_buffer_v1_types + 0 },
-	{ "create_buffer", "nhuu", alroot_gpu_buffer_v1_types + 0 },
-	{ "create_buffer_with_format", "2nhuuu", alroot_gpu_buffer_v1_types + 4 },
-	{ "set_acquire_fence", "3ooh", alroot_gpu_buffer_v1_types + 9 },
-	{ "set_acquire_ready", "3oo", alroot_gpu_buffer_v1_types + 12 },
+	{ "create_buffer", "nhuu", alroot_gpu_buffer_v1_types + 1 },
+	{ "create_buffer_with_format", "2nhuuu", alroot_gpu_buffer_v1_types + 5 },
+	{ "set_acquire_fence", "3ooh", alroot_gpu_buffer_v1_types + 10 },
+	{ "set_acquire_ready", "3oo", alroot_gpu_buffer_v1_types + 13 },
+	{ "get_release", "4noo", alroot_gpu_buffer_v1_types + 15 },
+	{ "create_buffer_with_mode", "5nhuuuu", alroot_gpu_buffer_v1_types + 18 },
+	{ "get_mailbox_release", "6noo", alroot_gpu_buffer_v1_types + 24 },
 };
 
 WL_PRIVATE const struct wl_interface alroot_gpu_buffer_v1_interface = {
-	"alroot_gpu_buffer_v1", 3,
-	5, alroot_gpu_buffer_v1_requests,
+	"alroot_gpu_buffer_v1", 6,
+	8, alroot_gpu_buffer_v1_requests,
 	0, NULL,
+};
+
+static const struct wl_message alroot_buffer_release_v1_events[] = {
+	{ "fenced_release", "h", alroot_gpu_buffer_v1_types + 0 },
+	{ "immediate_release", "", alroot_gpu_buffer_v1_types + 0 },
+};
+
+WL_PRIVATE const struct wl_interface alroot_buffer_release_v1_interface = {
+	"alroot_buffer_release_v1", 1,
+	0, NULL,
+	2, alroot_buffer_release_v1_events,
 };
 

@@ -11,7 +11,7 @@ struct pc_blend { float dst[4]; float src[4]; };
 
 static VkDevice g_dev;
 static int g_ready;
-static VkSampler g_sampler;
+static VkSampler g_sampler, g_nearest;
 static VkDescriptorSetLayout g_dsl;
 static VkPipelineLayout g_pl;
 static VkDescriptorPool g_dpool;
@@ -22,7 +22,7 @@ static unsigned g_frame = 1;
 static struct { VkFormat fmt; VkRenderPass rp; VkPipeline pipe; } g_out[NFMT];
 
 #define NSRC 32
-static struct { VkImage img; VkImageView view; VkDescriptorSet ds; unsigned frame; } g_src[NSRC];
+static struct { VkImage img; VkImageView view; VkDescriptorSet ds; VkImageLayout layout; int nearest; unsigned frame; } g_src[NSRC];
 #define NDST 12
 static struct { VkImage img; VkFormat fmt; int w, h; VkImageView view; VkFramebuffer fb; unsigned frame; } g_dst[NDST];
 
@@ -55,13 +55,13 @@ static VkShaderModule shader(const uint32_t *code, size_t size) {
     return m;
 }
 
-static VkRenderPass make_rp(VkFormat fmt) {
+static VkRenderPass make_rp(VkFormat fmt, int direct) {
     VkAttachmentDescription att = {.format = fmt, .samples = VK_SAMPLE_COUNT_1_BIT,
-                                   .loadOp = VK_ATTACHMENT_LOAD_OP_LOAD, .storeOp = VK_ATTACHMENT_STORE_OP_STORE,
+                                   .loadOp = direct ? VK_ATTACHMENT_LOAD_OP_CLEAR : VK_ATTACHMENT_LOAD_OP_LOAD, .storeOp = VK_ATTACHMENT_STORE_OP_STORE,
                                    .stencilLoadOp = VK_ATTACHMENT_LOAD_OP_DONT_CARE,
                                    .stencilStoreOp = VK_ATTACHMENT_STORE_OP_DONT_CARE,
-                                   .initialLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
-                                   .finalLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL};
+                                   .initialLayout = direct ? VK_IMAGE_LAYOUT_UNDEFINED : VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+                                   .finalLayout = direct ? VK_IMAGE_LAYOUT_PRESENT_SRC_KHR : VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL};
     VkAttachmentReference ref = {0, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL};
     VkSubpassDescription sub = {.pipelineBindPoint = VK_PIPELINE_BIND_POINT_GRAPHICS, .colorAttachmentCount = 1,
                                 .pColorAttachments = &ref};
@@ -85,7 +85,7 @@ static VkRenderPass make_rp(VkFormat fmt) {
     return rp;
 }
 
-static VkPipeline make_pipe(VkRenderPass rp) {
+static VkPipeline make_pipe(VkRenderPass rp, int blend) {
     VkPipelineShaderStageCreateInfo st[2] = {
         {.sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO, .stage = VK_SHADER_STAGE_VERTEX_BIT,
          .module = g_vert, .pName = "main"},
@@ -105,7 +105,7 @@ static VkPipeline make_pipe(VkRenderPass rp) {
     VkPipelineMultisampleStateCreateInfo ms = {.sType = VK_STRUCTURE_TYPE_PIPELINE_MULTISAMPLE_STATE_CREATE_INFO,
                                                .rasterizationSamples = VK_SAMPLE_COUNT_1_BIT};
     VkPipelineColorBlendAttachmentState ba = {
-        .blendEnable = VK_TRUE, .srcColorBlendFactor = VK_BLEND_FACTOR_ONE,
+        .blendEnable = blend ? VK_TRUE : VK_FALSE, .srcColorBlendFactor = VK_BLEND_FACTOR_ONE,
         .dstColorBlendFactor = VK_BLEND_FACTOR_ONE_MINUS_SRC_ALPHA, .colorBlendOp = VK_BLEND_OP_ADD,
         .srcAlphaBlendFactor = VK_BLEND_FACTOR_ONE, .dstAlphaBlendFactor = VK_BLEND_FACTOR_ONE_MINUS_SRC_ALPHA,
         .alphaBlendOp = VK_BLEND_OP_ADD,
@@ -128,6 +128,8 @@ static void objects_destroy(void) {
     if (g_dpool) g_vk.DestroyDescriptorPool(g_dev, g_dpool, NULL);
     if (g_pl) g_vk.DestroyPipelineLayout(g_dev, g_pl, NULL);
     if (g_dsl) g_vk.DestroyDescriptorSetLayout(g_dev, g_dsl, NULL);
+    if (g_nearest) g_vk.DestroySampler(g_dev, g_nearest, NULL);
+    g_nearest = VK_NULL_HANDLE;
     if (g_sampler) g_vk.DestroySampler(g_dev, g_sampler, NULL);
     g_vert = g_frag = VK_NULL_HANDLE; g_dpool = VK_NULL_HANDLE; g_pl = VK_NULL_HANDLE;
     g_dsl = VK_NULL_HANDLE; g_sampler = VK_NULL_HANDLE;
@@ -143,6 +145,8 @@ static int objects_ensure(void) {
                                .addressModeV = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE,
                                .addressModeW = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE};
     if (g_vk.CreateSampler(g_dev, &sci, NULL, &g_sampler) != VK_SUCCESS) goto fail;
+    sci.magFilter = sci.minFilter = VK_FILTER_NEAREST;
+    if (g_vk.CreateSampler(g_dev, &sci, NULL, &g_nearest) != VK_SUCCESS) goto fail;
     VkDescriptorSetLayoutBinding b = {.binding = 0, .descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
                                       .descriptorCount = 1, .stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT};
     VkDescriptorSetLayoutCreateInfo dli = {.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO,
@@ -174,8 +178,8 @@ static int out_slot(VkFormat fmt) {
     int i;
     for (i = 0; i < NFMT && g_out[i].pipe; i++) if (g_out[i].fmt == fmt) return i;
     if (i == NFMT) return -1;
-    VkRenderPass rp = make_rp(fmt);
-    VkPipeline pipe = rp ? make_pipe(rp) : VK_NULL_HANDLE;
+    VkRenderPass rp = make_rp(fmt, 0);
+    VkPipeline pipe = rp ? make_pipe(rp, 1) : VK_NULL_HANDLE;
     if (!pipe) {
         if (rp) g_vk.DestroyRenderPass(g_dev, rp, NULL);
         return -1;
@@ -202,10 +206,10 @@ static VkImageView make_view(VkImage img, VkFormat fmt) {
         } \
     } while (0)
 
-static VkDescriptorSet src_ensure(VkImage img, VkFormat fmt, VkImageLayout layout) {
+static VkDescriptorSet src_ensure(VkImage img, VkFormat fmt, VkImageLayout layout, int nearest) {
     int i;
     for (i = 0; i < NSRC; i++)
-        if (g_src[i].img == img) { g_src[i].frame = g_frame; return g_src[i].ds; }
+        if (g_src[i].img == img && g_src[i].layout == layout && g_src[i].nearest == nearest) { g_src[i].frame = g_frame; return g_src[i].ds; }
     OLDEST(g_src, NSRC, i);
     if (i < 0) return VK_NULL_HANDLE;
     src_release(i);
@@ -217,7 +221,8 @@ static VkDescriptorSet src_ensure(VkImage img, VkFormat fmt, VkImageLayout layou
         src_release(i);
         return VK_NULL_HANDLE;
     }
-    VkDescriptorImageInfo ii = {.sampler = g_sampler, .imageView = g_src[i].view, .imageLayout = layout};
+    g_src[i].layout = layout; g_src[i].nearest = nearest;
+    VkDescriptorImageInfo ii = {.sampler = nearest ? g_nearest : g_sampler, .imageView = g_src[i].view, .imageLayout = layout};
     VkWriteDescriptorSet wr = {.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET, .dstSet = g_src[i].ds, .dstBinding = 0,
                                .descriptorCount = 1, .descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
                                .pImageInfo = &ii};
@@ -268,7 +273,7 @@ int blendp_draw(VkCommandBuffer cmd, VkImage src, VkFormat src_fmt, int src_w, i
     int slot = out_slot(dst_fmt);
     if (slot < 0) return -1;
     VkImageLayout sampled = src_general ? VK_IMAGE_LAYOUT_GENERAL : VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
-    VkDescriptorSet ds = src_ensure(src, src_fmt, sampled);
+    VkDescriptorSet ds = src_ensure(src, src_fmt, sampled, 0);
     if (!ds) return -1;
     VkFramebuffer fb = dst_ensure(dst, dst_fmt, dst_w, dst_h, g_out[slot].rp);
     if (!fb) return -1;
@@ -302,4 +307,73 @@ int blendp_draw(VkCommandBuffer cmd, VkImage src, VkFormat src_fmt, int src_w, i
     g_vk.CmdEndRenderPass(cmd);
     if (!src_general) src_layout(cmd, src, sampled, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL);
     return 0;
+}
+
+/* One pass over the Android swapchain attachment. The entire source mapping,
+ * render pass and descriptors are prepared before entering the render pass.
+ * Keep the original source in GENERAL between the matched EXTERNAL barriers.
+ * Ordering is the compositor's surface z order, including clipped surfaces. */
+static struct { VkFormat fmt; VkRenderPass rp; VkPipeline opaque, alpha; } g_scene_out[NFMT];
+static VkFramebuffer g_scene_fb;
+static int g_scene_slot;
+
+int blendp_scene_prepare(VkImage dst, VkFormat fmt, int w, int h,
+                         struct blendp_item *items, int n) {
+    if (!dst || n <= 0 || n > BLENDP_MAX_SCENE || objects_ensure()) return -1;
+    int slot = 0;
+    while (slot < NFMT && g_scene_out[slot].rp && g_scene_out[slot].fmt != fmt) ++slot;
+    if (slot == NFMT) return -1;
+    if (!g_scene_out[slot].rp) {
+        VkRenderPass rp=make_rp(fmt,1);
+        VkPipeline op=rp ? make_pipe(rp,0) : VK_NULL_HANDLE;
+        VkPipeline alpha=op ? make_pipe(rp,1) : VK_NULL_HANDLE;
+        if (!alpha) {
+            if (op) g_vk.DestroyPipeline(g_dev,op,NULL);
+            if (rp) g_vk.DestroyRenderPass(g_dev,rp,NULL);
+            return -1;
+        }
+        g_scene_out[slot].fmt=fmt; g_scene_out[slot].rp=rp;
+        g_scene_out[slot].opaque=op; g_scene_out[slot].alpha=alpha;
+    }
+    VkFramebuffer fb=dst_ensure(dst,fmt,w,h,g_scene_out[slot].rp);
+    if (!fb) return -1;
+    for (int i=0;i<n;++i) {
+        items[i].descriptor=src_ensure(items[i].img,items[i].fmt,VK_IMAGE_LAYOUT_GENERAL,items[i].nearest);
+        if (!items[i].descriptor) return -1;
+    }
+    g_scene_slot=slot; g_scene_fb=fb;
+    return 0;
+}
+
+void blendp_scene_draw(VkCommandBuffer cmd,int w,int h,const struct blendp_item *items,int n) {
+    VkClearValue clear={.color={.float32={0,0,0,1}}};
+    VkRenderPassBeginInfo bi={.sType=VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO,
+        .renderPass=g_scene_out[g_scene_slot].rp,.framebuffer=g_scene_fb,
+        .renderArea={{0,0},{(uint32_t)w,(uint32_t)h}},.clearValueCount=1,.pClearValues=&clear};
+    g_vk.CmdBeginRenderPass(cmd,&bi,VK_SUBPASS_CONTENTS_INLINE);
+    VkViewport vp={0,0,(float)w,(float)h,0,1}; g_vk.CmdSetViewport(cmd,0,1,&vp);
+    int bound=-1;
+    for (int i=0;i<n;++i) {
+        const struct blendp_item *v=&items[i];
+        const VkOffset3D *d=v->rect.dstOffsets, *s=v->rect.srcOffsets;
+        int x0=d[0].x<d[1].x?d[0].x:d[1].x, x1=d[0].x+d[1].x-x0;
+        int y0=d[0].y<d[1].y?d[0].y:d[1].y, y1=d[0].y+d[1].y-y0;
+        if (x0<0) x0=0; if (x1>w) x1=w;
+        if (y0<0) y0=0; if (y1>h) y1=h;
+        if (x0>=x1 || y0>=y1) continue;
+        VkRect2D sc={{x0,y0},{(uint32_t)(x1-x0),(uint32_t)(y1-y0)}};
+        struct pc_blend pc={
+          .dst={2.f*d[0].x/w-1.f,2.f*d[0].y/h-1.f,2.f*d[1].x/w-1.f,2.f*d[1].y/h-1.f},
+          .src={(float)s[0].x/v->width,(float)s[0].y/v->height,(float)s[1].x/v->width,(float)s[1].y/v->height}};
+        if (bound!=v->blend) {
+            g_vk.CmdBindPipeline(cmd,VK_PIPELINE_BIND_POINT_GRAPHICS,
+                                 v->blend ? g_scene_out[g_scene_slot].alpha : g_scene_out[g_scene_slot].opaque);
+            bound=v->blend;
+        }
+        g_vk.CmdSetScissor(cmd,0,1,&sc);
+        g_vk.CmdBindDescriptorSets(cmd,VK_PIPELINE_BIND_POINT_GRAPHICS,g_pl,0,1,&v->descriptor,0,NULL);
+        g_vk.CmdPushConstants(cmd,g_pl,VK_SHADER_STAGE_VERTEX_BIT,0,sizeof(pc),&pc);
+        g_vk.CmdDraw(cmd,4,1,0,0);
+    }
+    g_vk.CmdEndRenderPass(cmd);
 }

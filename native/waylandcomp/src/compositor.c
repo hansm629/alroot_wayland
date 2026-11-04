@@ -162,6 +162,53 @@ static void on_client_destroyed(struct wl_listener *l, void *data) {
     free(ci);
 }
 
+#if defined(ALROOT_S65_PRIVATE_GAP_TEST) && ALROOT_S65_PRIVATE_GAP_TEST == 3
+static int s65_private_probe; /* Set by authenticated private Service initialization before dispatch. */
+#endif
+#include "s69_xwayland_peer.inc"
+/* Trust only the exact managed server image (or the hash-pinned scoped successor), not a title, app-id or argv[0].
+ * This selects a compositor optimization, not an Android security boundary. */
+static int s65_eligible_peer(pid_t pid,uid_t uid) {
+    static const char xwl[]="/data/data/com.termux/files/home/alroot_wayland/.source/gpu-stage1/"
+        "s62-residual-overhead/xwayland-destroy-region-r4/runtime/Xwayland";
+    char path[64],args[4096];struct stat actual,expected;
+    if(uid!=getuid() || pid<=0) return 0;
+    snprintf(path,sizeof(path),"/proc/%d/exe",(int)pid);
+    if(stat(path,&actual) || stat(xwl,&expected) || !S_ISREG(actual.st_mode))return 0;
+    const int different=(actual.st_dev!=expected.st_dev || actual.st_ino!=expected.st_ino);
+    const int variant=different?s69_scoped_xwl(path,&actual):0;
+    if(different && !variant){
+#ifdef ALROOT_S65_PRIVATE_GAP_TEST
+        /* Test-only binary; the production APK never broadens its allowlist.
+         * Also require the diagnostic Service's private socket namespace. */
+        const char *rt=getenv("XDG_RUNTIME_DIR");
+        static const char pre[]="/data/data/com.termux/files/usr/tmp/s65-vd-";
+        static const char alt[]="/data/data/com.termux/files/home/alroot_wayland/.source/gpu-stage1/"
+#if ALROOT_S65_PRIVATE_GAP_TEST == 3
+            "s66-wayland/xwl-profile-only-r3/runtime/Xwayland";
+        if (!s65_private_probe || !rt || strncmp(rt,pre,sizeof(pre)-1)) return 0;
+        const char *suffix=rt+sizeof(pre)-1;
+        if(strlen(suffix)!=16 || strspn(suffix,"0123456789abcdef")!=16) return 0;
+#elif ALROOT_S65_PRIVATE_GAP_TEST == 2
+            "s65-root-output/xwl-gap-r2/runtime/Xwayland";
+#else
+            "s65-root-output/xwl-gap-r1/runtime/Xwayland";
+#endif
+        if(!rt||strncmp(rt,pre,sizeof(pre)-1)||stat(alt,&expected)||
+           actual.st_dev!=expected.st_dev||actual.st_ino!=expected.st_ino)return 0;
+#else
+        return 0;
+#endif
+    }
+    snprintf(path,sizeof(path),"/proc/%d/cmdline",(int)pid);
+    int fd=open(path,O_RDONLY|O_CLOEXEC);
+    if(fd<0)return 0;
+    ssize_t nr=read(fd,args,sizeof(args));close(fd);
+    if(nr<2 || (size_t)nr>=sizeof(args) || args[nr-1])return 0;
+    for(ssize_t i=0;i<nr;i+=(ssize_t)strlen(args+i)+1)
+        if(!strcmp(args+i,"-rootless"))return 0;
+    return variant==2?2:1; /* immutable verified refresh capability on this connection */
+}
 static void on_client_created(struct wl_listener *l, void *data) {
     struct wl_client *client = data;
     struct client_info *ci = calloc(1, sizeof(*ci));
@@ -184,6 +231,10 @@ static void on_client_created(struct wl_listener *l, void *data) {
         }
         close(fd);
     }
+    if (!strcmp(ci->name,"Xwayland")) ci->s65_root_peer=s65_eligible_peer(ci->pid,uid);
+    ci->s63_nested = !strcmp(ci->name,"Xwayland") || !strcmp(ci->name,"labwc") ||
+        !strcmp(ci->name,"weston") || !strcmp(ci->name,"kwin_wayland") ||
+        !strcmp(ci->name,"gnome-shell") || !strcmp(ci->name,"gamescope");
     ci->destroy.notify = on_client_destroyed;
     wl_client_add_destroy_listener(client, &ci->destroy);
     ci->next = g_clients;
@@ -209,6 +260,11 @@ struct surface {
     struct wl_resource *pending_s45_buffer;
     struct wl_listener pending_s45_destroy;
     struct s45_use *gpu_use;
+    struct s63_ticket *s63_pending;
+    int s63_nested;
+    int s65_scale,s65_transform,s65_pending_scale,s65_pending_transform;
+    int64_t s63_next_release_ns;
+    unsigned s63_delayed;
     int pending_src_set, pending_dst_set;
     float pending_src[4];
     int pending_dst[2];
@@ -263,6 +319,10 @@ struct surface {
     uint32_t hdr_fmt_logged;
 };
 
+struct s63_ticket { int mailbox; struct wl_resource *resource; struct dmabuf_buffer *pending_buffer; };
+static int s63_terminal_failure;
+static unsigned s63_timers;
+static uint64_t s63_tickets, s63_fenced, s63_immediate, s63_unsampled;
 struct s45_use {
     struct wl_list link;
     struct dmabuf_buffer *buffer;
@@ -270,12 +330,23 @@ struct s45_use {
     struct wl_listener destroy;
     struct surface *owner;
     uint64_t serial;
-    int fd, producer_done, external, retired, paced;
+    int fd, producer_done, external, retired, paced, s68_mailbox;
     unsigned frame_refs;
+    int s65_presented, s65_early_watch; int64_t s65_booked_ns;
+    unsigned s65_refs; /* actual Android per-submission release obligations */
     int frame_proven, watch_fallback;
+    struct s63_ticket *s63_ticket;
+    int64_t s63_due_ns;
     struct wl_event_source *producer_source;
     int64_t since_ns;
 };
+static unsigned s65_held,s65_waiting_producer_frames;
+static void s65_frame_producer_terminal(uint64_t,int);
+static int s65_can_prime(uint64_t serial);
+static int s65_buffer_held(const struct dmabuf_buffer *);
+static int s65_control_enabled(void);
+static void s65_control_start(struct wl_display *);
+static void s65_control_stop(void);
 static struct wl_list g_s45_uses, g_s45_free_uses;
 static struct wl_event_source *g_s45_timer;
 static int g_s45_timer_armed;
@@ -313,6 +384,7 @@ static void s45_release_idle(struct surface *s, struct wl_resource *buffer);
 static void s45_forget_surface(struct surface *s);
 static void s45_arm(void);
 static int s45_on_timer(void *data);
+static void s45_retire_ready(void);
 static void s47_emit_stats(const char *line);
 static struct wl_list g_surfaces;
 static struct wl_list g_toplevels;
@@ -341,14 +413,36 @@ volatile int g_hide_shell;
 volatile int g_zero_copy;
 static int g_zero_copy_paused;
 static int g_zero_copy_fx_skip_said;
+static int s68_baseline, s68_fast_pending;
+static uint64_t s68_mailbox_tickets, s68_mailbox_early, s68_mailbox_capped;
+static uint64_t s68_passes,s68_legacy_passes,s68_explicit_passes,s68_refused,s68_async;
+static uint64_t s69_mixed_passes,s69_mixed_fallback,s69_mixed_refused;
+static uint64_t s71_root_passes,s71_root_fallback,s71_root_refused;
+static struct wl_event_source *s68_baseline_timer;
+static int s68_natural_legacy(const struct surface *s,const struct s45_use *u) {
+    const struct dmabuf_buffer *b=s->dmabuf_buf;
+    return !s68_baseline && !vkp_s67_pool_policy() && u && !u->external && !u->s63_ticket &&
+        u->producer_done>0 && u->fd<0 && !u->retired && u->owner==s && b && b==u->buffer &&
+        b->img && b->gpu_ahb && b->s63_ahb_id && !b->s63_registration && u->resource &&
+        !s->s63_nested && (s->role==ROLE_TOPLEVEL || s->role==ROLE_SUBSURFACE);
+}
 
 volatile int g_ubwc = 1;
 
 volatile int g_no_render_node;
 
 static atomic_int g_output_refresh_mhz = 60000;
+static atomic_int s65_observed_refresh_mhz; /* separate from legacy bootstrap default */
 static atomic_int g_output_refresh_pending;
 static int g_output_announced_refresh_mhz = 60000;
+/* S65 layer vote only; does not change the display's advertised refresh,
+ * producer pacing, or S63 swapchain/other SurfaceControl layers. */
+int alroot_s65_effective_refresh_mhz(void) {
+    int rate=atomic_load(&s65_observed_refresh_mhz),cap=g_fps_limit;
+    if(rate<30000 || rate>240000)return 0;
+    if(cap>0 && cap<240 && cap*1000<rate)rate=cap*1000;
+    return rate;
+}
 
 volatile int g_output_w, g_output_h;
 struct pending_release {
@@ -422,6 +516,11 @@ static void arm_release_timer(void) {
     if (g_release_timer_fd < 0) return;
     wl_list_for_each(pr, &g_pending_releases, link)
         if (!earliest || pr->at_ns < earliest) earliest = pr->at_ns;
+    if (s63_timers) {
+        struct s45_use *u;
+        wl_list_for_each(u,&g_s45_uses,link)
+            if (u->s63_due_ns>0 && (!earliest || u->s63_due_ns<earliest)) earliest=u->s63_due_ns;
+    }
     struct itimerspec its = {0};
     if (earliest) { its.it_value.tv_sec = earliest / 1000000000LL; its.it_value.tv_nsec = earliest % 1000000000LL; }
     timerfd_settime(g_release_timer_fd, TFD_TIMER_ABSTIME, &its, NULL);
@@ -432,6 +531,14 @@ static int on_release_timer(int fd, uint32_t mask, void *data) {
     uint64_t expirations;
     int64_t now = now_ns() + 300000;
     if (read(fd, &expirations, sizeof(expirations)) < 0 && errno != EAGAIN) return 0;
+    if (s63_timers) {
+        struct s45_use *u; int due=0;
+        wl_list_for_each(u,&g_s45_uses,link) if (u->s63_due_ns>0 && u->s63_due_ns<=now) {
+            u->s63_due_ns=-1; --s63_timers; due=1;
+            if (u->owner && u->owner->s63_delayed) --u->owner->s63_delayed;
+        }
+        if (due) s45_retire_ready();
+    }
     wl_list_for_each_safe(pr, tmp, &g_pending_releases, link) {
         if (pr->at_ns <= now) {
             wl_buffer_send_release(pr->buffer);
@@ -446,7 +553,23 @@ static int on_release_timer(int fd, uint32_t mask, void *data) {
 
 /* Return whether this call emitted a protocol event now (a paced enqueue does
  * not). S45's completion poll can then avoid flushing when it emitted nothing. */
-static int release_buffer(struct surface *s, struct wl_resource *buffer, int64_t since_ns) {
+static int s65_pace_fix=1;
+static uint64_t s65_prebooked,s65_due_now;
+static void s65_set_pace_fix(int on){s65_pace_fix=!!on;}
+/* The rate limit and real Android release are independent prerequisites.
+ * Book the same automatic retirement deadline when superseded, then join
+ * it with the actual producer and consumer proof. Never send early.
+ * Explicit FPS caps and every non-direct buffer use retain S63 behavior. */
+static int64_t s65_book_auto_release(struct surface *s,int64_t now){
+    if(!s || !s65_pace_fix || g_fps_limit!=0 || g_release_unpaced || g_release_timer_fd<0)return 0;
+    int mhz=atomic_load(&g_output_refresh_mhz);
+    int64_t interval=mhz>=30000 && mhz<=240000?1000000000000LL/mhz:g_refresh_ns;
+    if(interval<=0)return 0;
+    int capped=0;
+    int64_t at=alroot_release_deadline_ns(now,s->next_release_ns,interval,(unsigned)s->releases_pending,1,&capped);
+    s->next_release_ns=at;if(capped)++g_perf.auto_release_capped;++s65_prebooked;return at;
+}
+static int release_buffer_planned(struct surface *s,struct wl_resource *buffer,int64_t since_ns,int64_t booked) {
     const int limit = g_fps_limit;
     /* Automatic desktop pacing follows the advertised physical display
      * rate. Measuring a heavily loaded compositor's event-loop wakeups
@@ -459,11 +582,15 @@ static int release_buffer(struct surface *s, struct wl_resource *buffer, int64_t
     if (g_release_unpaced || interval <= 0 || g_release_timer_fd < 0) { wl_buffer_send_release(buffer); perf_note_release(since_ns); return 1; }
     int64_t now = now_ns();
     int capped = 0;
-    const int64_t at = alroot_release_deadline_ns(now, s->next_release_ns,
-                            interval, (unsigned)s->releases_pending,
-                            limit == 0, &capped);
-    if (capped && limit == 0) g_perf.auto_release_capped++;
-    s->next_release_ns = at;
+    int64_t at=booked;
+    if(booked && limit==0) {
+        if(at<=now){wl_buffer_send_release(buffer);perf_note_release(since_ns);++s65_due_now;return 1;}
+    } else {
+        at = alroot_release_deadline_ns(now,s->next_release_ns,interval,(unsigned)s->releases_pending,
+                                       limit==0,&capped);
+        if(capped && limit==0)g_perf.auto_release_capped++;
+        s->next_release_ns=at;
+    }
     struct pending_release *pr = calloc(1, sizeof(*pr));
     if (!pr) { wl_buffer_send_release(buffer); perf_note_release(since_ns); return 1; }
     pr->buffer = buffer;
@@ -479,6 +606,10 @@ static int release_buffer(struct surface *s, struct wl_resource *buffer, int64_t
     arm_release_timer();
     return 0;
 }
+static int release_buffer(struct surface *s,struct wl_resource *buffer,int64_t since_ns){
+    return release_buffer_planned(s,buffer,since_ns,0);
+}
+
 
 
 struct seat_pointer { struct wl_resource *ptr; struct wl_resource *focus; };
@@ -501,6 +632,8 @@ static pthread_mutex_t g_cursor_lock = PTHREAD_MUTEX_INITIALIZER;
 static struct surface *g_cursor_surface;
 static struct surface *g_cursor_shown;
 static int g_cursor_hx, g_cursor_hy;
+static int g_cursor_request_hx,g_cursor_request_hy;
+static void s66_cursor_cancel(struct surface *s);
 static uint32_t g_cursor_px[CURSOR_MAX_PX];
 static uint32_t g_cursor_rb[CURSOR_MAX_PX];
 static int g_cursor_w, g_cursor_h;
@@ -509,7 +642,7 @@ static int g_cursor_serial;
 
 static void cursor_publish_shown(void) {
     pthread_mutex_lock(&g_cursor_lock);
-    if (g_cursor_w > 0) { g_cursor_hidden = 0; g_cursor_serial++; }
+    if (g_cursor_w > 0) { g_cursor_hx=g_cursor_request_hx;g_cursor_hy=g_cursor_request_hy;g_cursor_hidden = 0; g_cursor_serial++; }
     pthread_mutex_unlock(&g_cursor_lock);
 }
 
@@ -872,7 +1005,8 @@ static void take_dmabuf(struct surface *s, struct dmabuf_buffer *b, struct wl_re
         if (ahb) {
             b->img = vkp_image_from_ahb(ahb);
             if (b->img)
-                alroot_log("vulkan", "AHB -> VkImage GPU-copy: %dx%d (host imported actual gralloc buffer)",
+                alroot_log("vulkan", b->s63_registration ? "imported native AHB as VkImage: %dx%d (no frame command recorded yet)" :
+                           "AHB -> VkImage GPU-copy: %dx%d (host imported actual gralloc buffer)",
                            b->width, b->height);
         }
         /* S1.6 VkBuffer fallback is reserved for a plain single-plane
@@ -906,7 +1040,10 @@ static void take_dmabuf(struct surface *s, struct dmabuf_buffer *b, struct wl_re
         char name[160];
         s->announced_vulkan = 1;
         describe(s, name, sizeof(name));
-        if (b->img)
+        if (b->img && b->s63_registration)
+            alroot_log("vulkan","%s attached native AHB %dx%d; actual draw/transfer route is determined per scene",
+                       name,b->width,b->height);
+        else if (b->img)
             alroot_log("vulkan", "%s is presenting GPU frames through Wayland: %dx%d, format %c%c%c%c, %s (%s)",
                        name, b->width, b->height, b->format & 0xff, (b->format >> 8) & 0xff,
                        (b->format >> 16) & 0xff, (b->format >> 24) & 0xff,
@@ -1119,29 +1256,28 @@ static void surface_set_input(struct wl_client *c, struct wl_resource *r,
 
 static void send_toplevel_configure(struct surface *s);
 
-static void cursor_publish_buffer(struct surface *s, struct wl_resource *buffer) {
+static int cursor_publish_buffer(struct surface *s, struct wl_resource *buffer,int external) {
     struct dmabuf_buffer *db = get_dmabuf(buffer);
     struct wl_shm_buffer *shm = db ? NULL : wl_shm_buffer_get(buffer);
     if (shm) {
-        cursor_publish_shm(shm, g_cursor_hx, g_cursor_hy);
-    } else if (db && db->n_planes >= 1 && db->width > 0 && db->height > 0 &&
+        cursor_publish_shm(shm, g_cursor_request_hx, g_cursor_request_hy);
+    } else if (db && (db->n_planes>=1 || (external && db->gpu_ahb)) && db->width > 0 && db->height > 0 &&
                (int64_t)db->width * db->height <= CURSOR_MAX_PX) {
         if (!db->img && !db->import_failed) {
-            db->img = vkp_image_from_dmabuf(db->fd[0], db->format, db->modifier, db->width, db->height,
+            if(external && db->gpu_ahb)db->img=vkp_image_from_ahb(db->gpu_ahb);
+            if(!db->img && db->n_planes>0)db->img = vkp_image_from_dmabuf(db->fd[0], db->format, db->modifier, db->width, db->height,
                                             db->stride[0], db->offset[0]);
             if (!db->img) db->import_failed = 1;
         }
-        if (!db->img) return;
-        struct pollfd p = {.fd = db->fd[0], .events = POLLIN};
-        int r;
-        do { r = poll(&p, 1, 100); } while (r < 0 && errno == EINTR);
-        if (vkp_image_readback(db->img, g_cursor_rb, CURSOR_MAX_PX) != 0) return;
+        if (!db->img) return -1;
+        const int rr=vkp_cursor_readback(db->img,g_cursor_rb,CURSOR_MAX_PX,external);
+        if(rr!=0)return rr==VKP_RENDER_RETRY?0:-1;
         cursor_publish_pixels((const uint8_t *)g_cursor_rb, db->width, db->height,
-                              (size_t)db->width * 4, g_cursor_hx, g_cursor_hy);
+                              (size_t)db->width * 4, g_cursor_request_hx, g_cursor_request_hy);
     } else {
-        return;
+        return -1;
     }
-    g_cursor_shown = s;
+    g_cursor_shown = s;return 1;
 }
 
 static void surface_forget_idle_px(struct surface *s) {
@@ -1152,6 +1288,7 @@ static void surface_forget_idle_px(struct surface *s) {
 
 static void on_idle_buffer_destroyed(struct wl_listener *l, void *data) {
     struct surface *s = wl_container_of(l, s, idle_buffer_destroy);
+    s66_cursor_cancel(s);
     struct wl_shm_buffer *shm = wl_shm_buffer_get(s->idle_buffer);
     if (shm) {
         int32_t w = wl_shm_buffer_get_width(shm), h = wl_shm_buffer_get_height(shm);
@@ -1186,6 +1323,7 @@ static void surface_hold_idle(struct surface *s, struct wl_resource *buffer) {
 
 static struct wl_resource *surface_take_idle(struct surface *s) {
     struct wl_resource *buffer = s->idle_buffer;
+    s66_cursor_cancel(s);
     if (!buffer) return NULL;
     wl_list_remove(&s->idle_buffer_destroy.link);
     wl_list_init(&s->idle_buffer_destroy.link);
@@ -1199,6 +1337,8 @@ static void surface_drop_idle(struct surface *s) {
     if (buffer) s45_release_idle(s, buffer);
 }
 
+#include "s66_cursor_ready.inc"
+
 static void surface_commit(struct wl_client *c, struct wl_resource *r) {
     struct surface *s = wl_resource_get_user_data(r);
     struct surface *child;
@@ -1210,6 +1350,7 @@ static void surface_commit(struct wl_client *c, struct wl_resource *r) {
         send_toplevel_configure(s);
     }
 
+    s->s65_scale=s->s65_pending_scale; s->s65_transform=s->s65_pending_transform;
     if (s->pending_src_set) {
         s->src_set = s->pending_src[2] > 0;
         memcpy(s->src, s->pending_src, sizeof(s->src));
@@ -1238,6 +1379,14 @@ static void surface_commit(struct wl_client *c, struct wl_resource *r) {
             new_use = s45_use_create(s, db, buffer, producer_fd, external_ownership);
             producer_fd = -1;
             if (!new_use) { wl_client_post_no_memory(c); return; }
+            if (s->s63_pending) {
+                /* The committed use now pins the allocation. */
+                dmabuf_buffer_unref(s->s63_pending->pending_buffer);
+                s->s63_pending->pending_buffer=NULL;
+                new_use->s63_ticket = s->s63_pending;
+                new_use->s68_mailbox = s->s63_pending->mailbox;
+                s->s63_pending = NULL;
+            }
         } else if (producer_fd >= 0) { close(producer_fd); producer_fd = -1; }
 
         feedback_discard_all(&s->feedback);
@@ -1257,15 +1406,8 @@ static void surface_commit(struct wl_client *c, struct wl_resource *r) {
         } else surface_drop_idle(s);
         s45_use_activate(s, new_use);
         if (s->role == ROLE_CURSOR) {
-            if (!buffer) {
-                cursor_publish_hidden();
-            } else if (db && (vkp_frame_pending() || s45_use_ready(s->gpu_use) == 0)) {
-                surface_hold_idle(s, buffer);
-                s45_arm();
-            } else {
-                if (s45_use_ready(s->gpu_use) > 0) cursor_publish_buffer(s, buffer);
-                s45_release_idle(s, buffer);
-            }
+            if(buffer){surface_hold_idle(s,buffer);s66_cursor_progress(s);}
+            else if(s==g_cursor_surface)cursor_publish_hidden();
         } else if (s->role == ROLE_NONE) {
             if (buffer) surface_hold_idle(s, buffer);
         } else if (db) {
@@ -1304,10 +1446,18 @@ static void surface_commit(struct wl_client *c, struct wl_resource *r) {
     }
     if (s->role == ROLE_TOPLEVEL || s->role == ROLE_DESKTOP)
         pointer_bootstrap_if_ready();
+    /* One commit has now completely replaced the old generation. Process
+     * the real FD/alias guards before returning to wl_display's dispatch;
+     * ordinary Wayland flushing can batch events without forcing a syscall. */
+    if(s68_fast_pending){s68_fast_pending=0;s45_retire_ready();}
     schedule_render();
 }
-static void surface_set_buffer_transform(struct wl_client *c, struct wl_resource *r, int32_t t) {}
-static void surface_set_buffer_scale(struct wl_client *c, struct wl_resource *r, int32_t s) {}
+static void surface_set_buffer_transform(struct wl_client *c, struct wl_resource *r, int32_t t) {
+    struct surface *s=wl_resource_get_user_data(r); if(s)s->s65_pending_transform=t;
+}
+static void surface_set_buffer_scale(struct wl_client *c, struct wl_resource *r, int32_t scale) {
+    struct surface *s=wl_resource_get_user_data(r); if(s)s->s65_pending_scale=scale;
+}
 static void surface_damage_buffer(struct wl_client *c, struct wl_resource *r,
                                   int32_t x, int32_t y, int32_t w, int32_t h) {
     struct surface *s = wl_resource_get_user_data(r);
@@ -1422,6 +1572,8 @@ static void compositor_create_surface(struct wl_client *c, struct wl_resource *r
     if (!s) { wl_client_post_no_memory(c); return; }
     s->resource = wl_resource_create(c, &wl_surface_interface, wl_resource_get_version(r), id);
     if (!s->resource) { free(s); wl_client_post_no_memory(c); return; }
+    const struct client_info *ci=client_info_of(c);
+    s->s63_nested=ci && ci->s63_nested;
     wl_list_init(&s->pending_frames);
     wl_list_init(&s->frames);
     wl_list_init(&s->pending_feedback);
@@ -1887,8 +2039,15 @@ static void note_hdr_unimported(const struct draw_list *dl, struct surface *s, i
 
 static int surface_translucent(const struct surface *s, int w, int h) {
     if (!s->buf_alpha) return 0;
-    const struct client_info *ci = client_info_of(wl_resource_get_client(s->resource));
-    if (!ci || !ci->declares_opaque) return 0;
+    const int mode=s->dmabuf_buf ? s->dmabuf_buf->s63_alpha : 0;
+    if (mode==1) return 0; /* OPAQUE: VkImage storage alpha is not meaningful. */
+    if (!mode) {
+        /* Compatibility for non-negotiated wl_buffers only. */
+        const struct client_info *ci=client_info_of(wl_resource_get_client(s->resource));
+        if (!ci || !ci->declares_opaque) return 0;
+    }
+    /* A v5 premultiplied image defaults to blending even if this client
+     * has never sent set_opaque_region on any of its surfaces. */
     const int *o = s->opaque;
     return !(o[2] > 0 && o[0] <= 0 && o[1] <= 0 &&
              (long long)o[0] + o[2] >= w && (long long)o[1] + o[3] >= h);
@@ -1922,6 +2081,12 @@ static void add_surface(struct draw_list *dl, struct surface *s, int ox, int oy)
         .acquire_fence_fd=use ? use->fd : -1,
         .acquire_serial=use ? use->serial : 0,
         .external_ownership=use && use->external,
+        .nested_output=s->role==ROLE_DESKTOP || s->s63_nested,
+        .s68_legacy_ready=s68_natural_legacy(s,use),
+        .s69_mixed_alpha_defined=(s->dmabuf_buf && s->dmabuf_buf->s63_alpha) ||
+            (!s->buf_alpha && !s->dmabuf_buf) ||
+            (s->opaque[0]<=0 && s->opaque[1]<=0 && s->opaque[2]>0 && s->opaque[3]>0 &&
+             (int64_t)s->opaque[0]+s->opaque[2]>=dw && (int64_t)s->opaque[1]+s->opaque[3]>=dh),
     };
     s->drawn = 1;
 }
@@ -2270,6 +2435,11 @@ static void s47_emit_stats(const char *line) {
 }
 
 #include "alroot_commit_sync.inc"
+#include "s65_frame_pace.inc"
+#include "s66_clock.inc"
+#include "s66_single_java.inc"
+#include "s65_root_host.inc"
+#include "s65_control.inc"
 
 static int s45_render(int w, int h, const struct vkp_draw *draws, int n) {
     /* Legacy direct-layer buffer lifetime is unchanged in S45. */
@@ -2283,6 +2453,7 @@ static int s45_render(int w, int h, const struct vkp_draw *draws, int n) {
 static void render_scene(void) {
     if (vkp_frame_pending()) { g_dirty = 1; s45_arm(); return; }
     if (atomic_load(&g_stream_on)) {
+        if (!s65_hide_displayed()) { g_dirty=1; return; }
         render_stream();
         if (vkp_frame_pending()) s45_arm();
         return;
@@ -2325,6 +2496,27 @@ static void render_scene(void) {
         return;
     }
     int rendered = 0, render_result = -1;
+    int s68_legacy_scene=0,s68_explicit_scene=0,s69_nested=0,s69_mixed=0,s69_unknown_alpha=0;
+    for(int i=0;i<dl.n;++i){
+        if(dl.d[i].nested_output){++s69_nested;continue;}
+        s69_unknown_alpha |= !dl.d[i].s69_mixed_alpha_defined;
+        s68_legacy_scene |= dl.d[i].s68_legacy_ready;
+        s68_explicit_scene |= dl.d[i].external_ownership;
+    }
+    /* Reuse the normal root's actual peer, generation, opacity, geometry,
+     * format and buffer ownership checks. Never change root trial policy;
+     * the child transaction arbitration below remains authoritative.
+     * Real raw native content must also exist above the flattened desktop. */
+    if(s69_nested && (s68_legacy_scene || s68_explicit_scene)){
+        if(!s68_baseline && !s69_unknown_alpha && s69_nested==1 && dl.n>1 && dl.d[0].nested_output){
+            struct draw_list base=dl;base.n=1;
+            const char *prior=s65_last_reason;
+            if(s65_candidate(&base,w,h)){dl.d[0].nested_output=2;s69_mixed=1;}
+            s65_last_reason=prior;
+        }
+        if(!s69_mixed)++s69_mixed_refused;
+    }
+    if(s69_nested)s68_legacy_scene=s68_explicit_scene=0;
     int fx_on = vkp_effects_active();
     int framegen = vkp_framegen_active();
     const int cardboard = vkp_cardboard_active();
@@ -2335,12 +2527,38 @@ static void render_scene(void) {
         hdr_note_route(hdr_route, &hs);
         hdr_note_precedence(hdr_route == 3 ? hs.who : NULL, fx_on, framegen);
     }
+    /* 1 = direct, 2 = same retained generation, -1 = defer until release.
+     * On a mode change never sample storage still owned by SurfaceFlinger. */
+    const int direct=s65_choose_route(&dl,w,h,!hdr_route && !fx_on && !framegen && !cardboard &&
+                                      !vkp_quest_layer_presentation());
+    if(direct<0) {
+s66_output_backpressure:
+        g_s45_draw_scratch=dl;g_s45_draw_scratch.n=0;free(hs.is_hdr);
+        /* A release event or next vsync retries, without a blocking wait. */
+        if(vkp_frame_pending())s45_arm();
+        schedule_render();return;
+    }
+    if(direct>0) { rendered=1; goto s65_scene_ready; }
+    /* The optional SurfaceControl path owns its allocations until released:
+     * choose_route above must have allowed a normal parent render first.
+     * Admit only the same explicit full-size, single owned SDR root as S69.
+     * Keep separately from native/mixed and direct Android layer statistics. */
+    int s71_root=0;
+    if(!s68_baseline && dl.n==1 && s69_nested==1 && !hdr_route && !fx_on &&
+       !framegen && !cardboard && !vkp_quest_layer_presentation()){
+        const char *prior=s65_last_reason;
+        if(s65_candidate(&dl,w,h)){dl.d[0].nested_output=3;s71_root=1;}
+        else ++s71_root_refused;
+        s65_last_reason=prior;
+    }
     if (hdr_route == 3) { fx_on = 0; framegen = 0; }
     if (hdr_route == 1) {
         static int fell_back;
         vkp_apply_window_request();
         sc_layer_hide_overlay();
-        if (sc_layer_present_hdr_scene(dl.d, dl.n, &hs.hf, w, h, hs.color) == 0) {
+        int hr=sc_layer_present_hdr_scene(dl.d, dl.n, &hs.hf, w, h, hs.color);
+        if(hr==VKP_RENDER_RETRY)goto s66_output_backpressure;
+        if (hr == 0) {
             rendered = vkp_base_black(w, h) == 0;
             if (fell_back) { fell_back = 0; alroot_log("color", "the composed picture is on the game's display layer again"); }
         } else {
@@ -2368,7 +2586,10 @@ static void render_scene(void) {
         rendered = (render_result = s45_render(w, h, dl.d, dl.n)) == 0;
     } else if (hdr_route == 0 || hdr_route == 3) {
     const int pass_on = fx_on || framegen;
-    int explicit_scene = 0;
+    /* The S67 pool is for sources requiring a staging image. A native
+     * producer-completed AHB can be sampled by this same final attachment
+     * pass as an explicit AHB, including overlapping translucent children. */
+    int explicit_scene = s68_legacy_scene;
     for (int i = 0; i < dl.n; i++)
         if (dl.d[i].external_ownership || dl.d[i].has_acquire_fence) explicit_scene = 1;
     int li = (g_zero_copy && !framegen && !cardboard && !explicit_scene)
@@ -2403,17 +2624,23 @@ static void render_scene(void) {
     }
     if (li >= 0 || ls) {
         vkp_apply_window_request();
-        int r = -1;
+        int r = -1, s67_queued=0;
         if (!(fx_on && li >= 0) && ls && ls->dmabuf_buf && ahb_swapchain_has_ahb(ls->dmabuf_buf))
             r = ahb_swapchain_present(ls->dmabuf_buf, ls, w, h);
+        if(r==VKP_RENDER_RETRY)goto s66_output_backpressure;
         if (r != 0 && li >= 0)
             r = fx_on ? sc_layer_present_pass(&dl.d[li], 1, w, h)
-                      : sc_layer_present(dl.d[li].img, w, h, ls ? alroot_surface_color(ls) : NULL);
+                      : sc_layer_present_s67(dl.d[li].img,w,h,ls?alroot_surface_color(ls):NULL,
+                            dl.n==1 && li==0 && !over && !hdr_route && !fx_on && !framegen && !cardboard && !vkp_quest_layer_presentation(),&s67_queued);
+        if(r==VKP_RENDER_RETRY)goto s66_output_backpressure;
         if (r == 0) {
             if (ls) ls->drawn = 1;
             int go[8], ov = 0;
-            if (over == 1 && li >= 0 && vkp_map_draw(&dl.d[li + 1], go))
-                ov = sc_layer_present_overlay(dl.d[li + 1].img, go, dl.d[li + 1].blend) == 0 ? 1 : -1;
+            if (over == 1 && li >= 0 && vkp_map_draw(&dl.d[li + 1], go)) {
+                int orc=sc_layer_present_overlay(dl.d[li + 1].img, go, dl.d[li + 1].blend);
+                if(orc==VKP_RENDER_RETRY)goto s66_output_backpressure;
+                ov = orc==0 ? 1 : -1;
+            }
             if (ov <= 0) sc_layer_hide_overlay();
             if (ov < 0) {
                 sc_layer_hide();
@@ -2421,7 +2648,16 @@ static void render_scene(void) {
                 copy = 1;
                 hdr_copy = "the overlay layer refused the window above it";
             } else {
-                rendered = vkp_base_black(w, h) == 0;
+                /* A queued copy was accepted only with a warmed black
+                 * parent; its fence owns the single global command slot.
+                 * s45_capture_frame below arms/holds the original scene. */
+                if(s67_queued){
+                    /* GPU completion proves source retirement, not Android
+                     * latch/present. Frame callbacks remain S45-paced; no
+                     * synthetic wp_presentation.presented on this route. */
+                    wl_list_for_each(s,&g_surfaces,link)feedback_discard_all(&s->feedback);
+                }
+                rendered = s67_queued ? 1 : vkp_base_black(w,h)==0;
             }
         } else {
             rendered = (render_result = s45_render(w, h, dl.d, dl.n)) == 0;
@@ -2439,6 +2675,32 @@ static void render_scene(void) {
                  : "it is not the one fullscreen window (only that one gets its own display layer)";
     }
     }
+    /* Scene rendering can mean a sampled attachment, not a transfer copy.
+     * Only the successful normal SDR render call owns this route marker. */
+    if(rendered && render_result==0 && hdr_route==0 && !fx_on && !framegen && !cardboard &&
+       (s68_legacy_scene || s68_explicit_scene) && !vkp_quest_layer_presentation()){
+        if(vkp_last_direct_attachment()){
+            ++s68_passes;if(s68_legacy_scene)++s68_legacy_passes;if(s68_explicit_scene)++s68_explicit_passes;
+            if(vkp_frame_pending())++s68_async;
+        }else ++s68_refused;
+    }
+    if(s71_root && rendered && render_result==0){
+        if(vkp_last_direct_attachment())++s71_root_passes;else ++s71_root_fallback;
+    }
+    if(s69_mixed && rendered && render_result==0 && hdr_route==0 && !fx_on && !framegen && !cardboard && !vkp_quest_layer_presentation()){
+        if(vkp_last_direct_attachment())++s69_mixed_passes;else ++s69_mixed_fallback;
+    }
+    if (rendered && render_result==0 && hdr_route==0 && vkp_last_direct_attachment()) {
+        copy=0; hdr_copy=NULL;
+    }
+s65_scene_ready:
+    /* Do not attempt a child layer on a cold/rebound BLAST parent before
+     * the normal Android parent has a successfully queued swapchain image. */
+    if(!direct && !hdr_route && rendered && render_result==0 && vkp_window() &&
+       !vkp_quest_layer_presentation())s65_parent_presented();
+    if(!direct && rendered && s65_hide_after_render){
+        if(!s69_can_reveal_parent() || !s65_hide_displayed())schedule_render();
+    }
     free(hs.is_hdr);
     if (hdr_copy && rendered && alroot_color_hdr_open()) hdr_count_copied(&dl, hdr_copy);
     const int pending_frame = vkp_frame_pending();
@@ -2446,16 +2708,17 @@ static void render_scene(void) {
         s45_capture_frame(dl.d, dl.n, presented_ns(t_scene), copy, rendered);
     } else if (rendered) {
         int64_t t = presented_ns(t_scene);
-        g_stat_frames++;
+        if(direct!=2) g_stat_frames++;
         if (g_hud_new) {
             g_hud_new = 0;
             hud_frame_shown(t);
         }
         wl_list_for_each(s, &g_surfaces, link) {
-            if (s->drawn) feedback_present_all(&s->feedback, t);
+            /* Transaction submission alone is not proof of physical latch. */
+            if (!direct && s->drawn) feedback_present_all(&s->feedback, t);
             else feedback_discard_all(&s->feedback);
         }
-        fire_all_frames();
+        if(direct!=1 || !s65_frame_snapshot())fire_all_frames();
     } else if (render_result == VKP_RENDER_RETRY) {
         g_dirty = 1;
         s45_arm();
@@ -2532,6 +2795,7 @@ static uint32_t now_ms(void) {
 static void pointer_set_cursor(struct wl_client *c, struct wl_resource *r, uint32_t serial,
                                struct wl_resource *surface, int32_t hx, int32_t hy) {
     if (!surface) {
+        s66_cursor_cancel(g_cursor_surface);
         if (g_cursor_surface) g_cursor_surface->role = ROLE_NONE;
         g_cursor_surface = NULL;
         cursor_publish_hidden();
@@ -2540,19 +2804,11 @@ static void pointer_set_cursor(struct wl_client *c, struct wl_resource *r, uint3
     struct surface *s = wl_resource_get_user_data(surface);
     if (!s) return;
     if (s->role != ROLE_NONE && s->role != ROLE_CURSOR) return;
-    s->role = ROLE_CURSOR;
-    g_cursor_surface = s;
-    g_cursor_hx = hx;
-    g_cursor_hy = hy;
-    if (s->idle_buffer && get_dmabuf(s->idle_buffer) &&
-        (vkp_frame_pending() || s45_use_ready(s->gpu_use) == 0)) {
-        s45_arm();
-        return;
-    }
-    struct wl_resource *buffer = surface_take_idle(s);
-    if (buffer) {
-        if (s45_use_ready(s->gpu_use) > 0) cursor_publish_buffer(s, buffer);
-        s45_release_idle(s, buffer);
+    if(s!=g_cursor_surface)s66_cursor_cancel(g_cursor_surface);
+    s->role=ROLE_CURSOR;g_cursor_surface=s;
+    g_cursor_request_hx=hx;g_cursor_request_hy=hy;
+    if(s->idle_buffer){
+        s66_cursor_progress(s);
     } else if (g_cursor_shown == s) {
         cursor_publish_shown();
     } else if (s->idle_px) {
@@ -3547,7 +3803,7 @@ static void output_resized(void) {
 
 static int on_input_readable(int fd, uint32_t mask, void *data) {
     struct input_msg m;
-    int vsync = 0;
+    int vsync = 0,vsync_slot=0,vsync_gen=0;
     int64_t vsync_ns = 0;
     while (read(fd, &m, sizeof(m)) == (ssize_t)sizeof(m)) {
         switch (m.type) {
@@ -3555,7 +3811,7 @@ static int on_input_readable(int fd, uint32_t mask, void *data) {
         case 2: pointer_event(m.p1, m.p2, 0, 0); break;
         case 3: pointer_button(m.p1, m.p2); break;
         case 4: scroll_event(m.p1); break;
-        case 5: vsync = 1; vsync_ns = ((int64_t)m.p1 << 32) | (uint32_t)m.p2; break;
+        case 5: vsync = 1; vsync_slot=m.p3;vsync_gen=m.p4;vsync_ns = ((int64_t)m.p1 << 32) | (uint32_t)m.p2; break;
         case 6: pointer_delta(m.p1 / 256.0, m.p2 / 256.0); break;
         case 7: deliver_touch(&m); break;
         case 12: {
@@ -3614,7 +3870,7 @@ static int on_input_readable(int fd, uint32_t mask, void *data) {
         output_notify_mode();
         wl_display_flush_clients(g_display);
     }
-    if (vsync) on_vsync(vsync_ns);
+    if (vsync) { s66_take_tick(vsync_ns,vsync_slot,vsync_gen);on_vsync(vsync_ns);s66_tick.frame=0; }
     return 0;
 }
 
@@ -3664,6 +3920,7 @@ void alroot_wayland_output_resized(void) {
 }
 
 void alroot_wayland_set_output_refresh_rate(int mhz) {
+    atomic_store(&s65_observed_refresh_mhz,mhz>=30000 && mhz<=240000?mhz:0);
     if (mhz <= 0) mhz = 60000;
     if (atomic_exchange(&g_output_refresh_mhz, mhz) == mhz || g_input_pipe[1] < 0) return;
     atomic_store(&g_output_refresh_pending, 1);
@@ -3673,11 +3930,17 @@ void alroot_wayland_set_output_refresh_rate(int mhz) {
     (void)n;
 }
 
-void alroot_wayland_vsync(int64_t frame_time_ns) {
+static void s66_write_tick(int64_t frame_time_ns,int slot,int gen) {
     if (g_input_pipe[1] < 0) return;
-    struct input_msg m = { 5, (int)(frame_time_ns >> 32), (int)(uint32_t)frame_time_ns, 0, 0 };
+    struct input_msg m = { 5, (int)(frame_time_ns >> 32), (int)(uint32_t)frame_time_ns, slot, gen };
     ssize_t n = write(g_input_pipe[1], &m, sizeof(m));
     (void)n;
+}
+
+void alroot_wayland_vsync(int64_t frame_time_ns) {
+    unsigned gen=atomic_load(&s66_generation);
+    if((gen&1) && s66_java_tick(frame_time_ns,gen))return;
+    s66_write_tick(frame_time_ns,0,0);
 }
 
 void alroot_wayland_send_scene_input(int type, int a, int b) {
@@ -3745,7 +4008,7 @@ static int on_stats_timer(void *data) {
     int windows = 0;
     struct surface *s;
     wl_list_for_each(s, &g_toplevels, toplevel_link) windows++;
-    unsigned zero_copy = ahb_swapchain_stats_take();
+    unsigned zero_copy = ahb_swapchain_stats_take() + s65_period_take();
     unsigned layer_frames = sc_layer_frames_take();
     g_zero_copy_last = zero_copy;
     unsigned generated = vkp_framegen_stats_take();
@@ -3897,6 +4160,8 @@ int alroot_wayland_run(void) {
     wl_list_init(&g_s45_frame.frames);
     wl_list_init(&g_s45_frame.feedback);
     g_s45_frame.active = 0;
+    s63_terminal_failure=0; s63_timers=0;
+    s63_tickets=s63_fenced=s63_immediate=s63_unsampled=0;
     g_s45_timer = NULL;
     g_s45_timer_armed = 0;
     g_s45_protocol_dirty = 0;
@@ -3921,14 +4186,12 @@ int alroot_wayland_run(void) {
     }
 
     const char *rt = getenv("XDG_RUNTIME_DIR");
-    if (rt && *rt) {
-        char p[512];
-        snprintf(p, sizeof(p), "%s/wayland-0", rt);      unlink(p);
-        snprintf(p, sizeof(p), "%s/wayland-0.lock", rt); unlink(p);
-    }
+    /* libwayland takes the display lock before removing an orphaned socket.
+     * Unlinking the lock here would let another startup replace a live display. */
     if (wl_display_add_socket(display, "wayland-0") != 0) {
-        WLOGE("add_socket(wayland-0) failed in XDG_RUNTIME_DIR=%s (errno path/perms?)",
-              rt ? rt : "(null)");
+        const int err = errno;
+        WLOGE("add_socket(wayland-0) failed in XDG_RUNTIME_DIR=%s: %s",rt ? rt : "(null)",strerror(err));
+        wl_display_destroy(display);
         return 1;
     }
     alroot_log("display", "Wayland compositor listening on %s/wayland-0", rt ? rt : "?");
@@ -3945,6 +4208,7 @@ int alroot_wayland_run(void) {
     /* Vendor-neutral AHB-only wl_buffer path; no GBM/DRM node needed.
      * Compositor is role-agnostic (labwc/KWin/Weston/Mutter are clients). */
     alroot_gpu_buffer_init(display);
+    wl_global_create(display,&alroot_xwl_repaint_v1_interface,1,NULL,s69_bind_repaint);
     wl_global_create(display, &wl_seat_interface, 9, NULL, bind_seat);
     wl_global_create(display, &banner_desktop_v1_interface, 1, NULL, bind_desktop);
     wl_global_create(display, &wp_presentation_interface, 2, NULL, bind_presentation);
@@ -3965,6 +4229,7 @@ int alroot_wayland_run(void) {
                                                 WL_EVENT_READABLE, on_release_timer, NULL);
 
     g_display = display;
+    s65_control_start(display);
     if (pipe2(g_input_pipe, O_CLOEXEC | O_NONBLOCK) == 0) {
         wl_event_loop_add_fd(wl_display_get_event_loop(display), g_input_pipe[0],
                              WL_EVENT_READABLE, on_input_readable, NULL);
@@ -3978,7 +4243,9 @@ int alroot_wayland_run(void) {
     g_output_announced_refresh_mhz = atomic_load(&g_output_refresh_mhz);
     wl_display_run(display);
 
+    s65_control_stop();
     wl_display_destroy_clients(display);
+    s65_stop_root();
     s45_shutdown();
     free(g_s45_draw_scratch.d);
     memset(&g_s45_draw_scratch, 0, sizeof(g_s45_draw_scratch));

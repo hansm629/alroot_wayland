@@ -8,6 +8,8 @@
 #include <unistd.h>
 #include <wayland-server.h>
 #include "alroot-gpu-buffer-v1-server-protocol.h"
+#include <dlfcn.h>
+static int (*s63_get_ahb_id)(const AHardwareBuffer *, uint64_t *);
 #include "compositor_internal.h"
 #include "vk_present.h"
 
@@ -120,7 +122,7 @@ static void gpu_manager_create_common(struct wl_client *client,
                                       uint32_t id, int socket,
                                       uint32_t width, uint32_t height,
                                       uint32_t expected_format,
-                                      int format_request_v2) {
+                                      int format_request_v2, int composition_alpha) {
     AHardwareBuffer *ahb = NULL;
     if (width == 0 || height == 0 || width > 8192 || height > 8192) {
         close(socket);
@@ -188,6 +190,9 @@ static void gpu_manager_create_common(struct wl_client *client,
                      DRM_ARGB8888 : DRM_ABGR8888;
     buffer->modifier = MOD_INVALID;
     buffer->gpu_ahb = ahb;
+    buffer->s63_registration=wl_resource_get_version(manager)>=4;
+    buffer->s63_alpha=composition_alpha;
+    if (s63_get_ahb_id && s63_get_ahb_id(ahb, &buffer->s63_ahb_id) != 0) buffer->s63_ahb_id = 0;
     buffer->n_planes = 0;
     for (int i = 0; i < MAX_PLANES; ++i) buffer->fd[i] = -1;
     gpu_buffer_note_allocated(buffer);
@@ -195,7 +200,8 @@ static void gpu_manager_create_common(struct wl_client *client,
                                    gpu_buffer_resource_destroy);
     struct client_info *info = client_info_of(client);
     if (info) info->dmabuf_buffers++;
-    alroot_log("gpu-copy",
+    alroot_log(buffer->s63_registration ? "ahb" : "gpu-copy",
+               buffer->s63_registration ? "registered native AHB wl_buffer %ux%u %s (transport only)" :
                "new AHB wl_buffer %ux%u %s, Vulkan GPU-copy transport (no DRM fd)",
                width, height,
                desc.format == ALROOT_AHB_BGRA8_FORMAT ? "BGRA8" : "RGBA8");
@@ -208,7 +214,7 @@ static void gpu_manager_create(struct wl_client *client,
     /* Strict v1 semantics, including for version-2 clients that still
      * call the legacy request. No behavior change for the S1.1 baseline. */
     gpu_manager_create_common(client,manager,id,socket,width,height,
-                              AHARDWAREBUFFER_FORMAT_R8G8B8A8_UNORM,0);
+                              AHARDWAREBUFFER_FORMAT_R8G8B8A8_UNORM,0,0);
 }
 
 static void gpu_manager_create_with_format(struct wl_client *client,
@@ -216,9 +222,20 @@ static void gpu_manager_create_with_format(struct wl_client *client,
                                            uint32_t id, int socket,
                                            uint32_t width, uint32_t height,
                                            uint32_t format) {
-    gpu_manager_create_common(client,manager,id,socket,width,height,format,1);
+    gpu_manager_create_common(client,manager,id,socket,width,height,format,1,0);
 }
 
+static void gpu_manager_create_with_mode(struct wl_client *client, struct wl_resource *manager,
+                                         uint32_t id, int socket, uint32_t w, uint32_t h,
+                                         uint32_t format, uint32_t alpha) {
+    if (alpha != ALROOT_GPU_BUFFER_V1_ALPHA_MODE_OPAQUE &&
+        alpha != ALROOT_GPU_BUFFER_V1_ALPHA_MODE_PREMULTIPLIED) {
+        if (socket>=0) close(socket);
+        wl_resource_post_error(manager,ALROOT_GPU_BUFFER_V1_ERROR_INVALID_BUFFER,"invalid AHB alpha mode");
+        return;
+    }
+    gpu_manager_create_common(client,manager,id,socket,w,h,format,1,(int)alpha+1);
+}
 static void gpu_manager_acquire_fence(struct wl_client *client, struct wl_resource *manager,
                                       struct wl_resource *surface, struct wl_resource *buffer, int fd) {
     alroot_gpu_set_acquire(client, manager, surface, buffer, fd, 0);
@@ -233,6 +250,9 @@ static const struct alroot_gpu_buffer_v1_interface gpu_manager_impl = {
     .create_buffer_with_format = gpu_manager_create_with_format,
     .set_acquire_fence = gpu_manager_acquire_fence,
     .set_acquire_ready = gpu_manager_acquire_ready,
+    .get_release = alroot_gpu_get_release,
+    .get_mailbox_release = alroot_gpu_get_mailbox_release,
+    .create_buffer_with_mode = gpu_manager_create_with_mode,
 };
 
 static void gpu_manager_bind(struct wl_client *client, void *data,
@@ -257,7 +277,12 @@ void alroot_gpu_buffer_init(struct wl_display *display) {
     g_bgra8_import_supported=probe_bgra8_import();
     const char *sync_setting = getenv("S45_AHB_EXPLICIT_SYNC");
     int explicit_sync = (!sync_setting || strcmp(sync_setting, "0")) && vkp_can_wait_sync_fd();
-    const uint32_t protocol_version=g_bgra8_import_supported?(explicit_sync?3u:2u):1u;
+    s63_get_ahb_id = (int (*)(const AHardwareBuffer *, uint64_t *))dlsym(RTLD_DEFAULT, "AHardwareBuffer_getId");
+    const char *s63 = getenv("S63_HOST_EXPLICIT_RELEASE");
+    int v4 = s63_get_ahb_id && (!s63 || !strcmp(s63, "1"));
+    const char *alpha=getenv("S63_HOST_ALPHA_MODE");
+    int v5=v4 && (!alpha || !strcmp(alpha,"1"));
+    const uint32_t protocol_version=g_bgra8_import_supported?(explicit_sync?(v5?6u:v4?4u:3u):2u):1u;
     g_gpu_protocol_version = protocol_version;
     if (!wl_global_create(display, &alroot_gpu_buffer_v1_interface,
                           (int)protocol_version,
@@ -265,7 +290,8 @@ void alroot_gpu_buffer_init(struct wl_display *display) {
         alroot_log("error", "AHB-only GPU-copy protocol global creation failed");
         return;
     }
-    alroot_log("gpu-copy",
+    alroot_log(protocol_version>=4 ? "ahb" : "gpu-copy",
+               protocol_version>=4 ? "alroot_gpu_buffer_v1 version %u: native AHB and per-commit release, BGRA8 VkImage import=%s" :
                "alroot_gpu_buffer_v1 version %u: AHB RGBA8 GPU-copy, BGRA8 VkImage import=%s",
                protocol_version,g_bgra8_import_supported?"verified":"not supported");
 }

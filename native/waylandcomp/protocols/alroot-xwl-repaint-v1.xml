@@ -1,0 +1,20 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<protocol name="alroot_xwl_repaint_v1">
+  <copyright>Copyright © 2026 Alroot contributors. MIT license.</copyright>
+  <interface name="alroot_xwl_repaint_v1" version="1">
+    <description summary="refresh one authenticated root backing without changing its pixels">
+      Only the rootful Xwayland selected by the compositor can register its
+      own root surface. A repaint event asks it to report one pixel of damage
+      and use its normal renderer, buffer allocation, and explicit synchronization.
+      The cookie is diagnostic; an event is not evidence of a new buffer or release.
+    </description>
+    <request name="destroy" type="destructor"/>
+    <request name="register_root">
+      <arg name="root" type="object" interface="wl_surface"/>
+    </request>
+    <event name="repaint">
+      <arg name="surface" type="object" interface="wl_surface"/>
+      <arg name="cookie" type="uint"/>
+    </event>
+  </interface>
+</protocol>

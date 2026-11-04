@@ -15,6 +15,7 @@ extern "C" {
  * @page page_alroot_gpu_buffer_v1 The alroot_gpu_buffer_v1 protocol
  * @section page_ifaces_alroot_gpu_buffer_v1 Interfaces
  * - @subpage page_iface_alroot_gpu_buffer_v1 - GPU AHardwareBuffer-backed Wayland buffers
+ * - @subpage page_iface_alroot_buffer_release_v1 - one commit, one release
  * @section page_copyright_alroot_gpu_buffer_v1 Copyright
  * <pre>
  *
@@ -33,6 +34,7 @@ extern "C" {
  * MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT.
  * </pre>
  */
+struct alroot_buffer_release_v1;
 struct alroot_gpu_buffer_v1;
 struct wl_buffer;
 struct wl_surface;
@@ -96,6 +98,35 @@ struct wl_surface;
  */
 extern const struct wl_interface alroot_gpu_buffer_v1_interface;
 #endif
+#ifndef ALROOT_BUFFER_RELEASE_V1_INTERFACE
+#define ALROOT_BUFFER_RELEASE_V1_INTERFACE
+/**
+ * @page page_iface_alroot_buffer_release_v1 alroot_buffer_release_v1
+ * @section page_iface_alroot_buffer_release_v1_desc Description
+ *
+ * A terminal sync_file orders all writes by this producer and all reads
+ * by the compositor until it relinquished this use. The local proxy may
+ * be destroyed without any request when a client abandons the use.
+ * @section page_iface_alroot_buffer_release_v1_api API
+ * See @ref iface_alroot_buffer_release_v1.
+ */
+/**
+ * @defgroup iface_alroot_buffer_release_v1 The alroot_buffer_release_v1 interface
+ *
+ * A terminal sync_file orders all writes by this producer and all reads
+ * by the compositor until it relinquished this use. The local proxy may
+ * be destroyed without any request when a client abandons the use.
+ */
+extern const struct wl_interface alroot_buffer_release_v1_interface;
+#endif
+
+#ifndef ALROOT_GPU_BUFFER_V1_ALPHA_MODE_ENUM
+#define ALROOT_GPU_BUFFER_V1_ALPHA_MODE_ENUM
+enum alroot_gpu_buffer_v1_alpha_mode {
+	ALROOT_GPU_BUFFER_V1_ALPHA_MODE_OPAQUE = 0,
+	ALROOT_GPU_BUFFER_V1_ALPHA_MODE_PREMULTIPLIED = 1,
+};
+#endif /* ALROOT_GPU_BUFFER_V1_ALPHA_MODE_ENUM */
 
 #ifndef ALROOT_GPU_BUFFER_V1_FORMAT_ENUM
 #define ALROOT_GPU_BUFFER_V1_FORMAT_ENUM
@@ -134,6 +165,9 @@ enum alroot_gpu_buffer_v1_error {
 #define ALROOT_GPU_BUFFER_V1_CREATE_BUFFER_WITH_FORMAT 2
 #define ALROOT_GPU_BUFFER_V1_SET_ACQUIRE_FENCE 3
 #define ALROOT_GPU_BUFFER_V1_SET_ACQUIRE_READY 4
+#define ALROOT_GPU_BUFFER_V1_GET_RELEASE 5
+#define ALROOT_GPU_BUFFER_V1_CREATE_BUFFER_WITH_MODE 6
+#define ALROOT_GPU_BUFFER_V1_GET_MAILBOX_RELEASE 7
 
 
 /**
@@ -156,6 +190,18 @@ enum alroot_gpu_buffer_v1_error {
  * @ingroup iface_alroot_gpu_buffer_v1
  */
 #define ALROOT_GPU_BUFFER_V1_SET_ACQUIRE_READY_SINCE_VERSION 3
+/**
+ * @ingroup iface_alroot_gpu_buffer_v1
+ */
+#define ALROOT_GPU_BUFFER_V1_GET_RELEASE_SINCE_VERSION 4
+/**
+ * @ingroup iface_alroot_gpu_buffer_v1
+ */
+#define ALROOT_GPU_BUFFER_V1_CREATE_BUFFER_WITH_MODE_SINCE_VERSION 5
+/**
+ * @ingroup iface_alroot_gpu_buffer_v1
+ */
+#define ALROOT_GPU_BUFFER_V1_GET_MAILBOX_RELEASE_SINCE_VERSION 6
 
 /** @ingroup iface_alroot_gpu_buffer_v1 */
 static inline void
@@ -262,6 +308,134 @@ alroot_gpu_buffer_v1_set_acquire_ready(struct alroot_gpu_buffer_v1 *alroot_gpu_b
 {
 	wl_proxy_marshal_flags((struct wl_proxy *) alroot_gpu_buffer_v1,
 			 ALROOT_GPU_BUFFER_V1_SET_ACQUIRE_READY, NULL, wl_proxy_get_version((struct wl_proxy *) alroot_gpu_buffer_v1), 0, surface, buffer);
+}
+
+/**
+ * @ingroup iface_alroot_gpu_buffer_v1
+ *
+ * Call after set_acquire_fence or set_acquire_ready for the same surface
+ * and buffer and before commit. Each use has a distinct release object.
+ * A surface keeping this content for a future redraw is still using it.
+ * Reuse requires the terminal event and completion of its dependency;
+ * ordinary wl_buffer.release alone does not authorize v4 reuse. Producers
+ * must serialize later writes, including across independently shared handles.
+ * Existing core release, pacing and protocol versions remain compatible.
+ */
+static inline struct alroot_buffer_release_v1 *
+alroot_gpu_buffer_v1_get_release(struct alroot_gpu_buffer_v1 *alroot_gpu_buffer_v1, struct wl_surface *surface, struct wl_buffer *buffer)
+{
+	struct wl_proxy *id;
+
+	id = wl_proxy_marshal_flags((struct wl_proxy *) alroot_gpu_buffer_v1,
+			 ALROOT_GPU_BUFFER_V1_GET_RELEASE, &alroot_buffer_release_v1_interface, wl_proxy_get_version((struct wl_proxy *) alroot_gpu_buffer_v1), 0, NULL, surface, buffer);
+
+	return (struct alroot_buffer_release_v1 *) id;
+}
+
+/**
+ * @ingroup iface_alroot_gpu_buffer_v1
+ *
+ * Equivalent storage validation to create_buffer_with_format. The alpha
+ * mode separately describes the pixels the producer will present, even
+ * when an RGBA allocation is used in both cases. Opaque ignores source
+ * alpha. Premultiplied is composited with premultiplied source-over.
+ * A surface's own exact full opaque region may still prove that
+ * blending its particular commit is unnecessary.
+ */
+static inline struct wl_buffer *
+alroot_gpu_buffer_v1_create_buffer_with_mode(struct alroot_gpu_buffer_v1 *alroot_gpu_buffer_v1, int32_t socket, uint32_t width, uint32_t height, uint32_t format, uint32_t alpha_mode)
+{
+	struct wl_proxy *id;
+
+	id = wl_proxy_marshal_flags((struct wl_proxy *) alroot_gpu_buffer_v1,
+			 ALROOT_GPU_BUFFER_V1_CREATE_BUFFER_WITH_MODE, &wl_buffer_interface, wl_proxy_get_version((struct wl_proxy *) alroot_gpu_buffer_v1), 0, NULL, socket, width, height, format, alpha_mode);
+
+	return (struct wl_buffer *) id;
+}
+
+/**
+ * @ingroup iface_alroot_gpu_buffer_v1
+ *
+ * Same dependency, binding and lifetime rules as get_release. A producer
+ * that requested MAILBOX may declare that an older, superseded commit can
+ * retire without waiting for another display interval. This hint does
+ * not imply producer or consumer completion, bypass an explicit user
+ * frame-rate cap, or guarantee presentation. FIFO clients use get_release.
+ */
+static inline struct alroot_buffer_release_v1 *
+alroot_gpu_buffer_v1_get_mailbox_release(struct alroot_gpu_buffer_v1 *alroot_gpu_buffer_v1, struct wl_surface *surface, struct wl_buffer *buffer)
+{
+	struct wl_proxy *id;
+
+	id = wl_proxy_marshal_flags((struct wl_proxy *) alroot_gpu_buffer_v1,
+			 ALROOT_GPU_BUFFER_V1_GET_MAILBOX_RELEASE, &alroot_buffer_release_v1_interface, wl_proxy_get_version((struct wl_proxy *) alroot_gpu_buffer_v1), 0, NULL, surface, buffer);
+
+	return (struct alroot_buffer_release_v1 *) id;
+}
+
+/**
+ * @ingroup iface_alroot_buffer_release_v1
+ * @struct alroot_buffer_release_v1_listener
+ */
+struct alroot_buffer_release_v1_listener {
+	/**
+	 * @param fd sync_file; wait before reusing storage
+	 */
+	void (*fenced_release)(void *data,
+			       struct alroot_buffer_release_v1 *alroot_buffer_release_v1,
+			       int32_t fd);
+	/**
+	 */
+	void (*immediate_release)(void *data,
+				  struct alroot_buffer_release_v1 *alroot_buffer_release_v1);
+};
+
+/**
+ * @ingroup iface_alroot_buffer_release_v1
+ */
+static inline int
+alroot_buffer_release_v1_add_listener(struct alroot_buffer_release_v1 *alroot_buffer_release_v1,
+				      const struct alroot_buffer_release_v1_listener *listener, void *data)
+{
+	return wl_proxy_add_listener((struct wl_proxy *) alroot_buffer_release_v1,
+				     (void (**)(void)) listener, data);
+}
+
+/**
+ * @ingroup iface_alroot_buffer_release_v1
+ */
+#define ALROOT_BUFFER_RELEASE_V1_FENCED_RELEASE_SINCE_VERSION 1
+/**
+ * @ingroup iface_alroot_buffer_release_v1
+ */
+#define ALROOT_BUFFER_RELEASE_V1_IMMEDIATE_RELEASE_SINCE_VERSION 1
+
+
+/** @ingroup iface_alroot_buffer_release_v1 */
+static inline void
+alroot_buffer_release_v1_set_user_data(struct alroot_buffer_release_v1 *alroot_buffer_release_v1, void *user_data)
+{
+	wl_proxy_set_user_data((struct wl_proxy *) alroot_buffer_release_v1, user_data);
+}
+
+/** @ingroup iface_alroot_buffer_release_v1 */
+static inline void *
+alroot_buffer_release_v1_get_user_data(struct alroot_buffer_release_v1 *alroot_buffer_release_v1)
+{
+	return wl_proxy_get_user_data((struct wl_proxy *) alroot_buffer_release_v1);
+}
+
+static inline uint32_t
+alroot_buffer_release_v1_get_version(struct alroot_buffer_release_v1 *alroot_buffer_release_v1)
+{
+	return wl_proxy_get_version((struct wl_proxy *) alroot_buffer_release_v1);
+}
+
+/** @ingroup iface_alroot_buffer_release_v1 */
+static inline void
+alroot_buffer_release_v1_destroy(struct alroot_buffer_release_v1 *alroot_buffer_release_v1)
+{
+	wl_proxy_destroy((struct wl_proxy *) alroot_buffer_release_v1);
 }
 
 #ifdef  __cplusplus

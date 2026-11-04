@@ -38,6 +38,7 @@ struct ahb_buf {
     struct wl_resource *resource;
     struct wl_listener resource_destroy;
     int on_layer;
+    int release_failed; /* never signal reuse when Android completion is unproven */
     int release_pending;
     int64_t deferred_ns;
     struct surface *surface;
@@ -110,58 +111,63 @@ static void send_deferred_release(struct ahb_buf *ab) {
     ab->surface = NULL;
 }
 
-static int on_fence_readable(int fd, uint32_t mask, void *data) {
-    struct ahb_buf *ab = data;
-    wl_event_source_remove(ab->fence_src);
-    ab->fence_src = NULL;
-    close(ab->fence_fd);
-    ab->fence_fd = -1;
-    send_deferred_release(ab);
+static void release_failed(struct ahb_buf *ab,const char *where) {
+    ab->release_failed=1;ab->on_layer=0;
+    if(ab->resource)wl_client_post_implementation_error(wl_resource_get_client(ab->resource),
+        "Android layer release invalid: %s",where);
     maybe_free(ab);
-    return 0;
 }
-
-static void handle_released(uint64_t id, int fd) {
-    struct ahb_buf *ab = find_buf(id);
-    if (!ab) { if (fd >= 0) close(fd); return; }
-    ab->on_layer = 0;
-    if (fd >= 0) {
-        struct alroot_dma_buf_sync_file imp = {.flags = ALROOT_DMA_BUF_SYNC_READ, .fd = fd};
-        int dmabuf_fd = alroot_dmabuf_fd(ab->b);
-        if (dmabuf_fd >= 0 && ioctl(dmabuf_fd, ALROOT_DMA_BUF_IOCTL_IMPORT_SYNC_FILE, &imp) == 0) {
-            close(fd);
-        } else {
-            if (!g_import_failed_logged) {
-                g_import_failed_logged = 1;
-                alroot_log("layer", "zero-copy: DMA_BUF_IOCTL_IMPORT_SYNC_FILE failed (%s): releases wait for the display's fence here instead",
-                           strerror(errno));
-            }
-            struct pollfd p = {.fd = fd, .events = POLLIN};
-            if (poll(&p, 1, 0) > 0) {
-                close(fd);
-            } else {
-                ab->fence_fd = fd;
-                ab->fence_src = wl_event_loop_add_fd(g_loop, fd, WL_EVENT_READABLE, on_fence_readable, ab);
-                if (!ab->fence_src) { close(fd); ab->fence_fd = -1; }
-                else return;
+static int on_fence_readable(int fd,uint32_t mask,void *data) {
+    struct ahb_buf *ab=data;
+    int state=vkp_release_fd_state(fd);
+    if(!state && !(mask&(WL_EVENT_ERROR|WL_EVENT_HANGUP)))return 0;
+    wl_event_source_remove(ab->fence_src);ab->fence_src=NULL;
+    close(ab->fence_fd);ab->fence_fd=-1;
+    if(state<=0){release_failed(ab,"sync_file status");return 0;}
+    ab->on_layer=0;send_deferred_release(ab);maybe_free(ab);return 0;
+}
+static void handle_released(uint64_t id,int fd) {
+    struct ahb_buf *ab=find_buf(id);
+    if(!ab){if(fd>=0)close(fd);return;}
+    if(!ab->on_layer || ab->fence_src || ab->release_failed){
+        if(fd>=0)close(fd);return; /* stale notification cannot release a second use */
+    }
+    if(fd < -1){release_failed(ab,"unexpected release payload");return;}
+    if(fd>=0){
+        int state=vkp_release_fd_state(fd);
+        if(state<0){close(fd);release_failed(ab,"invalid release descriptor");return;}
+        if(!state){
+            struct alroot_dma_buf_sync_file imp={.flags=ALROOT_DMA_BUF_SYNC_READ,.fd=fd};
+            int d=alroot_dmabuf_fd(ab->b);
+            if(d<0 || ioctl(d,ALROOT_DMA_BUF_IOCTL_IMPORT_SYNC_FILE,&imp)!=0){
+                if(!g_import_failed_logged){g_import_failed_logged=1;alroot_log("layer","release fence deferred on the Wayland event loop");}
+                ab->fence_fd=fd;
+                ab->fence_src=wl_event_loop_add_fd(g_loop,fd,WL_EVENT_READABLE,on_fence_readable,ab);
+                if(!ab->fence_src){ab->fence_fd=-1;close(fd);release_failed(ab,"event watch");}
+                return;
             }
         }
+        close(fd);
     }
-    send_deferred_release(ab);
-    maybe_free(ab);
+    ab->on_layer=0;send_deferred_release(ab);maybe_free(ab);
 }
 
 static int on_release_pipe(int fd, uint32_t mask, void *data) {
     char buf[64];
     while (read(fd, buf, sizeof(buf)) > 0) {}
+    /* Swap the producer batch, then process it in FIFO order without the
+     * Binder mutex. A burst used to memmove the remainder for every fd. */
+    static struct released *spare;
+    static int spare_cap;
     for (;;) {
-        struct released r;
         pthread_mutex_lock(&g_rel_lock);
-        if (g_rel_n == 0) { pthread_mutex_unlock(&g_rel_lock); break; }
-        r = g_rel[0];
-        memmove(g_rel, g_rel + 1, (size_t)(--g_rel_n) * sizeof(*g_rel));
+        int count=g_rel_n,cap=g_rel_cap;
+        if(!count){pthread_mutex_unlock(&g_rel_lock);break;}
+        struct released *batch=g_rel;
+        g_rel=spare;g_rel_cap=spare_cap;g_rel_n=0;
         pthread_mutex_unlock(&g_rel_lock);
-        handle_released(r.id, r.fd);
+        for(int i=0;i<count;i++)handle_released(batch[i].id,batch[i].fd);
+        spare=batch;spare_cap=cap;
     }
     return 0;
 }
@@ -176,7 +182,7 @@ void ahb_swapchain_layer_released(void *token, int release_fd) {
     }
     g_rel[g_rel_n++] = (struct released){(uint64_t)(uintptr_t)token, release_fd};
     pthread_mutex_unlock(&g_rel_lock);
-    if (g_rel_pipe[1] >= 0) { char c = 1; if (write(g_rel_pipe[1], &c, 1) < 0) {} }
+    if (g_rel_pipe[1] >= 0) { char c=1;ssize_t n;do{n=write(g_rel_pipe[1],&c,1);}while(n<0 && errno==EINTR); }
 }
 
 
@@ -192,7 +198,10 @@ AHardwareBuffer *ahb_swapchain_borrow_ahb(const struct dmabuf_buffer *b) {
 int ahb_swapchain_present(struct dmabuf_buffer *b, struct surface *s, int scene_w, int scene_h) {
     struct ahb_buf *ab = b ? *alroot_dmabuf_ahb_slot(b) : NULL;
     if (!ab) return -1;
+    if(ab->release_failed || ab->fence_src ||
+       (ab->on_layer && !sc_layer_token_is_current((void *)(uintptr_t)ab->id)))return VKP_RENDER_RETRY;
     int dmabuf_fd = alroot_dmabuf_fd(b);
+    if(dmabuf_fd<0)return -1; /* no implicit producer proof for this v1 path */
     int acquire = -1;
     struct alroot_dma_buf_sync_file exp = {.flags = ALROOT_DMA_BUF_SYNC_READ, .fd = -1};
     if (dmabuf_fd >= 0 && ioctl(dmabuf_fd, ALROOT_DMA_BUF_IOCTL_EXPORT_SYNC_FILE, &exp) == 0 && exp.fd >= 0) {
@@ -200,12 +209,17 @@ int ahb_swapchain_present(struct dmabuf_buffer *b, struct surface *s, int scene_
     } else if (dmabuf_fd >= 0) {
         if (!g_export_failed_logged) {
             g_export_failed_logged = 1;
-            alroot_log("layer", "zero-copy: DMA_BUF_IOCTL_EXPORT_SYNC_FILE failed (%s): waiting for each frame on the CPU instead",
+            alroot_log("layer", "zero-copy: DMA_BUF_IOCTL_EXPORT_SYNC_FILE failed (%s): deferring until dma-buf is readable",
                        strerror(errno));
         }
         struct pollfd p = {.fd = dmabuf_fd, .events = POLLIN};
         int r;
-        do { r = poll(&p, 1, 100); } while (r < 0 && errno == EINTR);
+        do { r = poll(&p, 1, 0); } while (r < 0 && errno == EINTR);
+        if(!r)return VKP_RENDER_RETRY;
+        if(r<0 || !(p.revents&POLLIN) || (p.revents&(POLLERR|POLLHUP|POLLNVAL))) {
+            if(!ab->release_failed){release_failed(ab,"invalid implicit acquire fd");}
+            return VKP_RENDER_RETRY;
+        }
     }
     int r = sc_layer_present_ahb(ab->ahb, ab->w, ab->h, acquire, (void *)(uintptr_t)ab->id, scene_w, scene_h,
                                  s ? alroot_surface_color(s) : NULL, ab->format);
@@ -234,7 +248,9 @@ int ahb_swapchain_last_frame_age_ms(void) {
 
 int ahb_swapchain_defer_release(struct dmabuf_buffer *b, struct wl_resource *buffer, struct surface *s, int paced) {
     struct ahb_buf *ab = b ? *alroot_dmabuf_ahb_slot(b) : NULL;
-    if (!ab || !ab->on_layer || !buffer || ab->resource != buffer) return 0;
+    if (!ab || !buffer || ab->resource != buffer) return 0;
+    if (ab->release_failed) return 1;
+    if (!ab->on_layer) return 0;
     ab->release_pending = 1;
     ab->deferred_ns = now_ns();
     ab->surface = paced ? s : NULL;

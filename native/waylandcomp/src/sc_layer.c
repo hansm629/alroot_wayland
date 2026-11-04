@@ -3,11 +3,14 @@
 #include "ahb_swapchain.h"
 #include "alroot_color.h"
 #include "vk_present.h"
+#include "effects_chain.h"
+#include <android/data_space.h>
 #include <android/hardware_buffer.h>
 #include <android/native_window.h>
 #include <android/rect.h>
 #include <dlfcn.h>
 #include <errno.h>
+#include <fcntl.h>
 #include <math.h>
 #include <poll.h>
 #include <pthread.h>
@@ -16,6 +19,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <sys/ioctl.h>
+#include <sys/eventfd.h>
 #include <time.h>
 #include <unistd.h>
 
@@ -35,6 +39,7 @@ typedef struct ASurfaceControl ASurfaceControl;
 typedef struct ASurfaceTransaction ASurfaceTransaction;
 typedef struct ASurfaceTransactionStats ASurfaceTransactionStats;
 typedef void (*sc_complete_fn)(void *context, ASurfaceTransactionStats *stats);
+typedef void (*sc_release_fn)(void *context, int release_fence_fd);
 
 struct alroot_color_xy { float x, y; };
 struct alroot_hdr_smpte2086 {
@@ -50,12 +55,18 @@ static struct {
     void (*txDelete)(ASurfaceTransaction *);
     void (*txApply)(ASurfaceTransaction *);
     void (*setBuffer)(ASurfaceTransaction *, ASurfaceControl *, AHardwareBuffer *, int);
+    void (*setBufferWithRelease)(ASurfaceTransaction *, ASurfaceControl *,
+                                 AHardwareBuffer *, int, void *, sc_release_fn);
     void (*setZOrder)(ASurfaceTransaction *, ASurfaceControl *, int32_t);
     void (*setVisibility)(ASurfaceTransaction *, ASurfaceControl *, int8_t);
     void (*setGeometry)(ASurfaceTransaction *, ASurfaceControl *, const ARect *, const ARect *, int32_t);
     void (*setBufferTransparency)(ASurfaceTransaction *, ASurfaceControl *, int8_t);
     void (*reparent)(ASurfaceTransaction *, ASurfaceControl *, ASurfaceControl *);
     void (*setOnComplete)(ASurfaceTransaction *, void *, sc_complete_fn);
+    void (*frameTimeline)(ASurfaceTransaction *, int64_t);
+    int64_t (*latchTime)(ASurfaceTransactionStats *);
+    int (*presentFd)(ASurfaceTransactionStats *);
+    void (*setOnCommit)(ASurfaceTransaction *, void *, sc_complete_fn);
     int (*prevReleaseFence)(ASurfaceTransactionStats *, ASurfaceControl *);
     void (*setFrameRate)(ASurfaceTransaction *, ASurfaceControl *, float, int8_t);
     void (*setFrameRateStrategy)(ASurfaceTransaction *, ASurfaceControl *, float, int8_t, int8_t);
@@ -72,16 +83,12 @@ static struct {
 #define ASC_TRANSPARENCY_TRANSLUCENT 1
 #define ASC_TRANSPARENCY_OPAQUE 2
 
-static int load_api(void) {
+static int load_platform_api(void) {
     if (api.state) return api.state == 1 ? 0 : -1;
     api.state = -1;
     void *nw = dlopen("libnativewindow.so", RTLD_NOW | RTLD_NOLOAD);
     if (!nw) nw = dlopen("libnativewindow.so", RTLD_NOW);
     api.getNativeHandle = nw ? dlsym(nw, "AHardwareBuffer_getNativeHandle") : NULL;
-    if (!api.getNativeHandle) {
-        alroot_log("layer", "unavailable: libnativewindow.so has no AHardwareBuffer_getNativeHandle");
-        return -1;
-    }
     void *lib = dlopen("libandroid.so", RTLD_NOW | RTLD_NOLOAD);
     if (!lib) lib = dlopen("libandroid.so", RTLD_NOW);
     if (!lib) { alroot_log("layer", "unavailable: dlopen(libandroid.so): %s", dlerror()); return -1; }
@@ -92,12 +99,17 @@ static int load_api(void) {
     SYM(txDelete, "ASurfaceTransaction_delete");
     SYM(txApply, "ASurfaceTransaction_apply");
     SYM(setBuffer, "ASurfaceTransaction_setBuffer");
+    SYM(setBufferWithRelease, "ASurfaceTransaction_setBufferWithRelease");
     SYM(setZOrder, "ASurfaceTransaction_setZOrder");
     SYM(setVisibility, "ASurfaceTransaction_setVisibility");
     SYM(setGeometry, "ASurfaceTransaction_setGeometry");
     SYM(setBufferTransparency, "ASurfaceTransaction_setBufferTransparency");
     SYM(reparent, "ASurfaceTransaction_reparent");
     SYM(setOnComplete, "ASurfaceTransaction_setOnComplete");
+    SYM(frameTimeline, "ASurfaceTransaction_setFrameTimeline");
+    SYM(latchTime, "ASurfaceTransactionStats_getLatchTime");
+    SYM(presentFd, "ASurfaceTransactionStats_getPresentFenceFd");
+    SYM(setOnCommit, "ASurfaceTransaction_setOnCommit");
     SYM(prevReleaseFence, "ASurfaceTransactionStats_getPreviousReleaseFenceFd");
     SYM(setFrameRate, "ASurfaceTransaction_setFrameRate");
     SYM(setFrameRateStrategy, "ASurfaceTransaction_setFrameRateWithChangeStrategy");
@@ -114,6 +126,12 @@ static int load_api(void) {
     }
     api.state = 1;
     return 0;
+}
+
+/* Legacy pool code inspects native handles. The API36 root path never uses
+ * this symbol, layout, or a vendor-specific allocation convention. */
+static int load_api(void) {
+    return load_platform_api() == 0 && api.getNativeHandle ? 0 : -1;
 }
 
 
@@ -142,7 +160,8 @@ struct slot {
     int w, h;
     uint32_t fmt;
     int release_fd;
-    int busy;
+    int busy, retired;
+    uint64_t submission;
 };
 
 struct layer {
@@ -181,7 +200,6 @@ static void apply_frame_rate(ASurfaceTransaction *tx, struct layer *l);
 static void coverage_text(const struct layer *l, char *out, size_t n);
 static int g_layers_ready;
 static pthread_mutex_t g_lock = PTHREAD_MUTEX_INITIALIZER;
-static int g_pending_cb;
 static unsigned g_stat_layer_frames;
 static int g_two_logged;
 static AHardwareBuffer *g_blank;
@@ -206,55 +224,12 @@ static struct layer *layer_of(int id) {
     return (id >= 0 && id < SC_LAYER_COUNT) ? &g_layers[id] : NULL;
 }
 
-struct complete_ctx {
-    ASurfaceControl *sc;
-    int layer;
-    int prev_slot;
-    void *prev_token;
-    int retire;
-};
-
 static int64_t now_ns(void) {
     struct timespec ts; clock_gettime(CLOCK_MONOTONIC, &ts);
     return (int64_t)ts.tv_sec * 1000000000LL + ts.tv_nsec;
 }
 
-static void on_complete(void *context, ASurfaceTransactionStats *stats) {
-    struct complete_ctx *ctx = context;
-    pthread_mutex_lock(&g_lock);
-    if (ctx->layer >= 0 && ctx->layer < SC_LAYER_COUNT && ctx->prev_slot >= 0 && ctx->prev_slot < POOL_MAX) {
-        struct slot *s = &g_layers[ctx->layer].slots[ctx->prev_slot];
-        int fd = (stats && ctx->sc) ? api.prevReleaseFence(stats, ctx->sc) : -1;
-        if (s->release_fd >= 0) close(s->release_fd);
-        s->release_fd = fd;
-        s->busy = 0;
-    }
-    if (g_pending_cb > 0) g_pending_cb--;
-    pthread_mutex_unlock(&g_lock);
-    if (ctx->prev_token) {
-        int fd = (stats && ctx->sc) ? api.prevReleaseFence(stats, ctx->sc) : -1;
-        ahb_swapchain_layer_released(ctx->prev_token, fd);
-    }
-    if (ctx->retire && ctx->sc) api.release(ctx->sc);
-    free(ctx);
-}
-
-static int add_complete_on(ASurfaceTransaction *tx, struct layer *l, ASurfaceControl *sc,
-                           int prev_slot, void *prev_token, int retire) {
-    struct complete_ctx *ctx = calloc(1, sizeof(*ctx));
-    if (!ctx) return -1;
-    ctx->sc = sc; ctx->layer = (int)(l - g_layers); ctx->prev_slot = prev_slot;
-    ctx->prev_token = prev_token; ctx->retire = retire;
-    pthread_mutex_lock(&g_lock);
-    g_pending_cb++;
-    pthread_mutex_unlock(&g_lock);
-    api.setOnComplete(tx, ctx, on_complete);
-    return 0;
-}
-
-static int add_complete(ASurfaceTransaction *tx, struct layer *l, int prev_slot, void *prev_token, int retire) {
-    return add_complete_on(tx, l, l->sc, prev_slot, prev_token, retire);
-}
+#include "s66_pool_retirement.inc"
 
 static AHardwareBuffer *blank_buffer(void) {
     if (g_blank) return g_blank;
@@ -316,11 +291,6 @@ static void base_hide(int retire) {
 
 void sc_layer_hide_base(void) { base_hide(0); }
 
-static void replace_with_blank(ASurfaceTransaction *tx, struct layer *l) {
-    AHardwareBuffer *b = blank_buffer();
-    if (b) api.setBuffer(tx, l->sc, b, -1);
-}
-
 static void retire_ops(ASurfaceTransaction *tx, ASurfaceControl *sc) {
     AHardwareBuffer *b = blank_buffer();
     if (b) api.setBuffer(tx, sc, b, -1);
@@ -330,47 +300,23 @@ static void retire_ops(ASurfaceTransaction *tx, ASurfaceControl *sc) {
 
 static void retire_sc(struct layer *l) {
     if (!l->sc) return;
+    int tracked=!l->cur_token;
     ASurfaceTransaction *tx = api.txCreate();
     if (tx) {
-        retire_ops(tx, l->sc);
-        if (add_complete(tx, l, l->cur_slot, l->cur_token, 1) != 0) api.release(l->sc);
-        api.txApply(tx);
-        api.txDelete(tx);
-    } else {
-        if (l->cur_token) ahb_swapchain_layer_released(l->cur_token, -1);
-        api.release(l->sc);
+        /* Removal from the tree is itself a real previous-buffer release
+         * operation. If tracking is unavailable leave old storage held. */
+        tracked=add_previous(tx,l)==0;
+        retire_ops(tx,l->sc);api.txApply(tx);api.txDelete(tx);
     }
+    if(l->cur_token && !tracked)atomic_store(&s66_token_quarantine,1);
+    /* tx allocation failure has no consumer proof; never synthesize -1. */
+    s66_drop_owner(l->sc);
     alroot_log("layer", "%s: SurfaceControl retired (window %p)", l->name, (void *)l->win);
     l->sc = NULL; l->win = NULL;
     l->shown = 0; l->cur_slot = -1; l->cur_token = NULL; l->geo_valid = 0;
     l->fps_applied = -1.0f;
     l->recreate_pending = 0;
     l->ds_applied = -1; l->md_applied = 0; l->hr_applied = -1.0f;
-}
-
-static void drain_and_free_pools(void) {
-    int64_t deadline = now_ns() + 300000000LL;
-    for (;;) {
-        pthread_mutex_lock(&g_lock);
-        int pending = g_pending_cb;
-        pthread_mutex_unlock(&g_lock);
-        if (!pending || now_ns() > deadline) break;
-        usleep(2000);
-    }
-    pthread_mutex_lock(&g_lock);
-    for (int i = 0; i < SC_LAYER_COUNT; i++) {
-        for (int j = 0; j < POOL_MAX; j++) {
-            struct slot *s = &g_layers[i].slots[j];
-            if (s->release_fd >= 0) { struct pollfd p = {.fd = s->release_fd, .events = POLLIN}; poll(&p, 1, 100); close(s->release_fd); }
-            if (s->img) vkp_image_destroy(s->img);
-            if (s->ahb) AHardwareBuffer_release(s->ahb);
-            memset(s, 0, sizeof(*s));
-            s->release_fd = -1;
-        }
-        g_layers[i].first_logged = 0;
-        g_layers[i].logged_w = g_layers[i].logged_h = 0;
-    }
-    pthread_mutex_unlock(&g_lock);
 }
 
 static int sniff_modifier(const struct alroot_native_handle *h, uint64_t *mod) {
@@ -382,6 +328,11 @@ static int sniff_modifier(const struct alroot_native_handle *h, uint64_t *mod) {
 }
 
 static int g_alloc_failed;
+static int s67_public_dst_requested;
+static unsigned s67_native_targets,s67_fenced,s67_ready,s67_dropped;
+static const char *s67_layout(uint64_t mod){
+    return mod==UINT64_MAX?"Android native layout":mod==MOD_QCOM_COMPRESSED?"UBWC (QCOM_COMPRESSED)":"linear";
+}
 
 enum { TIER_UBWC, TIER_PLAIN, TIER_LINEAR };
 #define ALROOT_AHB_USAGE_VENDOR_UBWC (1ULL << 28)
@@ -399,7 +350,7 @@ static int alloc_slot(struct layer *l, struct slot *s, int w, int h, uint32_t fm
             .format = fmt,
             .usage = AHARDWAREBUFFER_USAGE_GPU_COLOR_OUTPUT | AHARDWAREBUFFER_USAGE_GPU_SAMPLED_IMAGE |
                      AHARDWAREBUFFER_USAGE_COMPOSER_OVERLAY |
-                     (tier == TIER_UBWC ? ALROOT_AHB_USAGE_VENDOR_UBWC : 0) |
+                     (tier == TIER_UBWC && !s67_public_dst_requested ? ALROOT_AHB_USAGE_VENDOR_UBWC : 0) |
                      (tier == TIER_LINEAR ? AHARDWAREBUFFER_USAGE_CPU_READ_RARELY : 0)};
         AHardwareBuffer *ahb = NULL;
         if (AHardwareBuffer_allocate(&d, &ahb) != 0 || !ahb) {
@@ -414,6 +365,15 @@ static int alloc_slot(struct layer *l, struct slot *s, int w, int h, uint32_t fm
             return -1;
         }
         AHardwareBuffer_Desc got; AHardwareBuffer_describe(ahb, &got);
+        /* No modifier guess or first-native-handle-FD assumption for a
+         * public R8G8B8A8 sampled/color-output gralloc pool allocation. Keep
+         * the existing validated modifier import as a driver fallback. */
+        struct vkp_image *public_img=s67_public_dst_requested && fmt==AHB_RGBA8 ? vkp_image_layer_target(ahb):NULL;
+        if(public_img){
+            s->ahb=ahb;s->img=public_img;s->w=w;s->h=h;s->fmt=fmt;s->release_fd=-1;s->busy=0;
+            l->pool_modifier=UINT64_MAX;++s67_native_targets;return 0;
+        }
+        if(!api.getNativeHandle){AHardwareBuffer_release(ahb);g_alloc_failed=1;return -1;}
         const struct alroot_native_handle *nh = api.getNativeHandle(ahb);
         uint64_t mod = MOD_LINEAR;
         if (!sniff_modifier(nh, &mod)) {
@@ -453,46 +413,34 @@ static int alloc_slot(struct layer *l, struct slot *s, int w, int h, uint32_t fm
     return -1;
 }
 
-static int fence_signalled(int fd) {
-    struct pollfd p = {.fd = fd, .events = POLLIN};
-    int r;
-    do { r = poll(&p, 1, 0); } while (r < 0 && errno == EINTR);
-    return r > 0;
-}
-
+/* A slot owns its Android release FD until completion is proven. Borrow a
+ * CLOEXEC duplicate for GPU import only; a failed import/submit must never
+ * turn a still-busy Android allocation into an apparently reusable one. */
+#define S66_POOL_LATER (-2)
 static int take_free_slot(struct layer *l, int w, int h, uint32_t fmt, int *wait_fd) {
-    int idx = -1, pending = -1, fd = -1;
-    *wait_fd = -1;
+    int idx=-1, pending=-1, invalid=0, fd=-1;
+    *wait_fd=-1;s66_reap_slots();
     pthread_mutex_lock(&g_lock);
-    for (int i = 0; i < l->pool_n; i++) {
-        if (i == l->cur_slot || l->slots[i].busy) continue;
-        const int rf = l->slots[i].release_fd;
-        if (rf < 0 || fence_signalled(rf)) { idx = i; break; }
-        if (pending < 0) pending = i;
+    for(int i=0;i<l->pool_n;++i) {
+        struct slot *v=&l->slots[i];
+        if(i==l->cur_slot || v->busy || v->retired)continue;
+        if(v->release_fd<0){idx=i;break;}
+        const int status=vkp_release_fd_state(v->release_fd);
+        if(status>0){close(v->release_fd);v->release_fd=-1;idx=i;break;}
+        if(status<0){invalid=1;continue;} /* never write through a failed/bogus dependency */
+        if(pending<0 && v->ahb && v->w==w && v->h==h && v->fmt==fmt)pending=i;
     }
-    if (idx < 0) idx = pending;
-    if (idx >= 0) { fd = l->slots[idx].release_fd; l->slots[idx].release_fd = -1; }
+    if(idx<0 && pending>=0 && vkp_can_wait_sync_fd()){
+        fd=fcntl(l->slots[pending].release_fd,F_DUPFD_CLOEXEC,0);
+        if(fd>=0)idx=pending;
+    }
     pthread_mutex_unlock(&g_lock);
-    if (idx < 0) return -1;
-    if (fd >= 0 && fence_signalled(fd)) { close(fd); fd = -1; }
-    struct slot *s = &l->slots[idx];
-    if (s->ahb && (s->w != w || s->h != h || s->fmt != fmt)) {
-        if (fd >= 0) { close(fd); fd = -1; }
-        vkp_image_destroy(s->img); AHardwareBuffer_release(s->ahb);
-        memset(s, 0, sizeof(*s)); s->release_fd = -1;
-    }
-    if (fd >= 0 && !vkp_can_wait_sync_fd()) {
-        struct pollfd p = {.fd = fd, .events = POLLIN};
-        int r;
-        do { r = poll(&p, 1, 100); } while (r < 0 && errno == EINTR);
-        if (r == 0) {
-            pthread_mutex_lock(&g_lock);
-            if (s->release_fd < 0) s->release_fd = fd; else close(fd);
-            pthread_mutex_unlock(&g_lock);
-            return -1;
-        }
-        close(fd);
-        fd = -1;
+    if(idx<0)return invalid && pending<0 ? -1:S66_POOL_LATER;
+    struct slot *s=&l->slots[idx];
+    if(s->ahb && (s->w!=w || s->h!=h || s->fmt!=fmt)){
+        /* Only the no-fence/signaled branch can choose a size mismatch. */
+        vkp_image_destroy(s->img);AHardwareBuffer_release(s->ahb);
+        memset(s,0,sizeof(*s));s->release_fd=-1;
     }
     if (!s->ahb && alloc_slot(l, s, w, h, fmt) != 0) {
         if (fd >= 0) close(fd);
@@ -520,13 +468,13 @@ void sc_layer_probe_dmabuf_fd(int fd) {
     }
 }
 
-static int ensure_sc(struct layer *l) {
-    if (load_api() != 0) return -1;
+static int s67_ensure_sc(struct layer *l,int public_ok) {
+    if ((public_ok?load_platform_api():load_api()) != 0) return -1;
     ANativeWindow *win = vkp_window();
     if (!win) return -1;
     if (l->sc && l->win != win) retire_sc(l);
     if (!l->sc) {
-        l->sc = api.createFromWindow(win, l->name);
+        l->sc = s66_new_sc(win,l->name);
         if (!l->sc) { alroot_log("error", "layer: ASurfaceControl_createFromWindow(%s) failed", l->name); return -1; }
         l->win = win;
         l->ds_applied = -1; l->md_applied = 0; l->hr_applied = -1.0f;
@@ -542,6 +490,7 @@ static int ensure_sc(struct layer *l) {
     return 0;
 }
 
+static int ensure_sc(struct layer *l){return s67_ensure_sc(l,0); }
 static int layer_geometry(int w, int h, int scene_w, int scene_h, int r[8]) {
     if (vkp_update_map(scene_w, scene_h) != 0) return -1;
     return vkp_map_rect(w, h, scene_w, scene_h, r) ? 1 : 0;
@@ -680,7 +629,7 @@ static ASurfaceControl *swap_sc_begin(struct layer *l) {
     if (!l->sc) return NULL;
     ANativeWindow *win = vkp_window();
     if (!win || win != l->win) return NULL;
-    ASurfaceControl *fresh = api.createFromWindow(win, l->name);
+    ASurfaceControl *fresh = s66_new_sc(win,l->name);
     if (!fresh) {
         alroot_log("error", "layer: %s: composition recovery could not create a new SurfaceControl", l->name);
         return NULL;
@@ -696,14 +645,15 @@ static ASurfaceControl *swap_sc_begin(struct layer *l) {
     return old;
 }
 
-static int present_slot(struct layer *l, int idx, const int r[8], const struct alroot_color *color,
-                        int translucent) {
+static int s67_present_slot(struct layer *l, int idx, const int r[8], const struct alroot_color *color,
+                        int translucent,int owned_fd) {
     struct slot *s = &l->slots[idx];
     ASurfaceTransaction *tx = api.txCreate();
-    if (!tx) return -1;
+    if(!tx){if(owned_fd>=0)close(owned_fd);return -1;}
+    if(add_previous(tx,l)){api.txDelete(tx);if(owned_fd>=0)close(owned_fd);return -1;}
     ASurfaceControl *old = swap_sc_begin(l);
     if (old) api.setZOrder(tx, l->sc, l->z);
-    api.setBuffer(tx, l->sc, s->ahb, -1);
+    api.setBuffer(tx,l->sc,s->ahb,owned_fd); /* framework owns the FD from this call */
     api.setBufferTransparency(tx, l->sc,
                               translucent ? ASC_TRANSPARENCY_TRANSLUCENT : ASC_TRANSPARENCY_OPAQUE);
     apply_geometry(tx, l, r);
@@ -711,19 +661,19 @@ static int present_slot(struct layer *l, int idx, const int r[8], const struct a
     apply_colour(tx, l, color);
     if (!l->shown) api.setVisibility(tx, l->sc, ASC_VISIBILITY_SHOW);
     if (old) retire_ops(tx, old);
-    if (add_complete_on(tx, l, old ? old : l->sc, l->cur_slot, l->cur_token, old ? 1 : 0) != 0 && old)
-        api.release(old);
     pthread_mutex_lock(&g_lock);
-    s->busy = 1;
+    s->busy = 1; s->submission=++s66_generation;
     pthread_mutex_unlock(&g_lock);
-    api.txApply(tx);
-    api.txDelete(tx);
+    api.txApply(tx);api.txDelete(tx);
+    if(old)s66_drop_owner(old);
     l->cur_slot = idx;
     l->cur_token = NULL;
     if (!l->shown) { l->shown = 1; alroot_log("layer", "%s: layer shown", l->name); }
     g_stat_layer_frames++;
     return 0;
 }
+static int present_slot(struct layer *l,int idx,const int r[8],const struct alroot_color *c,int translucent){return s67_present_slot(l,idx,r,c,translucent,-1);}
+
 
 static unsigned g_pool_drops;
 static void log_drop(struct layer *l) {
@@ -750,10 +700,11 @@ int sc_layer_present_ahb(AHardwareBuffer *ahb, int w, int h, int acquire_fd, voi
     struct layer *l = layer_of(SC_LAYER_GAME);
     int r[8];
     if (!ahb || !token || ensure_sc(l) != 0) goto unavailable;
+    if(l->cur_token!=token && atomic_load(&s66_token_quarantine))goto unavailable;
     int g = layer_geometry(w, h, scene_w, scene_h, r);
     if (g < 0) goto unavailable;
     if (g == 0) { if (acquire_fd >= 0) close(acquire_fd); sc_layer_hide(); return 1; }
-    if (token == l->cur_token && l->shown && !l->recreate_pending) {
+    if (token == l->cur_token && l->shown) {
         if (acquire_fd >= 0) close(acquire_fd);
         ASurfaceTransaction *tx = api.txCreate();
         if (tx) {
@@ -765,6 +716,7 @@ int sc_layer_present_ahb(AHardwareBuffer *ahb, int w, int h, int acquire_fd, voi
     }
     ASurfaceTransaction *tx = api.txCreate();
     if (!tx) goto unavailable;
+    if(add_previous(tx,l)){api.txDelete(tx);goto unavailable;}
     ASurfaceControl *old = swap_sc_begin(l);
     if (old) api.setZOrder(tx, l->sc, l->z);
     api.setBuffer(tx, l->sc, ahb, acquire_fd);
@@ -774,15 +726,8 @@ int sc_layer_present_ahb(AHardwareBuffer *ahb, int w, int h, int acquire_fd, voi
     apply_colour(tx, l, color);
     if (!l->shown) api.setVisibility(tx, l->sc, ASC_VISIBILITY_SHOW);
     if (old) retire_ops(tx, old);
-    if (add_complete_on(tx, l, old ? old : l->sc, l->cur_slot,
-                        l->cur_token == token ? NULL : l->cur_token, old ? 1 : 0) != 0) {
-        api.txDelete(tx);
-        if (old) api.release(old);
-        l->ds_applied = -1; l->md_applied = 0; l->hr_applied = -1.0f;
-        return -1;
-    }
-    api.txApply(tx);
-    api.txDelete(tx);
+    api.txApply(tx);api.txDelete(tx);
+    if(old)s66_drop_owner(old);
     l->cur_slot = -1;
     l->cur_token = token;
     if (!l->shown) { l->shown = 1; alroot_log("layer", "%s: layer shown", l->name); }
@@ -795,9 +740,10 @@ unavailable:
     return -1;
 }
 
-int sc_layer_present(struct vkp_image *src, int scene_w, int scene_h, const struct alroot_color *color) {
+int sc_layer_present_s67(struct vkp_image *src, int scene_w, int scene_h, const struct alroot_color *color,int allow,int *queued) {
+    *queued=0;
     struct layer *l = layer_of(SC_LAYER_GAME);
-    if (!src || ensure_sc(l) != 0) return -1;
+    if (!src || s67_ensure_sc(l,allow && vkp_s67_pool_policy()) != 0) return -1;
     int sw = vkp_image_width(src), sh = vkp_image_height(src);
     int r[8];
     int g = layer_geometry(sw, sh, scene_w, scene_h, r);
@@ -805,20 +751,31 @@ int sc_layer_present(struct vkp_image *src, int scene_w, int scene_h, const stru
     if (g == 0) { sc_layer_hide(); return 0; }
 
     int wait_fd;
+    const int suitable=allow && !l->recreate_pending && !g_layers[SC_LAYER_OVERLAY].sc && !(color && color->dataspace) && vkp_s67_pool_policy();
+    s67_public_dst_requested=suitable;
     int idx = take_free_slot(l, sw, sh, AHB_RGBA8, &wait_fd);
-    if (idx < 0) { log_drop(l); return 0; }
-    if (vkp_blit_image(src, l->slots[idx].img, wait_fd) != 0) return -1;
-    if (present_slot(l, idx, r, color, 0) != 0) return -1;
+    s67_public_dst_requested=0;
+    if (idx < 0) { log_drop(l); return idx==S66_POOL_LATER ? VKP_RENDER_RETRY : -1; }
+    const int async=suitable&&vkp_s67_pool_warm();
+    int android_fd=-1;
+    int copied=vkp_s67_layer_blit(src,l->slots[idx].img,wait_fd,async?&android_fd:NULL);
+    if(copied!=0){if(async && vkp_frame_pending())++s67_dropped;return copied;}
+    if(s67_present_slot(l,idx,r,color,0,android_fd)!=0){
+        if(async){++s67_dropped;return VKP_RENDER_RETRY;}return -1;
+    }
+    if(async){*queued=1;if(android_fd>=0)++s67_fenced;else ++s67_ready;}
     if (color && color->dataspace) alroot_color_frame_shown(color, ALROOT_HDR_LAYER_COPY, AHB_RGBA8);
     if (!l->first_logged) {
         l->first_logged = 1;
         alroot_log("layer", "presenting %dx%d game frames on their own SurfaceControl layer (%s pool, %d buffers); "
                    "HUD and pointer stay Android views above it", sw, sh,
-                   l->pool_modifier == MOD_QCOM_COMPRESSED ? "UBWC" : "linear", l->pool_n);
+                   s67_layout(l->pool_modifier), l->pool_n);
     }
     vkp_signal_first_frame();
     return 0;
 }
+int sc_layer_present(struct vkp_image *src,int w,int h,const struct alroot_color *c){int queued=0;return sc_layer_present_s67(src,w,h,c,0,&queued);}
+
 
 int sc_layer_present_pass(const struct vkp_draw *draws, int n, int scene_w, int scene_h) {
     struct layer *l = layer_of(SC_LAYER_GAME);
@@ -829,14 +786,15 @@ int sc_layer_present_pass(const struct vkp_draw *draws, int n, int scene_w, int 
     if (!vkp_map_rect(rw, rh, scene_w, scene_h, r)) { vkp_pass_abort(); sc_layer_hide(); return 0; }
     int wait_fd;
     int idx = take_free_slot(l, rw, rh, AHB_RGBA8, &wait_fd);
-    if (idx < 0) { vkp_pass_abort(); log_drop(l); return 0; }
-    if (vkp_pass_copy_to(l->slots[idx].img, wait_fd) != 0) return -1;
+    if (idx < 0) { vkp_pass_abort(); log_drop(l); return idx==S66_POOL_LATER ? VKP_RENDER_RETRY : -1; }
+    int copied = vkp_pass_copy_to(l->slots[idx].img, wait_fd);
+    if (copied != 0) return copied;
     if (present_slot(l, idx, r, NULL, 0) != 0) return -1;
     if (!l->first_logged) {
         l->first_logged = 1;
         alroot_log("layer", "presenting %dx%d frames on their own SurfaceControl layer (%s pool, %d buffers); "
                    "HUD and pointer stay Android views above it", rw, rh,
-                   l->pool_modifier == MOD_QCOM_COMPRESSED ? "UBWC" : "linear", l->pool_n);
+                   s67_layout(l->pool_modifier), l->pool_n);
     }
     vkp_signal_first_frame();
     return 0;
@@ -857,14 +815,15 @@ int sc_layer_present_hdr_scene(const struct vkp_draw *draws, int n, const struct
     g_alloc_failed = 0;
     int wait_fd;
     int idx = take_free_slot(l, rw, rh, fmt, &wait_fd);
-    if (idx < 0 && g_alloc_failed && fmt == AHB_RGB10A2) {
+    if (idx == -1 && g_alloc_failed && fmt == AHB_RGB10A2) {
         g_hdr_pool_fmt = AHB_RGBA8;
         alroot_log("color", "%s: this device will not make a 10-bit layer buffer (RGBA1010102): the HDR picture goes "
                    "on 8-bit buffers instead (still tagged BT2020_PQ; less precision)", l->name);
         idx = take_free_slot(l, rw, rh, g_hdr_pool_fmt, &wait_fd);
     }
-    if (idx < 0) { vkp_pass_abort(); log_drop(l); return 0; }
-    if (vkp_pass_copy_to(l->slots[idx].img, wait_fd) != 0) return -1;
+    if (idx < 0) { vkp_pass_abort(); log_drop(l); return idx==S66_POOL_LATER ? VKP_RENDER_RETRY : -1; }
+    int copied = vkp_pass_copy_to(l->slots[idx].img, wait_fd);
+    if (copied != 0) return copied;
     if (present_slot(l, idx, r, tm ? NULL : color, 0) != 0) return -1;
     if (color && color->dataspace)
         alroot_color_frame_shown(color, tm ? ALROOT_HDR_TONEMAPPED : ALROOT_HDR_COMPOSED, tm ? AHB_RGBA8 : g_hdr_pool_fmt);
@@ -874,12 +833,12 @@ int sc_layer_present_hdr_scene(const struct vkp_draw *draws, int n, const struct
         if (tm)
             alroot_log("color", "tone-mapped picture on the game's display layer: %dx%d, %s 8-bit buffers, untagged "
                        "(sRGB) - HDR output is switched off", rw, rh,
-                       l->pool_modifier == MOD_QCOM_COMPRESSED ? "UBWC" : "linear");
+                       s67_layout(l->pool_modifier));
         else {
             char cov[96];
             coverage_text(l, cov, sizeof(cov));
             alroot_log("color", "HDR picture on its own display layer: %dx%d, %s %s buffers, tagged %s%s%s", rw, rh,
-                       l->pool_modifier == MOD_QCOM_COMPRESSED ? "UBWC" : "linear",
+                       s67_layout(l->pool_modifier),
                        g_hdr_pool_fmt == AHB_RGB10A2 ? "10-bit" : "8-bit",
                        color && color->dataspace == ALROOT_ADATASPACE_BT2020_PQ ? "BT2020_PQ" : "HDR",
                        cov[0] ? ", " : "", cov);
@@ -933,8 +892,9 @@ int sc_layer_present_overlay(struct vkp_image *src, const int geo[8], int transl
     if (sw <= 0 || sh <= 0) return -1;
     int wait_fd;
     int idx = take_free_slot(l, sw, sh, AHB_RGBA8, &wait_fd);
-    if (idx < 0) { log_drop(l); return 0; }
-    if (vkp_blit_image(src, l->slots[idx].img, wait_fd) != 0) return -1;
+    if (idx < 0) { log_drop(l); return idx==S66_POOL_LATER ? VKP_RENDER_RETRY : -1; }
+    int copied = vkp_blit_image(src, l->slots[idx].img, wait_fd);
+    if (copied != 0) return copied;
     if (present_slot(l, idx, geo, NULL, translucent) != 0) return -1;
     if (!l->first_logged) {
         l->first_logged = 1;
@@ -947,9 +907,11 @@ static void hide_layer(struct layer *l) {
     if (!l->sc || !l->shown || api.state != 1) return;
     ASurfaceTransaction *tx = api.txCreate();
     if (!tx) return;
-    replace_with_blank(tx, l);
+    AHardwareBuffer *blank=blank_buffer();
+    if(!blank){api.txDelete(tx);retire_sc(l);return;}
+    if(add_previous(tx,l)){api.txDelete(tx);return;}
+    api.setBuffer(tx,l->sc,blank,-1);
     api.setVisibility(tx, l->sc, ASC_VISIBILITY_HIDE);
-    add_complete(tx, l, l->cur_slot, l->cur_token, 0);
     api.txApply(tx); api.txDelete(tx);
     l->shown = 0; l->cur_slot = -1; l->cur_token = NULL;
 }
@@ -972,16 +934,38 @@ void sc_layer_hide_overlay(void) {
     if (g_layers[SC_LAYER_GAME].sc) g_layers[SC_LAYER_GAME].recreate_pending = 1;
 }
 
+/* Opt-in correctness tracing only. Resolve dynamically: loading the helper
+ * on an older Android release must never require the buffer-ID symbol. */
+static uint64_t s65_trace_buffer_id(AHardwareBuffer *ahb) {
+    static int looked;
+    static int (*get_id)(const AHardwareBuffer *, uint64_t *);
+    if (!looked) { get_id=dlsym(RTLD_DEFAULT,"AHardwareBuffer_getId"); looked=1; }
+    uint64_t id=0;
+    return get_id && get_id(ahb,&id)==0 ? id : 0;
+}
+/* Host-owned live wl_output rate, clamped by its explicit frame-rate cap. */
+extern int alroot_s65_effective_refresh_mhz(void);
+#define ALROOT_S66_ANDROID 1
+#include "s65_root_layer.inc"
+
 void sc_layer_window_gone(void) {
+    s65_root_window_gone();
     base_hide(1); /* the backdrop belongs to the old window, just like GAME and OVERLAY */
     if (api.state != 1) return;
     layers_init();
     for (int i = SC_LAYER_COUNT - 1; i >= 0; i--) retire_sc(&g_layers[i]);
-    drain_and_free_pools();
+    s66_detach_slots();
 }
 
+int sc_layer_token_is_current(void *token){
+    return token && g_layers_ready && g_layers[SC_LAYER_GAME].shown && g_layers[SC_LAYER_GAME].cur_token==token;
+}
 unsigned sc_layer_frames_take(void) {
+    /* on_stats_timer runs on the Wayland thread even with no display ticks */
+    s66_reap_slots();
     unsigned n = g_stat_layer_frames;
     g_stat_layer_frames = 0;
     return n;
 }
+
+void sc_s67_pool_stats(unsigned out[4]){out[0]=s67_native_targets;out[1]=s67_fenced;out[2]=s67_ready;out[3]=s67_dropped;}

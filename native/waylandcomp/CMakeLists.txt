@@ -33,6 +33,7 @@ add_library(alrootwayland SHARED
         generated/single-pixel-buffer-v1-protocol.c
         generated/banner-ahb-v1-protocol.c
         generated/alroot-gpu-buffer-v1-protocol.c
+        generated/alroot-xwl-repaint-v1-protocol.c
         src/framegen_bridge.c
         src/framegen_jni.c
 )

@@ -78,8 +78,11 @@ static void s45_pending_buffer_destroyed(struct wl_listener *listener, void *dat
     wl_list_remove(&s->pending_s45_destroy.link);
     wl_list_init(&s->pending_s45_destroy.link);
     s->pending_s45_buffer = NULL;
-    if (s->pending_s45_fd >= 0) close(s->pending_s45_fd);
-    s->pending_s45_fd = -1;
+    if (!s->s63_pending) {
+        if (s->pending_s45_fd >= 0) close(s->pending_s45_fd);
+        s->pending_s45_fd = -1;
+    }
+    /* A canceled v4 request still owns its original producer dependency. */
     /* Keep pending_s45_set: a subsequent commit must reject the dead target. */
 }
 
@@ -96,6 +99,48 @@ static int s45_fence_status(int fd) {
     return info.status > 0 ? 1 : info.status < 0 ? -1 : 0;
 }
 
+/* The resource may disappear first in a client disconnect. A ticket lives
+ * until the pending surface or the immutable committed use is released. */
+static void s63_resource_gone(struct wl_resource *r) {
+    struct s63_ticket *t = wl_resource_get_user_data(r);
+    if (t) t->resource = NULL;
+}
+static void s63_dispose(struct s63_ticket **slot) {
+    struct s63_ticket *t = *slot;
+    if (!t) return;
+    if (t->resource) wl_resource_destroy(t->resource);
+    if (t->pending_buffer) dmabuf_buffer_unref(t->pending_buffer);
+    free(t); *slot = NULL;
+}
+static void s68_make_ticket(struct wl_client *client, struct wl_resource *manager, uint32_t id,
+                            struct wl_resource *sr, struct wl_resource *br,int mailbox) {
+    struct surface *s = sr && wl_resource_instance_of(sr, &wl_surface_interface, &surface_impl) ?
+                        wl_resource_get_user_data(sr) : NULL;
+    struct dmabuf_buffer *b = br && wl_resource_instance_of(br, &wl_buffer_interface, &alroot_gpu_buffer_impl) ?
+                              wl_resource_get_user_data(br) : NULL;
+    if (s63_terminal_failure || !s || !b || !b->gpu_ahb || !b->s63_ahb_id || s->s63_pending || !s->pending_s45_set ||
+        s->pending_s45_buffer != br || wl_resource_get_client(sr) != client || wl_resource_get_client(br) != client) {
+        wl_resource_post_error(manager, ALROOT_GPU_BUFFER_V1_ERROR_INVALID_SYNC,
+                               "release must follow matching newly prepared AHB acquire");
+        return;
+    }
+    struct s63_ticket *t = calloc(1,sizeof(*t));
+    if (!t) { wl_client_post_no_memory(client); return; }
+    t->resource = wl_resource_create(client,&alroot_buffer_release_v1_interface,1,id);
+    if (!t->resource) { free(t); wl_client_post_no_memory(client); return; }
+    wl_resource_set_implementation(t->resource,NULL,t,s63_resource_gone);
+    b->refs++; t->pending_buffer=b;
+    t->mailbox=mailbox;
+    if(mailbox)++s68_mailbox_tickets;
+    s->s63_pending = t;
+    s63_tickets++;
+}
+void alroot_gpu_get_release(struct wl_client *c,struct wl_resource *m,uint32_t id,struct wl_resource *sr,struct wl_resource *br){
+    s68_make_ticket(c,m,id,sr,br,0);
+}
+void alroot_gpu_get_mailbox_release(struct wl_client *c,struct wl_resource *m,uint32_t id,struct wl_resource *sr,struct wl_resource *br){
+    s68_make_ticket(c,m,id,sr,br,1);
+}
 void alroot_gpu_set_acquire(struct wl_client *client, struct wl_resource *manager,
                            struct wl_resource *surface_resource,
                            struct wl_resource *buffer, int fd, int ready) {
@@ -109,7 +154,7 @@ void alroot_gpu_set_acquire(struct wl_client *client, struct wl_resource *manage
     if (valid) {
         s = wl_resource_get_user_data(surface_resource);
         b = wl_resource_get_user_data(buffer);
-        valid = s && b && b->gpu_ahb;
+        valid = s && b && b->gpu_ahb && !s->s63_pending;
     }
     int status = -1;
     if (valid && !ready) {
@@ -150,6 +195,7 @@ static int s45_latch_pending(struct surface *s, struct wl_client *client,
     if (!s->pending_s45_set) return 1;
     if (!s->pending_attach || !s->pending_buffer ||
         s->pending_buffer != s->pending_s45_buffer) {
+        s63_dispose(&s->s63_pending);
         s45_pending_clear(s);
         wl_client_post_implementation_error(client,
             "AHB acquire fence must match the next newly attached buffer");
@@ -227,10 +273,13 @@ static void s47_producer_resolve(struct s45_use *use, int status) {
         if (use->fd >= 0) close(use->fd);
         use->fd = -1;
         use->producer_done = status;
+        if(s65_waiting_producer_frames)s65_frame_producer_terminal(use->serial,status);
         if (status < 0) {
             g_s45.invalid_fences++;
-            if (use->resource) {
-                wl_client_post_implementation_error(wl_resource_get_client(use->resource),
+            struct wl_resource *error_target=use->s63_ticket && use->s63_ticket->resource ?
+                                             use->s63_ticket->resource : use->resource;
+            if (error_target) {
+                wl_client_post_implementation_error(wl_resource_get_client(error_target),
                                                      "AHB producer fence failed");
                 g_s45_protocol_dirty = 1;
             }
@@ -283,12 +332,27 @@ static void s45_use_retire(struct s45_use *use, int paced) {
     if (!use || use->retired) return;
     use->retired = 1;
     g_s45.retired++;
+    /* Only the negotiated native application's replaced MAILBOX generation.
+     * Presentation remains paced. Ready/FOREIGN/ID/consumer proofs below
+     * still gate every explicit ticket, including aliases and dropped writes. */
+    if(paced && use->s68_mailbox && use->owner && use->external && use->s63_ticket &&
+       !s68_baseline && !use->owner->s63_nested && !use->s65_presented) {
+        if(g_fps_limit==0){paced=0;s68_fast_pending=1;++s68_mailbox_early;}
+        else ++s68_mailbox_capped;
+    }
     use->paced = paced;
     use->since_ns = now_ns();
+    if(paced && use->s65_presented)use->s65_booked_ns=s65_book_auto_release(use->owner,use->since_ns);
     s45_arm();
 }
 
 static void s45_use_activate(struct surface *s, struct s45_use *use) {
+    /* Only a proven previous direct root may prime the next producer event.
+     * The same S47 source would otherwise be installed while building its draw. */
+    if (s->gpu_use && s->gpu_use->s65_presented && use && use!=s->gpu_use &&
+        use->external && !use->s63_ticket && !use->producer_done && use->fd>=0 &&
+        s65_can_prime(s->gpu_use->serial))
+        use->s65_early_watch=s47_producer_watch(use);
     if (s->gpu_use != use) s45_use_retire(s->gpu_use, 1);
     s->gpu_use = use;
     if (use) use->owner = s;
@@ -317,6 +381,25 @@ static void s45_release_idle(struct surface *s, struct wl_resource *buffer) {
 
 static void s45_forget_surface(struct surface *s) {
     struct s45_use *use;
+    /* No commit: pass the still-real producer dependency through the same
+     * allocation-alias release checks as a dropped (never sampled) use. No
+     * extra core release may be sent for this never-attached generation. */
+    if (s->s63_pending && s->s63_pending->resource && !s63_terminal_failure) {
+        struct s63_ticket *t=s->s63_pending;
+        struct s45_use *orphan=g_s45.live<S45_MAX_USES ? calloc(1,sizeof(*orphan)) : NULL;
+        if (!orphan) wl_client_post_no_memory(wl_resource_get_client(t->resource));
+        else {
+            orphan->buffer=t->pending_buffer; t->pending_buffer=NULL;
+            orphan->s63_ticket=t; s->s63_pending=NULL;
+            orphan->serial=++g_s45.next_serial; orphan->external=1;
+            orphan->fd=s->pending_s45_fd; s->pending_s45_fd=-1;
+            orphan->producer_done=orphan->fd<0;
+            wl_list_insert(g_s45_uses.prev,&orphan->link);
+            ++g_s45.live; if(g_s45.live>g_s45.peak) g_s45.peak=g_s45.live;
+            s45_use_retire(orphan,0);
+        }
+    }
+    s63_dispose(&s->s63_pending);
     s45_pending_clear(s);
     wl_list_for_each(use, &g_s45_uses, link) {
         if (use->owner == s) {
@@ -328,6 +411,11 @@ static void s45_forget_surface(struct surface *s) {
 }
 
 static void s45_use_free(struct s45_use *use) {
+    if (use->s63_due_ns>0) {
+        --s63_timers;
+        if (use->owner && use->owner->s63_delayed) --use->owner->s63_delayed;
+    }
+    s63_dispose(&use->s63_ticket);
     s47_producer_unwatch(use);
     if (use->fd >= 0) close(use->fd);
     if (use->resource) wl_list_remove(&use->destroy.link);
@@ -341,34 +429,106 @@ static void s45_use_free(struct s45_use *use) {
     } else free(use);
 }
 
+/* v4 release is per committed use, not per wl_buffer id. The stable AHB ID
+ * groups any independently imported native handles naming the same storage.
+ * The existing single-inflight source pin guarantees no older host read is
+ * still pending. A current surface (even offscreen) may be sampled again. */
+static void s63_try_release(struct s45_use *u) {
+    struct s63_ticket *t=u->s63_ticket;
+    if (s63_terminal_failure || !t || !t->resource || !u->retired || !u->buffer->s63_ahb_id) return;
+    if(s65_held && s65_buffer_held(u->buffer))return;
+    const int frame_fd = vkp_frame_completion_fd();
+    int fd=-1, unsampled=0;
+    struct s45_use *v;
+    wl_list_for_each(v,&g_s45_uses,link) {
+        if (v->buffer->s63_ahb_id != u->buffer->s63_ahb_id) continue;
+        if (!v->retired || v->producer_done<0) return;
+        if (v->frame_refs || vkp_image_busy(v->buffer->img)) {
+            /* Only one in-flight frame. Its exported payload includes all
+             * source reads and every successfully submitted producer wait. */
+            if (!g_s45_frame.active || !g_s45_frame.successful ||
+                !vkp_frame_sources_submitted() || !v->frame_refs || frame_fd<0 ||
+                (!v->producer_done && !v->frame_proven)) return;
+            if (fd>=0 && fd!=frame_fd) return;
+            fd=frame_fd;
+        } else if (!v->producer_done) {
+            /* Dropped before a read. The producer can still be writing.
+             * Do not combine independent unsignalled dependencies by guess. */
+            if (v->fd<0 || (fd>=0 && fd!=v->fd)) return;
+            fd=v->fd;unsampled=1;
+        }
+    }
+    /* The release dependency and user-selected pacing are independent.
+     * Use the existing timerfd and deadline algorithm, with a separate
+     * per-surface v4 lane: neither account a frame twice nor bypass the cap.
+     * When due, recompute the actual dependency; never retain a stale fd. */
+    if (u->s63_due_ns>0) return;
+    if (!u->s63_due_ns && u->paced && u->owner && !g_release_unpaced && g_release_timer_fd>=0) {
+        const int limit=g_fps_limit;
+        const int mhz=atomic_load(&g_output_refresh_mhz);
+        const int64_t interval=limit>0 ? 1000000000LL/limit :
+            (mhz>=30000 && mhz<=240000 ? 1000000000000LL/mhz : g_refresh_ns);
+        int64_t now=now_ns();
+        int64_t at=alroot_release_deadline_ns(now,u->owner->s63_next_release_ns,interval,
+                                             u->owner->s63_delayed,limit==0,NULL);
+        u->owner->s63_next_release_ns=at;
+        if (at>now+300000) {
+            u->s63_due_ns=at; ++s63_timers; ++u->owner->s63_delayed; arm_release_timer(); return;
+        }
+        u->s63_due_ns=-1;
+    }
+    if (fd>=0) {
+        /* wl_resource_post_event duplicates the descriptor at marshal time.
+         * Host keeps its original for error validation and core retirement. */
+        alroot_buffer_release_v1_send_fenced_release(t->resource,fd);
+        s63_fenced++; if (unsampled) s63_unsampled++;
+    } else { alroot_buffer_release_v1_send_immediate_release(t->resource); s63_immediate++; }
+    s63_dispose(&u->s63_ticket);
+    g_s45_protocol_dirty=1;
+}
 static void s45_retire_ready(void) {
     if (!g_s45.retired) return;
 restart:
     ;
     struct s45_use *use, *other, *tmp;
     wl_list_for_each(use, &g_s45_uses, link) {
+        if (use->s63_ticket) s63_try_release(use);
         if (!use->retired || use->frame_refs || vkp_image_busy(use->buffer->img)) continue;
+        if (s65_held && s65_buffer_held(use->buffer)) continue;
         struct dmabuf_buffer *b = use->buffer;
         int pending = 0, failed = 0;
         struct wl_resource *resource = NULL;
         struct surface *owner = NULL;
         int paced = 0;
+        int64_t booked=0;struct surface *book_owner=NULL;int multiple_owners=0;
         int64_t since = use->since_ns;
         wl_list_for_each(other, &g_s45_uses, link) {
             if (other->buffer != b) continue;
+            if (other->s63_ticket) {
+                s63_try_release(other);
+                /* A live alias in another wl_buffer still holds this AHB.
+                 * Do not free its release obligation to unblock core notices. */
+                if (other->s63_ticket && other->s63_ticket->resource && other->producer_done >= 0) {pending=1;break;}
+            }
             if (!other->retired || other->frame_refs) { pending = 1; break; }
             int ready = s45_use_ready(other);
             if (!ready) { pending = 1; break; }
             if (ready < 0) failed = 1;
             if (other->resource) resource = other->resource;
             if (other->owner) owner = other->owner;
+            if(other->s65_booked_ns){
+                if(book_owner && book_owner!=other->owner)multiple_owners=1;
+                book_owner=other->owner;
+                if(other->s65_booked_ns>booked)booked=other->s65_booked_ns;
+            }
             paced |= other->paced;
         }
         if (pending) continue;
         /* All uses of this wl_buffer retire together. A repeated attach must
          * not receive an older generation's release while it is still live. */
         if (resource && !failed) {
-            if (paced && owner) g_s45_protocol_dirty |= release_buffer(owner, resource, since);
+            if (paced && owner) g_s45_protocol_dirty |= release_buffer_planned(owner,resource,since,
+                !multiple_owners && owner==book_owner?booked:0);
             else {
                 wl_buffer_send_release(resource);
                 perf_note_release(since);
@@ -500,6 +660,21 @@ static int s45_poll_frame(void) {
         s45_finish_frame(0);
         return 1;
     }
+    if (status == VKP_FRAME_FAILED && vkp_frame_pending() && !s63_terminal_failure) {
+        /* A submitted read has no valid completion any more. Do not send
+         * release or leave v4 Acquire blocked forever waiting for one. */
+        s63_terminal_failure=1;
+        struct s45_use *use; struct surface *s;
+        wl_list_for_each(use,&g_s45_uses,link)
+            if (use->s63_ticket && use->s63_ticket->resource)
+                wl_client_post_implementation_error(wl_resource_get_client(use->s63_ticket->resource),
+                                                     "consumer completion lost, AHB quarantined");
+        wl_list_for_each(s,&g_surfaces,link)
+            if (s->s63_pending && s->s63_pending->resource)
+                wl_client_post_implementation_error(wl_resource_get_client(s->s63_pending->resource),
+                                                     "consumer completion lost, AHB quarantined");
+        g_s45_protocol_dirty=1;
+    }
     if (status == VKP_FRAME_FAILED && vkp_s47_enabled()) {
         g_s47_frame_terminal = 1;
         s47_frame_unwatch();
@@ -532,20 +707,9 @@ static int s47_progress(void) {
                 if (s45_use_ready(use) == 0 && !use->producer_source) need_timer = 1;
             }
         }
-    struct surface *s;
-    wl_list_for_each(s, &g_surfaces, link) {
-        if (s->role != ROLE_CURSOR || !s->idle_buffer) continue;
-        if (vkp_frame_pending()) {
-            if (!frame_event && !g_s47_frame_terminal) need_timer = 1;
-            continue;
-        }
-        if (s45_use_ready(s->gpu_use) == 0) {
-            if (!s->gpu_use || !s->gpu_use->producer_source) need_timer = 1;
-            continue;
-        }
-        struct wl_resource *buffer = surface_take_idle(s);
-        if (s45_use_ready(s->gpu_use) > 0) cursor_publish_buffer(s, buffer);
-        s45_release_idle(s, buffer);
+    if(g_cursor_surface && g_cursor_surface->idle_buffer){
+        if(vkp_frame_pending()) {if(!frame_event&&!g_s47_frame_terminal)need_timer=1;}
+        else s66_cursor_progress(g_cursor_surface);
     }
     if (need_timer) s47_arm_timer();
     else if (g_dirty) schedule_render();
@@ -594,6 +758,13 @@ static int s47_on_producer_fd(int fd, uint32_t mask, void *data) {
 
 static void s47_report(void) {
     if (!vkp_s47_profile_enabled()) return;
+    char s63[256];
+    snprintf(s63,sizeof(s63),"S63_RELEASE_STATS tickets=%llu fenced=%llu immediate=%llu unsampled_fenced=%llu",
+        (unsigned long long)s63_tickets,(unsigned long long)s63_fenced,
+        (unsigned long long)s63_immediate,(unsigned long long)s63_unsampled);
+    s47_emit_stats(s63);
+    vkp_s63_stats(s63,sizeof(s63)); s47_emit_stats(s63);
+    vkp_s66_stats(s63,sizeof(s63)); s47_emit_stats(s63);
     struct vkp_s47_stats backend;
     vkp_s47_get_stats(&backend);
     char line[4096];

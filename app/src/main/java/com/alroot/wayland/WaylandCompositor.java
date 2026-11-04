@@ -170,6 +170,8 @@ public final class WaylandCompositor {
     public static native void nativeSendKey(int evdev, int state);
 
     public static native void nativeVsync(long frameTimeNanos);
+    public static native boolean nativeVsyncRawPolicy(long frameTimeNanos, boolean supportsTimeline);
+    public static native boolean nativeVsyncTimelinePolicy(long frameTimeNanos,long vsyncId,long deadline,long expected);
 
     public static native int nativeCompositorTid();
 

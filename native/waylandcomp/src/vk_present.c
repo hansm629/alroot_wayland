@@ -43,6 +43,7 @@ struct vkp_image {
     int in_general;
     VkFormat fmt;
     int sampled;
+    unsigned s63_linear;
     /* S1.6: a LINEAR Wayland DMA-BUF imported as a GPU VkBuffer.  The
      * compatible private image is only the GPU-copy render target, never
      * CPU-mapped.  No image aliasing of an external VkBuffer is attempted. */
@@ -56,6 +57,7 @@ struct vkp_image {
     unsigned destroy_pending;
     unsigned ahb;
     unsigned explicit_sync;
+    unsigned s68_legacy_read; /* set only while the current submitted source set holds the allocation */
 };
 
 static ANativeWindow *g_window;
@@ -81,6 +83,7 @@ static VkPhysicalDeviceMemoryProperties g_memprops;
 
 static VkSurfaceKHR g_surface;
 static VkSwapchainKHR g_swapchain;
+#include "s69_parent_timing.inc"
 static VkSurfaceTransformFlagBitsKHR g_surface_transform;
 static int g_surface_transform_known;
 static VkImage *g_images;
@@ -316,6 +319,7 @@ static void source_release_all(void) {
     }
     for (unsigned i = 0; i < g_sources.image_count; ++i) {
         struct vkp_image *img = g_sources.images[i];
+        img->s68_legacy_read=0;
         if (img->frame_holds) img->frame_holds--;
         if (!img->frame_holds && img->destroy_pending) vkp_image_destroy(img);
     }
@@ -330,6 +334,7 @@ static int source_prepare_preflighted(const struct vkp_draw *draws, int n) {
         struct vkp_image *img = draws[i].img;
         if (source_hold(img) != 0) { source_release_all(); return -1; }
         if (img && img->ahb && draws[i].external_ownership) img->explicit_sync = 1;
+        if (img && img->ahb && draws[i].s68_legacy_ready) img->s68_legacy_read=1;
         if (!img || !draws[i].has_acquire_fence) continue;
         const int fd = draws[i].acquire_fence_fd;
         if (fd < 0) { source_release_all(); return -1; }
@@ -407,11 +412,14 @@ static void source_note_submitted(void) {
  * the producer and consumer can use different local image layouts. Keep each
  * step in a separate barrier command so its dependency scope orders the next.
  */
-static void record_source_acquires(VkCommandBuffer cmd) {
+static void record_source_acquires_mode(VkCommandBuffer cmd, int sample_general) {
     const VkImageSubresourceRange range = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1};
     for (unsigned i = 0; i < g_sources.image_count; ++i) {
         struct vkp_image *img = g_sources.images[i];
-        if (!img->explicit_sync) continue;
+        if (!img->explicit_sync && !(sample_general && img->s68_legacy_read)) continue;
+        /* The legacy producer has finished and handed its AHB to its foreign
+         * consumer before commit. Acquire its existing contents in GENERAL;
+         * never discard them via UNDEFINED or fabricate an acquire fence. */
         VkImageMemoryBarrier acquire = {
             .sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER,
             .oldLayout = VK_IMAGE_LAYOUT_GENERAL, .newLayout = VK_IMAGE_LAYOUT_GENERAL,
@@ -420,6 +428,7 @@ static void record_source_acquires(VkCommandBuffer cmd) {
             .dstAccessMask = VK_ACCESS_MEMORY_READ_BIT | VK_ACCESS_MEMORY_WRITE_BIT};
         g_vk.CmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, VK_PIPELINE_STAGE_ALL_COMMANDS_BIT,
                                 0, 0, NULL, 0, NULL, 1, &acquire);
+        if (sample_general) continue;
         VkImageMemoryBarrier local = {
             .sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER,
             .oldLayout = VK_IMAGE_LAYOUT_GENERAL, .newLayout = VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
@@ -432,11 +441,13 @@ static void record_source_acquires(VkCommandBuffer cmd) {
     }
 }
 
-static void record_source_releases(VkCommandBuffer cmd) {
+static void record_source_acquires(VkCommandBuffer cmd) { record_source_acquires_mode(cmd, 0); }
+
+static void record_source_releases_mode(VkCommandBuffer cmd, int sample_general) {
     const VkImageSubresourceRange range = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1};
     for (unsigned i = 0; i < g_sources.image_count; ++i) {
         struct vkp_image *img = g_sources.images[i];
-        if (!img->explicit_sync) continue;
+        if (!img->explicit_sync && !(sample_general && img->s68_legacy_read)) continue;
         VkImageMemoryBarrier local = {
             .sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER,
             .oldLayout = VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, .newLayout = VK_IMAGE_LAYOUT_GENERAL,
@@ -444,7 +455,8 @@ static void record_source_releases(VkCommandBuffer cmd) {
             .image = img->image, .subresourceRange = range,
             .srcAccessMask = VK_ACCESS_TRANSFER_READ_BIT | VK_ACCESS_SHADER_READ_BIT,
             .dstAccessMask = VK_ACCESS_MEMORY_READ_BIT | VK_ACCESS_MEMORY_WRITE_BIT};
-        g_vk.CmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_ALL_COMMANDS_BIT, VK_PIPELINE_STAGE_ALL_COMMANDS_BIT,
+        if (!sample_general)
+            g_vk.CmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_ALL_COMMANDS_BIT, VK_PIPELINE_STAGE_ALL_COMMANDS_BIT,
                                 0, 0, NULL, 0, NULL, 1, &local);
         VkImageMemoryBarrier release = {
             .sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER,
@@ -456,6 +468,8 @@ static void record_source_releases(VkCommandBuffer cmd) {
                                 0, 0, NULL, 0, NULL, 1, &release);
     }
 }
+
+static void record_source_releases(VkCommandBuffer cmd) { record_source_releases_mode(cmd, 0); }
 
 static struct { VkImage img; VkDeviceMemory mem; int w, h; } g_scene;
 
@@ -558,6 +572,7 @@ static void destroy_swapchain(void) {
             if (g_rnds[i]) g_vk.DestroySemaphore(g_dev, g_rnds[i], NULL);
         free(g_rnds); g_rnds = NULL;
     }
+    vkp_s69_cancel_present();
     if (g_swapchain) g_vk.DestroySwapchainKHR(g_dev, g_swapchain, NULL);
     g_swapchain = VK_NULL_HANDLE;
     g_swap_md_identity = 0;
@@ -846,7 +861,7 @@ static int dev_init(void) {
 
     static const char *const import_exts[4] = {"VK_KHR_external_memory_fd", "VK_EXT_external_memory_dma_buf",
                                                "VK_EXT_image_drm_format_modifier", "VK_KHR_image_format_list"};
-    const char *dev_exts[10] = {VK_KHR_SWAPCHAIN_EXTENSION_NAME};
+    const char *dev_exts[11] = {VK_KHR_SWAPCHAIN_EXTENSION_NAME};
     uint32_t n_dev_exts = 1;
     uint32_t ne = 0;
     g_vk.EnumerateDeviceExtensionProperties(g_pd, NULL, &ne, NULL);
@@ -860,6 +875,8 @@ static int dev_init(void) {
         if (has_ext(exts, ne, import_exts[i])) dev_exts[n_dev_exts++] = import_exts[i];
         else LOGE("present: driver MISSING %s (dmabuf import will fail)", import_exts[i]);
     }
+    const int s69_timing_available=has_ext(exts,ne,VK_GOOGLE_DISPLAY_TIMING_EXTENSION_NAME);
+    if(s69_timing_available)dev_exts[n_dev_exts++]=VK_GOOGLE_DISPLAY_TIMING_EXTENSION_NAME;
     int want_hdr_md = 0;
     if (alroot_color_requested()) {
         want_hdr_md = has_ext(exts, ne, VK_EXT_HDR_METADATA_EXTENSION_NAME);
@@ -905,6 +922,7 @@ static int dev_init(void) {
         LOGE("present: vkCreateDevice failed"); g_dev_state = -1; return -1;
     }
     vk_loader_load_device(g_dev);
+    s69_get_past=s69_timing_available?(PFN_vkGetPastPresentationTimingGOOGLE)g_vk.GetDeviceProcAddr(g_dev,"vkGetPastPresentationTimingGOOGLE"):NULL;
     g_vk.GetDeviceQueue(g_dev, g_qfam, 0, &g_queue);
     if (want_fence_fd)
         g_get_fence_fd = (PFN_vkGetFenceFdKHR)g_vk.GetDeviceProcAddr(g_dev, "vkGetFenceFdKHR");
@@ -1681,7 +1699,7 @@ void vkp_wait_idle(void) {
     }
 }
 
-struct vkp_image *vkp_image_from_ahb(AHardwareBuffer *ahb) {
+static struct vkp_image *s67_ahb_image(AHardwareBuffer *ahb,int target) {
     if (!ahb || dev_init() != 0) return NULL;
     if (!g_ahb_import || !g_vk.GetAndroidHardwareBufferPropertiesANDROID) {
         static int said;
@@ -1700,10 +1718,14 @@ struct vkp_image *vkp_image_from_ahb(AHardwareBuffer *ahb) {
              vk_result_name(pr), (int)fp.format);
         return NULL;
     }
+    if(target && (desc.format!=AHARDWAREBUFFER_FORMAT_R8G8B8A8_UNORM || desc.layers!=1 ||
+       !(desc.usage&AHARDWAREBUFFER_USAGE_GPU_COLOR_OUTPUT) || fp.format!=VK_FORMAT_R8G8B8A8_UNORM ||
+       !(fp.formatFeatures&VK_FORMAT_FEATURE_BLIT_DST_BIT)))return NULL;
     struct vkp_image *img = calloc(1, sizeof(*img));
     if (!img) return NULL;
     img->w = (int)desc.width; img->h = (int)desc.height; img->dmabuf = 1; img->fmt = fp.format; img->sampled = 1;
-    img->ahb = 1;
+    img->ahb = 1;img->blit_dst=target;if(target)img->sampled=0;
+    img->s63_linear = !!(fp.formatFeatures & VK_FORMAT_FEATURE_SAMPLED_IMAGE_FILTER_LINEAR_BIT);
     VkExternalMemoryImageCreateInfo ext = {
         .sType = VK_STRUCTURE_TYPE_EXTERNAL_MEMORY_IMAGE_CREATE_INFO,
         .handleTypes = VK_EXTERNAL_MEMORY_HANDLE_TYPE_ANDROID_HARDWARE_BUFFER_BIT_ANDROID};
@@ -1711,7 +1733,7 @@ struct vkp_image *vkp_image_from_ahb(AHardwareBuffer *ahb) {
         .sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO, .pNext = &ext,
         .imageType = VK_IMAGE_TYPE_2D, .format = fp.format, .extent = {desc.width, desc.height, 1},
         .mipLevels = 1, .arrayLayers = 1, .samples = VK_SAMPLE_COUNT_1_BIT, .tiling = VK_IMAGE_TILING_OPTIMAL,
-        .usage = VK_IMAGE_USAGE_TRANSFER_SRC_BIT | VK_IMAGE_USAGE_SAMPLED_BIT,
+        .usage = target?VK_IMAGE_USAGE_TRANSFER_DST_BIT:(VK_IMAGE_USAGE_TRANSFER_SRC_BIT | VK_IMAGE_USAGE_SAMPLED_BIT),
         .sharingMode = VK_SHARING_MODE_EXCLUSIVE, .initialLayout = VK_IMAGE_LAYOUT_UNDEFINED};
     VkResult cr = g_vk.CreateImage(g_dev, &ici, NULL, &img->image);
     if (cr != VK_SUCCESS) { LOGE("ahb: vkCreateImage %ux%u -> %s", desc.width, desc.height, vk_result_name(cr)); free(img); return NULL; }
@@ -1731,6 +1753,9 @@ struct vkp_image *vkp_image_from_ahb(AHardwareBuffer *ahb) {
     }
     return img;
 }
+struct vkp_image *vkp_image_from_ahb(AHardwareBuffer *ahb){return s67_ahb_image(ahb,0);}
+struct vkp_image *vkp_image_layer_target(AHardwareBuffer *ahb){return s67_ahb_image(ahb,1);}
+
 
 static int shm_sampled(void) {
     static int known;
@@ -1753,6 +1778,8 @@ struct vkp_image *vkp_image_create_shm(int w, int h) {
     img->w = w; img->h = h;
     img->fmt = VK_FORMAT_B8G8R8A8_UNORM;
     img->sampled = shm_sampled();
+    /* shm_sampled validates linear filtering for the single fixed format. */
+    img->s63_linear = img->sampled;
 
     VkImageCreateInfo ici = {
         .sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO, .imageType = VK_IMAGE_TYPE_2D,
@@ -1852,6 +1879,67 @@ static int draw_to_scene_blit(const struct vkp_draw *d, int scene_w, int scene_h
     return map_draw(d, 1.0f, 1.0f, 0.0f, 0.0f, 0.0f, 0.0f, (float)scene_w, (float)scene_h, blit);
 }
 
+static int s63_direct_last;
+static uint64_t s63_passes,s63_draws,s63_ahb_draws,s63_shm_draws,s63_alpha_draws,s63_opaque_draws,s63_fallback,s63_nested;
+#include "s66_native_scene.inc"
+int vkp_last_direct_attachment(void) {return s63_direct_last;}
+void vkp_s63_stats(char *buf,size_t len) {
+    snprintf(buf,len,"S63_COMPOSE_STATS direct_passes=%llu draws=%llu ahb=%llu shm=%llu alpha=%llu opaque=%llu eligible_fallback=%llu nested_skips=%llu",
+       (unsigned long long)s63_passes,(unsigned long long)s63_draws,(unsigned long long)s63_ahb_draws,
+       (unsigned long long)s63_shm_draws,(unsigned long long)s63_alpha_draws,(unsigned long long)s63_opaque_draws,
+       (unsigned long long)s63_fallback,(unsigned long long)s63_nested);
+}
+static int s63_enabled(void) {
+    static int enabled=-1;
+    if (enabled<0) {const char *opt=getenv("S63_HOST_COMPOSE"); enabled=!opt || !strcmp(opt,"1");}
+    return enabled;
+}
+/* Only raw native AHB uses have a negotiated GENERAL/FOREIGN contract.
+ * Ordinary sampleable SHM windows may share this pass but retain their CPU
+ * upload cost. Never count an imported flattened desktop as raw windows.
+ * Unknown app provenance must be established by the caller's measurements;
+ * the renderer's counters describe actual commands, not upstream history. */
+static int s63_prepare_scene(const struct vkp_draw *ds,int n,VkImage dst,VkFilter filter,
+                             struct blendp_item *items,int *ahb,int *alpha,int *occluded) {
+    int count=0,any=0;
+    *ahb=*alpha=0;
+    if (!s63_enabled() || !n) return 0;
+    for(int i=0;i<n;++i) if(ds[i].img && ds[i].img->ahb && (ds[i].external_ownership || ds[i].s68_legacy_ready)) any=1;
+    if (!any) return 0;
+    for(int i=0;i<n;++i) {
+        const struct vkp_draw *d=&ds[i]; struct vkp_image *im=d->img;
+        if (!im) continue;
+        /* An authenticated Xwayland root is one flattened sampled input.
+         * 2 is the background of a mixed scene; 3 is the sole source of
+         * the ordinary compositor, never a direct Android child layer.
+         * Unqualified nested servers and arbitrary stacking stay excluded. */
+        if (d->nested_output && !(i==0 && ((n>1 && d->nested_output==2) ||
+                                            (n==1 && d->nested_output==3)))) {
+            if (vkp_s47_profile_enabled()) s63_nested++;
+            return 0;
+        }
+        if (im->linear_copy || !im->sampled || (im->dmabuf && !(im->ahb && (d->external_ownership || d->s68_legacy_ready)))) goto fallback;
+        VkImageBlit rect;
+        if (!draw_to_blit(d,&rect)) continue;
+        if (count>=BLENDP_MAX_SCENE) goto fallback;
+        const int nearest=!d->blend && filter==VK_FILTER_NEAREST;
+        if (!nearest && !im->s63_linear) goto fallback;
+        items[count++]=(struct blendp_item){.img=im->image,.fmt=im->fmt,.width=im->w,.height=im->h,
+            .blend=!!d->blend,.nearest=nearest,.rect=rect,.ahb=!!im->ahb};
+        *ahb+=!!im->ahb; *alpha+=!!d->blend;
+    }
+    if (!*ahb || !count) return 0;
+    /* Cull shader draws/descriptors only. The immutable draw/source set,
+     * GPU acquire waits, lifetime pins and release proofs remain intact. */
+    if (count>1 && s66_native_scene_enabled()) {
+        const int kept=s66_cull_scene(items,count,ahb,alpha);
+        *occluded=count-kept;count=kept;
+    }
+    if (!blendp_scene_prepare(dst,g_swap_fmt,g_extent.width,g_extent.height,items,count)) return count;
+fallback:
+    if (vkp_s47_profile_enabled()) s63_fallback++;
+    return 0;
+}
 static void record_draw(VkCommandBuffer cmd, const struct vkp_draw *d, const VkImageBlit *blit, VkImage target,
                         VkFormat target_fmt, int target_w, int target_h, VkFilter filter) {
     const struct vkp_image *im = d->img;
@@ -1993,6 +2081,7 @@ static void device_lost(const char *where) {
     alroot_log("error", "GPU device lost (VK_ERROR_DEVICE_LOST in %s): the compositor has stopped presenting; "
                "restart the session", where);
     for (uint32_t i = 0; i < g_nimg; i++) blendp_forget_image(g_images[i]);
+    vkp_s69_cancel_present();
     if (g_swapchain) g_vk.DestroySwapchainKHR(g_dev, g_swapchain, NULL);
     g_swapchain = VK_NULL_HANDLE;
     if (g_surface) g_vk.DestroySurfaceKHR(g_inst, g_surface, NULL);
@@ -2162,6 +2251,8 @@ int vkp_can_wait_sync_fd(void) {
     return g_sync_fd_importable && g_import_sem_fd != NULL && g_wait_sem != VK_NULL_HANDLE;
 }
 
+int vkp_release_fd_state(int fd) { return sync_fd_status(fd); }
+
 static int take_wait_fd(int fd) {
     if (fd < 0) return 0;
     if (vkp_can_wait_sync_fd()) {
@@ -2172,17 +2263,12 @@ static int take_wait_fd(int fd) {
             g_perf.gpu_release_waits++;
             return 1;
         }
-        static int said;
-        if (!said) {
-            said = 1;
-            alroot_log("perf", "layer buffers: importing a release fence as a GPU wait failed; waiting for it on the CPU");
-        }
     }
-    struct pollfd p = {.fd = fd, .events = POLLIN};
-    int r;
-    do { r = poll(&p, 1, 100); } while (r < 0 && errno == EINTR);
+    /* Import failure leaves ownership with us. Only a proven terminal
+     * success may proceed. The layer slot retains the authoritative FD. */
+    const int status=sync_fd_status(fd);
     close(fd);
-    return r > 0 && (p.revents & POLLIN) && !(p.revents & (POLLERR | POLLHUP | POLLNVAL)) ? 0 : -1;
+    return status>0 ? 0 : (status==0 ? -2 : -1);
 }
 
 static int host_async_enabled(void) {
@@ -2421,6 +2507,7 @@ static int acquire_scene_sources(const struct vkp_draw *draws, int n, int async,
 
 static int render_impl(int scene_w, int scene_h, const struct vkp_draw *draws, int n,
                        const struct vkp_hdr_frame *hf, int *how, int allow_async) {
+    s63_direct_last=0;
     if (how) *how = 0;
     if (g_frame.pending || g_sources.active) { g_perf.async_retries++; return VKP_RENDER_RETRY; }
     vkp_apply_window_request();
@@ -2493,6 +2580,35 @@ static int render_impl(int scene_w, int scene_h, const struct vkp_draw *draws, i
                                    .flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT};
     g_vk.BeginCommandBuffer(cmd, &bi);
     blendp_begin_frame();
+    struct blendp_item items[BLENDP_MAX_SCENE];
+    int ahb_draws=0,alpha_draws=0,s66_occluded=0;
+    const int composed=pass || hf || cb || fx || fg || !async ? 0 :
+        s63_prepare_scene(draws,n,g_images[img],blit_filter,items,&ahb_draws,&alpha_draws,&s66_occluded);
+    int drawn=0, hdr_how=0;
+    if (composed) {
+        /* No intermediate image or transfer. The render pass targets the
+         * acquired Android swapchain image for its entire lifetime. */
+        linear_gpu_wait_reset();
+        const int batch=n>1 && s66_native_scene_enabled() && g_sources.image_count>1 &&
+                        g_sources.image_count<=g_scene_barrier_capacity;
+        if(batch) s66_record_native_barriers(cmd,0);
+        else record_source_acquires_mode(cmd,1);
+        if(!batch)for(unsigned k=0;k<g_sources.image_count;k++) {
+            struct vkp_image *im=g_sources.images[k];
+            if(im->dmabuf) continue;
+            VkImageMemoryBarrier b={.sType=VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER,
+                .oldLayout=im->in_general?VK_IMAGE_LAYOUT_GENERAL:VK_IMAGE_LAYOUT_PREINITIALIZED,.newLayout=VK_IMAGE_LAYOUT_GENERAL,
+                .srcQueueFamilyIndex=VK_QUEUE_FAMILY_IGNORED,.dstQueueFamilyIndex=VK_QUEUE_FAMILY_IGNORED,
+                .image=im->image,.subresourceRange={VK_IMAGE_ASPECT_COLOR_BIT,0,1,0,1},
+                .srcAccessMask=VK_ACCESS_HOST_WRITE_BIT,.dstAccessMask=VK_ACCESS_SHADER_READ_BIT};
+            g_vk.CmdPipelineBarrier(cmd,VK_PIPELINE_STAGE_HOST_BIT,VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT,0,0,NULL,0,NULL,1,&b);
+            im->in_general=1;
+        }
+        blendp_scene_draw(cmd,g_extent.width,g_extent.height,items,composed);
+        if(batch) s66_record_native_barriers(cmd,1);
+        else record_source_releases_mode(cmd,1);
+        drawn=composed;
+    } else {
     record_linear_sources(cmd, draws, n);
     record_source_acquires(cmd);
     VkImageSubresourceRange range = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1};
@@ -2555,8 +2671,7 @@ static int render_impl(int scene_w, int scene_h, const struct vkp_draw *draws, i
                                 0, 1, &mb, 0, NULL, 0, NULL);
     }
 
-    int drawn = 0;
-    int hdr_how = 0;
+
     if (hf && pass && n > 0 &&
         compose_hdr(cmd, draws, n, hf, scene_w, scene_h, scene_img, scene_fmt,
                     g_swap_is_hdr ? HDRC_OUT_PQ : HDRC_OUT_SDR) == 0) {
@@ -2573,12 +2688,16 @@ static int render_impl(int scene_w, int scene_h, const struct vkp_draw *draws, i
         drawn++;
     }
     record_source_releases(cmd);
+    }
 
     int ngen = 0;
     VkImage gens[VKP_FG_MAX_GENERATIONS] = {VK_NULL_HANDLE};
     VkImage result = scene_img;
     int rw = scene_w, rh = scene_h;
-    if (!pass) {
+    if (composed) {
+        /* EndRenderPass already transitioned the final attachment to PRESENT. */
+    } else if (!pass) {
+        const VkImageSubresourceRange range={VK_IMAGE_ASPECT_COLOR_BIT,0,1,0,1};
         VkImageMemoryBarrier b_present = {
             .sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER, .oldLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
             .newLayout = VK_IMAGE_LAYOUT_PRESENT_SRC_KHR, .srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
@@ -2587,6 +2706,7 @@ static int render_impl(int scene_w, int scene_h, const struct vkp_draw *draws, i
         g_vk.CmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT,
                                 0, 0, NULL, 0, NULL, 1, &b_present);
     } else {
+        const VkImageSubresourceRange range={VK_IMAGE_ASPECT_COLOR_BIT,0,1,0,1};
         VkImageLayout result_layout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
         if (fx) {
             int mapped_w = (int)(scene_w * g_map.kx + 0.5f), mapped_h = (int)(scene_h * g_map.ky + 0.5f);
@@ -2649,13 +2769,28 @@ static int render_impl(int scene_w, int scene_h, const struct vkp_draw *draws, i
                            .pCommandBuffers = &g_cmds[k], .signalSemaphoreCount = 1, .pSignalSemaphores = &rendered};
         VkResult qr = g_vk.QueueSubmit(g_queue, 1, &si, last ? g_fence : VK_NULL_HANDLE);
         if (qr != VK_SUCCESS) return render_submit_failed("scene submit", qr, 1);
-        if (k == 0) source_note_submitted();
+        if (k == 0) {
+            source_note_submitted();
+            if (composed) {
+                s63_direct_last=1;
+                if (vkp_s47_profile_enabled()) {
+                    s66_culled+=s66_occluded;
+                    s63_passes++; s63_draws+=composed; s63_ahb_draws+=ahb_draws;
+                    s63_shm_draws+=composed-ahb_draws; s63_alpha_draws+=alpha_draws;
+                    s63_opaque_draws+=composed-alpha_draws;
+                }
+            }
+        }
         fence_submitted = last;
         VkPresentInfoKHR pi = {.sType = VK_STRUCTURE_TYPE_PRESENT_INFO_KHR, .waitSemaphoreCount = 1,
                                .pWaitSemaphores = &rendered, .swapchainCount = 1,
                                .pSwapchains = &g_swapchain, .pImageIndices = &img};
         const int64_t t_pres = perf_now();
+        VkPresentTimeGOOGLE s69_when;VkPresentTimesInfoGOOGLE s69_times;
+        int s69_tagged=__builtin_expect(s69_armed!=0,0) && last && !fg && !hf && n>0;
+        if(s69_tagged){s69_tag_parent(&pi,&s69_times,&s69_when);s69_tagged=pi.pNext==&s69_times;}
         pr = g_vk.QueuePresentKHR(g_queue, &pi);
+        if(__builtin_expect(s69_tagged,0))s69_note_queue(pr,s69_when.presentID);
         perf_add(&g_perf.present_ns, &g_perf.present_max_ns, &g_perf.presents, perf_now() - t_pres);
         if (k < ngen) presented_gen++;
         if (pr == VK_ERROR_OUT_OF_DATE_KHR || pr == VK_ERROR_SURFACE_LOST_KHR || pr == VK_ERROR_DEVICE_LOST) break;
@@ -2690,7 +2825,9 @@ static int render_route(int scene_w, int scene_h, const struct vkp_draw *draws, 
         vkp_apply_window_request();
         sc_layer_hide_overlay();
         if (n > 0) {
-            if (sc_layer_present_pass(draws, n, scene_w, scene_h) != 0) {
+            const int sc_result=sc_layer_present_pass(draws, n, scene_w, scene_h);
+            if(sc_result==VKP_RENDER_RETRY)return VKP_RENDER_RETRY;
+            if (sc_result != 0) {
                 static int said;
                 if (!said) { said = 1; alroot_log("error", "Quest scene layer unavailable; retaining the previous frame rather than using the corrupt Android swapchain"); }
                 return -1;
@@ -2707,10 +2844,12 @@ static int render_route(int scene_w, int scene_h, const struct vkp_draw *draws, 
 }
 
 int vkp_render(int scene_w, int scene_h, const struct vkp_draw *draws, int n) {
+    s63_direct_last=0;
     return render_route(scene_w, scene_h, draws, n, 1);
 }
 
 int vkp_render_sync(int scene_w, int scene_h, const struct vkp_draw *draws, int n) {
+    s63_direct_last=0;
     return render_route(scene_w, scene_h, draws, n, 0);
 }
 
@@ -2776,8 +2915,18 @@ int vkp_map_draw(const struct vkp_draw *d, int out[8]) {
     return 1;
 }
 
-int vkp_blit_image(struct vkp_image *src, struct vkp_image *dst, int wait_fd) {
-    if (g_frame.pending || g_sources.active) return VKP_RENDER_RETRY;
+static int s67_layer_async_failed,s67_pool_trial;
+int vkp_s67_pool_policy(void){return s67_pool_trial;}
+int vkp_s67_pool_faulted(void){return s67_layer_async_failed;}
+void vkp_s67_pool_trial(int enable){s67_pool_trial=!!enable;}
+int vkp_s67_pool_warm(void){
+    return vkp_s67_pool_policy() && !s67_layer_async_failed && g_base_black && g_swapchain && g_window &&
+        g_dev_state==1 && !g_frame.pending && !g_sources.active && !vkp_quest_layer_presentation() &&
+        g_get_fence_fd && host_async_enabled() && vkp_s47_enabled();
+}
+int vkp_s67_layer_blit(struct vkp_image *src,struct vkp_image *dst,int wait_fd,int *android_fd) {
+    if(android_fd)*android_fd=-1;
+    if (g_frame.pending || g_sources.active) { if(wait_fd>=0)close(wait_fd); return VKP_RENDER_RETRY; }
     if (!src || !dst || !dst->blit_dst || g_dev_state == -2 || dev_init() != 0) {
         if (wait_fd >= 0) close(wait_fd);
         return -1;
@@ -2789,7 +2938,7 @@ int vkp_blit_image(struct vkp_image *src, struct vkp_image *dst, int wait_fd) {
         return -1;
     }
     const int gpu_wait = take_wait_fd(wait_fd);
-    if (gpu_wait < 0) { source_release_all(); return -1; }
+    if (gpu_wait < 0) { source_release_all(); return gpu_wait == -2 ? VKP_RENDER_RETRY : -1; }
     VkImageSubresourceRange range = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1};
 
     VkCommandBuffer g_cmd = g_cmds[0];
@@ -2852,8 +3001,23 @@ int vkp_blit_image(struct vkp_image *src, struct vkp_image *dst, int wait_fd) {
     VkResult qr = g_vk.QueueSubmit(g_queue, 1, &si, g_fence);
     if (qr != VK_SUCCESS) return render_submit_failed("layer blit", qr, 0);
     source_note_submitted();
-    return finish_gpu_work(1000000000ULL, 0, 0, 0, g_base_black);
+    if(!android_fd)return finish_gpu_work(1000000000ULL,0,0,0,g_base_black);
+    /* SAME copy generation: S45 owns its real completion payload. Android
+     * receives a second reference to that very sync_file. Never re-export
+     * a copy-transferred VkFence or pass -1 when export/dup failed. */
+    int result=finish_gpu_work(0,1,0,0,g_base_black);
+    if(result!=0 || !g_frame.exported || g_frame.completion_broken){
+        s67_layer_async_failed=1;return VKP_RENDER_RETRY;
+    }
+    if(g_frame.completion_fd>=0){
+        int fd=fcntl(g_frame.completion_fd,F_DUPFD_CLOEXEC,0);
+        if(fd<0){s67_layer_async_failed=1;return VKP_RENDER_RETRY;}
+        *android_fd=fd;
+    }
+    return 0;
 }
+int vkp_blit_image(struct vkp_image *src, struct vkp_image *dst, int wait_fd){return vkp_s67_layer_blit(src,dst,wait_fd,NULL);}
+
 
 
 
@@ -2862,7 +3026,7 @@ int vkp_blit_image(struct vkp_image *src, struct vkp_image *dst, int wait_fd) {
 
 static struct vkp_image *g_rb;
 
-int vkp_image_readback(struct vkp_image *src, uint32_t *out, int max_px) {
+int vkp_cursor_readback(struct vkp_image *src, uint32_t *out, int max_px,int external) {
     if (g_frame.pending || g_sources.active) return VKP_RENDER_RETRY;
     if (!src || !out || src->w <= 0 || src->h <= 0 || src->w * src->h > max_px ||
         g_dev_state == -2 || dev_init() != 0)
@@ -2899,7 +3063,7 @@ int vkp_image_readback(struct vkp_image *src, uint32_t *out, int max_px) {
         }
         g_rb = img;
     }
-    const struct vkp_draw source = {.img = src};
+    const struct vkp_draw source = {.img = src,.external_ownership=external};
     if (source_prepare(&source, 1) != 0 || source_hold(g_rb) != 0) {
         source_release_all(); return -1;
     }
@@ -2972,6 +3136,8 @@ int vkp_image_readback(struct vkp_image *src, uint32_t *out, int max_px) {
                (size_t)src->w * 4);
     return 0;
 }
+int vkp_image_readback(struct vkp_image *src,uint32_t *out,int max_px){return vkp_cursor_readback(src,out,max_px,0);}
+
 
 
 static struct {
@@ -3092,7 +3258,7 @@ static int pass_begin_impl(int scene_w, int scene_h, const struct vkp_draw *draw
 }
 
 int vkp_pass_copy_to(struct vkp_image *dst, int wait_fd) {
-    if (g_frame.pending) return VKP_RENDER_RETRY;
+    if (g_frame.pending) { if(wait_fd>=0)close(wait_fd); return VKP_RENDER_RETRY; }
     if (!g_pass.active) { if (wait_fd >= 0) close(wait_fd); return -1; }
     g_pass.active = 0;
     VkCommandBuffer cmd = g_cmds[0];
@@ -3103,7 +3269,7 @@ int vkp_pass_copy_to(struct vkp_image *dst, int wait_fd) {
         return -1;
     }
     const int gpu_wait = take_wait_fd(wait_fd);
-    if (gpu_wait < 0) { g_vk.EndCommandBuffer(cmd); source_release_all(); return -1; }
+    if (gpu_wait < 0) { g_vk.EndCommandBuffer(cmd); source_release_all(); return gpu_wait == -2 ? VKP_RENDER_RETRY : -1; }
     VkImageSubresourceRange range = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1};
 
     VkImageMemoryBarrier acq = {

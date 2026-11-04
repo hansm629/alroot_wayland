@@ -58,6 +58,9 @@ struct vkp_draw {
     uint64_t acquire_serial;
     /* v3 ownership also applies to an explicitly already-ready commit. */
     int external_ownership;
+    int nested_output; /* 1 = unqualified nested; 2 = verified X root beneath native windows; 3 = verified sole X root */
+    int s68_legacy_ready; /* original native AHB; old wire requires producer completion before attach */
+    int s69_mixed_alpha_defined; /* no cross-surface opacity inference in the mixed pass */
 };
 
 const char *vkp_gpu_name(void);
@@ -80,6 +83,13 @@ enum vkp_frame_poll_result {
     VKP_FRAME_COMPLETE = 2,
 };
 int vkp_frame_pending(void);
+int vkp_s69_can_watch_present(void);
+int vkp_s69_watch_present(void);
+int vkp_s69_parent_latched(void); /* non-blocking eligible/actual GOOGLE time: 1 proven, 0 pending, -1 not available */
+void vkp_s69_cancel_present(void);
+int vkp_last_direct_attachment(void);
+void vkp_s63_stats(char *buf, size_t len);
+void vkp_s66_stats(char *buf, size_t len);
 /* Borrowed, stable until retirement. -1 means no pollable FD (including an
  * already-complete exported payload). The renderer owns and closes this FD.
  * After a successful SYNC_FD export it never queries the reset VkFence. */
@@ -124,6 +134,7 @@ struct vkp_perf {
 };
 void vkp_perf_take(struct vkp_perf *out);
 int vkp_can_wait_sync_fd(void);
+int vkp_release_fd_state(int fd); /* sync_file: signaled=1, pending=0, error=-1 */
 
 struct alroot_color;
 struct vkp_hdr_frame {
@@ -139,8 +150,15 @@ int vkp_pass_begin_hdr(int scene_w, int scene_h, const struct vkp_draw *draws, i
 
 /* RETRY is returned before starting work and leaves wait_fd with the caller.
  * Layer callers must check vkp_frame_pending before taking a pool slot. */
+int vkp_s67_pool_policy(void);
+int vkp_s67_pool_faulted(void);
+void vkp_s67_pool_trial(int enable);
+int vkp_s67_pool_warm(void);
+struct vkp_image *vkp_image_layer_target(struct AHardwareBuffer *ahb);
+int vkp_s67_layer_blit(struct vkp_image *src,struct vkp_image *dst,int owned_wait_fd,int *owned_android_fd);
 int vkp_blit_image(struct vkp_image *src, struct vkp_image *dst, int wait_fd);
 int vkp_image_readback(struct vkp_image *src, uint32_t *out, int max_px);
+int vkp_cursor_readback(struct vkp_image *src,uint32_t *out,int max_px,int external);
 int vkp_update_map(int scene_w, int scene_h);
 int vkp_map_draw(const struct vkp_draw *d, int out[8]);
 int vkp_map_rect(int img_w, int img_h, int scene_w, int scene_h, int out[8]);

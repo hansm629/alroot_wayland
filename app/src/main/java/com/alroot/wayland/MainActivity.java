@@ -161,15 +161,18 @@ public final class MainActivity extends Activity implements SurfaceHolder.Callba
         }
     };
 
-    private final Choreographer.FrameCallback vsync = new Choreographer.FrameCallback() {
-        @Override public void doFrame(long frameTimeNanos) {
-            if (!vsyncOn) return;
-            if (displayTiming != null) displayTiming.frame(frameTimeNanos);
-            if (HelperService.running)
-                WaylandCompositor.nativeVsync(frameTimeNanos);
-            Choreographer.getInstance().postFrameCallback(this);
+    private final com.alroot.timing.SingleVsyncPump s66Pump=new com.alroot.timing.SingleVsyncPump(new com.alroot.timing.SingleVsyncPump.Sink(){
+        public boolean raw(long n){
+            if(!vsyncOn)return false;
+            if(displayTiming!=null)displayTiming.frame(n);
+            return HelperService.running && WaylandCompositor.nativeVsyncRawPolicy(n,android.os.Build.VERSION.SDK_INT>=33);
         }
-    };
+        public boolean timeline(long n,long id,long deadline,long target){
+            if(!vsyncOn)return false;
+            if(displayTiming!=null)displayTiming.frame(n);
+            return HelperService.running && WaylandCompositor.nativeVsyncTimelinePolicy(n,id,deadline,target);
+        }
+    });
 
     @Override public void onCreate(Bundle state) {
         super.onCreate(state);
@@ -722,7 +725,7 @@ public final class MainActivity extends Activity implements SurfaceHolder.Callba
         }
         if (!vsyncOn) {
             vsyncOn = true;
-            Choreographer.getInstance().postFrameCallback(vsync);
+            s66Pump.start();
         }
         if (termuxVisibility != null) termuxVisibility.display(true, HelperService.running);
     }
@@ -736,7 +739,7 @@ public final class MainActivity extends Activity implements SurfaceHolder.Callba
 
     private void detach() {
         vsyncOn = false;
-        Choreographer.getInstance().removeFrameCallback(vsync);
+        s66Pump.stop();
         if (activeSurface == attached && HelperService.running) {
             WaylandCompositor.nativeSetSurface(null);
             activeSurface = null;

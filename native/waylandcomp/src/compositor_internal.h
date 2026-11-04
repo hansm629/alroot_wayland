@@ -42,6 +42,9 @@ struct dmabuf_buffer {
     /* Optional Android-NDK-native wl_buffer (no private native_handle
      * layout, no fake DMA-BUF FD). Managed like existing wl_buffer refs. */
     struct AHardwareBuffer *gpu_ahb;
+    int s63_registration;
+    int s63_alpha; /* 0 unspecified (old wire), 1 opaque, 2 premultiplied */
+    uint64_t s63_ahb_id; /* NDK system-wide allocation ID, never a pointer alias. */
 };
 
 struct client_info {
@@ -51,10 +54,13 @@ struct client_info {
     char name[64];
     unsigned asked_feedback : 1, shm_gl_said : 1;
     unsigned declares_opaque : 1;
+    unsigned s63_nested : 1;
+    unsigned s65_root_peer : 2; /* credential + executable identity, not supplied title */
     unsigned dmabuf_buffers, shm_frames;
     struct client_info *next;
 };
 
+COMPOSITOR_INTERNAL int alroot_s65_effective_refresh_mhz(void);
 COMPOSITOR_INTERNAL struct client_info *client_info_of(struct wl_client *client);
 COMPOSITOR_INTERNAL void dmabuf_buffer_unref(struct dmabuf_buffer *b);
 COMPOSITOR_INTERNAL extern const struct wl_buffer_interface dbuf_buffer_impl;
@@ -72,6 +78,8 @@ COMPOSITOR_INTERNAL extern dev_t g_main_device;
 COMPOSITOR_INTERNAL void bind_dmabuf(struct wl_client *c, void *data, uint32_t ver, uint32_t id);
 
 /* S45: fd is owned by this call; ready=1 is the no-FD v3 request. */
+COMPOSITOR_INTERNAL void alroot_gpu_get_release(struct wl_client *, struct wl_resource *, uint32_t, struct wl_resource *, struct wl_resource *);
+COMPOSITOR_INTERNAL void alroot_gpu_get_mailbox_release(struct wl_client *, struct wl_resource *, uint32_t, struct wl_resource *, struct wl_resource *);
 COMPOSITOR_INTERNAL void alroot_gpu_set_acquire(struct wl_client *client,
     struct wl_resource *manager, struct wl_resource *surface,
     struct wl_resource *buffer, int fd, int ready);

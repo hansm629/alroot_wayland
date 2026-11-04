@@ -722,3 +722,7 @@ JNIEXPORT jint JNICALL
 Java_com_alroot_wayland_WaylandCompositor_nativeStreamFrames(JNIEnv *env, jclass clazz) {
     return (jint)alroot_stream_frames();
 }
+
+extern int alroot_s66_single_raw(int64_t,int),alroot_s66_single_data(int64_t,int64_t,int64_t,int64_t);
+JNIEXPORT jboolean JNICALL Java_com_alroot_wayland_WaylandCompositor_nativeVsyncRawPolicy(JNIEnv*e,jclass k,jlong f,jboolean cap){(void)e;(void)k;return alroot_s66_single_raw(f,cap)?JNI_TRUE:JNI_FALSE;}
+JNIEXPORT jboolean JNICALL Java_com_alroot_wayland_WaylandCompositor_nativeVsyncTimelinePolicy(JNIEnv*e,jclass k,jlong f,jlong id,jlong d,jlong t){(void)e;(void)k;return alroot_s66_single_data(f,id,d,t)?JNI_TRUE:JNI_FALSE;}

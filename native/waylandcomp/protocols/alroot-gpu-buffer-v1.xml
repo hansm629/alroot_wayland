@@ -15,7 +15,7 @@
     EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF
     MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT.
   </copyright>
-  <interface name="alroot_gpu_buffer_v1" version="3">
+  <interface name="alroot_gpu_buffer_v1" version="6">
     <description summary="GPU AHardwareBuffer-backed Wayland buffers">
       A vendor-independent alternative to Linux DRM DMA-BUF for Android GPUs
       that can create AHardwareBuffers but cannot export them through GBM
@@ -96,6 +96,52 @@
       <arg name="surface" type="object" interface="wl_surface"/>
       <arg name="buffer" type="object" interface="wl_buffer"/>
     </request>
+    <request name="get_release" since="4">
+      <description summary="request a terminal dependency for one newly attached commit">
+        Call after set_acquire_fence or set_acquire_ready for the same surface
+        and buffer and before commit. Each use has a distinct release object.
+        A surface keeping this content for a future redraw is still using it.
+        Reuse requires the terminal event and completion of its dependency;
+        ordinary wl_buffer.release alone does not authorize v4 reuse. Producers
+        must serialize later writes, including across independently shared handles.
+        Existing core release, pacing and protocol versions remain compatible.
+      </description>
+      <arg name="id" type="new_id" interface="alroot_buffer_release_v1"/>
+      <arg name="surface" type="object" interface="wl_surface"/>
+      <arg name="buffer" type="object" interface="wl_buffer"/>
+    </request>
+    <request name="create_buffer_with_mode" since="5">
+      <description summary="create an AHB with immutable producer alpha semantics">
+        Equivalent storage validation to create_buffer_with_format. The alpha
+        mode separately describes the pixels the producer will present, even
+        when an RGBA allocation is used in both cases. Opaque ignores source
+        alpha. Premultiplied is composited with premultiplied source-over.
+        A surface's own exact full opaque region may still prove that
+        blending its particular commit is unnecessary.
+      </description>
+      <arg name="id" type="new_id" interface="wl_buffer"/>
+      <arg name="socket" type="fd"/>
+      <arg name="width" type="uint"/>
+      <arg name="height" type="uint"/>
+      <arg name="format" type="uint" enum="format"/>
+      <arg name="alpha_mode" type="uint" enum="alpha_mode"/>
+    </request>
+    <request name="get_mailbox_release" since="6">
+      <description summary="explicit release for one replaceable MAILBOX commit">
+        Same dependency, binding and lifetime rules as get_release. A producer
+        that requested MAILBOX may declare that an older, superseded commit can
+        retire without waiting for another display interval. This hint does
+        not imply producer or consumer completion, bypass an explicit user
+        frame-rate cap, or guarantee presentation. FIFO clients use get_release.
+      </description>
+      <arg name="id" type="new_id" interface="alroot_buffer_release_v1"/>
+      <arg name="surface" type="object" interface="wl_surface"/>
+      <arg name="buffer" type="object" interface="wl_buffer"/>
+    </request>
+    <enum name="alpha_mode">
+      <entry name="opaque" value="0"/>
+      <entry name="premultiplied" value="1"/>
+    </enum>
     <enum name="format">
       <entry name="rgba8888" value="1" summary="AHB RGBA8 UNORM, v1 standard"/>
       <entry name="bgra8888" value="5" summary="AHB BGRA8 UNORM, v2 optional"/>
@@ -105,5 +151,16 @@
       <entry name="unsupported_format" value="1" summary="AHB lacks GPU sampling or RGBA8"/>
       <entry name="invalid_sync" value="2" summary="invalid acquire sync_file, surface, or commit state"/>
     </enum>
+  </interface>
+  <interface name="alroot_buffer_release_v1" version="1">
+    <description summary="one commit, one release">
+      A terminal sync_file orders all writes by this producer and all reads
+      by the compositor until it relinquished this use. The local proxy may
+      be destroyed without any request when a client abandons the use.
+    </description>
+    <event name="fenced_release" type="destructor">
+      <arg name="fd" type="fd" summary="sync_file; wait before reusing storage"/>
+    </event>
+    <event name="immediate_release" type="destructor"/>
   </interface>
 </protocol>
