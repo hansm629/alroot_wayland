@@ -77,6 +77,12 @@ static int s65_ctl_recv(int fd,uint32_t events,void *unused) {
         else if(!strncmp(cmd,"trial-pool ",11))valid=s67_pool_lease(cmd+11);
         else if(!strcmp(cmd,"pool-off")){if(s67_pool_lease_timer)wl_event_source_timer_update(s67_pool_lease_timer,0);vkp_s67_pool_trial(0);schedule_render();}
         else if(!strcmp(cmd,"pool-status")){}
+        else if(s65_private_probe && !strcmp(cmd,"probe-withhold-parent-once")){
+            const int64_t now=now_ns();
+            valid=s65_ctl.enabled && s65_displayed && s69h.root && !s69h.phase &&
+                !s69h.unusable && now>=s69h.probe_until;
+            if(valid)s69h.probe_until=now+10000000000LL;
+        }
         else if(!strcmp(cmd,"repaint-status")){}
         else if(!strcmp(cmd,"status")){}
         else if(s65_private_probe && !s65_ctl.enabled && !strncmp(cmd,"probe-refresh ",14)){
@@ -153,7 +159,8 @@ static int s65_ctl_recv(int fd,uint32_t events,void *unused) {
     return 0;
 }
 static void s65_control_stop(void) {
-    s69_handoff_reset();s69h.unusable=0;s69h.requests=s69h.fresh=s69h.latched=s69h.timeouts=s69h.refused=0;
+    s69_handoff_reset();memset(&s69r,0,sizeof(s69r));s69h.failure_reason=NULL;s69h.failed_ns=0;s69h.probe_withheld=0;
+    s69h.unusable=0;s69h.requests=s69h.fresh=s69h.latched=s69h.timeouts=s69h.refused=0;
     if(s68_baseline_timer){wl_event_source_remove(s68_baseline_timer);s68_baseline_timer=NULL;}
     s69_mixed_passes=s69_mixed_fallback=s69_mixed_refused=0;
     s71_root_passes=s71_root_fallback=s71_root_refused=0;

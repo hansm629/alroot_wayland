@@ -84,6 +84,8 @@ enum vkp_frame_poll_result {
 };
 int vkp_frame_pending(void);
 int vkp_s69_can_watch_present(void);
+void vkp_s69_disarm_present(void);
+int vkp_s69_watch_current(void);
 int vkp_s69_watch_present(void);
 int vkp_s69_parent_latched(void); /* non-blocking eligible/actual GOOGLE time: 1 proven, 0 pending, -1 not available */
 void vkp_s69_cancel_present(void);

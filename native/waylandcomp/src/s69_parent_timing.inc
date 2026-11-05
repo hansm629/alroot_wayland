@@ -19,6 +19,10 @@ void vkp_s69_cancel_present(void) {
 int vkp_s69_can_watch_present(void) {
     return s69_get_past && g_swapchain && s69_sequence<UINT32_MAX;
 }
+void vkp_s69_disarm_present(void) { s69_armed=0; }
+int vkp_s69_watch_current(void) {
+    return s69_timing_chain && s69_timing_chain==g_swapchain && !s69_timing_broken;
+}
 int vkp_s69_watch_present(void) {
     if(!vkp_s69_can_watch_present() || s69_timing_broken)return 0;
     if(s69_timing_chain && s69_timing_chain!=g_swapchain)return 0;
@@ -29,7 +33,7 @@ int vkp_s69_watch_present(void) {
     s69_armed=1;return 1;
 }
 int vkp_s69_parent_latched(void) {
-    if(!s69_timing_chain || g_swapchain!=s69_timing_chain || !s69_get_past || s69_timing_broken)return -1;
+    if(!vkp_s69_watch_current() || !s69_get_past)return -1;
     if(!s69_first_id)return 0;
     VkPastPresentationTimingGOOGLE v[32];uint32_t n=32;
     VkResult res=s69_get_past(g_dev,s69_timing_chain,&n,v);

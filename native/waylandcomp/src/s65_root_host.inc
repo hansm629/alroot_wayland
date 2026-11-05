@@ -159,6 +159,7 @@ static int s65_choose_route(const struct draw_list *dl,int w,int h,int supported
     s65_hide_after_render=0;
     int requested=s65_control_enabled();
     if(s65_last_request!=requested){s65_refused_until=0;s65_last_request=requested;}
+    if(s69r.watching && !requested)s69_recovery_cancel("disabled",now_ns());
     if(!requested && !s65_displayed && !s65_held){s65_last_reason="off";return 0;}
     uint64_t epoch=sc_root_window_epoch();
     if(s65_last_epoch!=epoch){s65_refused_until=0;s65_last_epoch=epoch;}
@@ -166,6 +167,8 @@ static int s65_choose_route(const struct draw_list *dl,int w,int h,int supported
     else if(s65_broken)s65_last_reason="quarantine";
     else if(!supported_scene)s65_last_reason="effect-or-hdr";
     struct s45_use *u=requested && !s65_broken && supported_scene ? s65_candidate(dl,w,h) : NULL;
+    if(s69r.watching && (!s69_is_root(u) || s65_displayed || s65_held))
+        s69_recovery_cancel("scene_changed",now_ns());
     if(u){
         s65_same_backing_until=0;
         ++s65_counts.eligible;
@@ -177,6 +180,10 @@ static int s65_choose_route(const struct draw_list *dl,int w,int h,int supported
         }
         if(!s65_displayed){
             const struct client_info *ci=client_info_of(wl_resource_get_client(u->owner->resource));
+            if(s69h.unusable && s69_is_root(u) && !s65_held){
+                if(s69_recover_parent(epoch,u->serial,u->frame_refs || vkp_image_busy(u->buffer->img),now_ns()))
+                    s69h.unusable=0;
+            }
             if(ci && ci->s65_root_peer==2 && (!s69_is_root(u) || s69h.unusable || !vkp_s69_can_watch_present())){
                 s65_last_reason="refresh-or-parent-timing-unavailable";goto fallback_scene;
             }
